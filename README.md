@@ -141,8 +141,22 @@ fractory sync                       # advance jobs from their PR and CI, mirror 
 fractory watch                      # sync every 60 s until stopped (--every S, --rounds N)
 fractory watch --install            # the same, as a LaunchAgent that survives reboots
 fractory dash --out /tmp/dash.json
+fractory serve                      # the live board at http://127.0.0.1:8777
 fractory orch alive term_…          # everything orch.py does, unchanged
 ```
+
+## Web view
+
+```sh
+fractory serve [--port 8777]          # binds 127.0.0.1 only
+```
+
+A live board of every job: one column per stage (discovery … done), cancelled jobs behind a toggle. Each
+card shows the job, repo, kind (Able / internal), cost against budget, judge rounds and the PR and Plane
+links; a job with an open gate gets a red border with the gate reason and detail. The header counts open
+jobs, open gates and total cost, with a live indicator. Cards that change column flash briefly. The page
+follows `state.json` changes through Server-Sent Events (`/api/events`), reads `/api/jobs`, and is
+read-only. One self-contained HTML file, no build step.
 
 ## Plane
 

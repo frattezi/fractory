@@ -1,0 +1,151 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Fractory board</title>
+<style>
+:root {
+  --bg: #f4f5f3; --panel: #e9ecea; --card: #ffffff; --text: #1b2124; --muted: #5d6a6e;
+  --line: #d3d9d7; --accent: #1f6f78; --warm: #c9822f; --gate: #c0392b; --live: #2e9e5b;
+  --shadow: 0 1px 2px rgba(27, 33, 36, .08);
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #1b2124; --panel: #232b2f; --card: #2b3539; --text: #e8ecea; --muted: #94a3a7;
+    --line: #36434a; --accent: #4ab3be; --warm: #e3a35f; --gate: #ef6b5b; --live: #4cc37f;
+    --shadow: none;
+  }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif; }
+header { display: flex; flex-wrap: wrap; align-items: center; gap: 12px 24px; padding: 14px 20px; border-bottom: 1px solid var(--line); }
+h1 { margin: 0; font-size: 18px; font-weight: 650; letter-spacing: .2px; }
+h1 span { color: var(--accent); }
+.stats { display: flex; gap: 20px; flex-wrap: wrap; }
+.stat b { display: block; font-size: 18px; font-variant-numeric: tabular-nums; }
+.stat small { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .6px; }
+.stat.warm b { color: var(--warm); }
+.stat.gate b { color: var(--gate); }
+.controls { margin-left: auto; display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+select, label { font: inherit; color: var(--text); }
+select { background: var(--card); border: 1px solid var(--line); border-radius: 6px; padding: 4px 8px; }
+.live { display: flex; align-items: center; gap: 6px; color: var(--muted); }
+.live i { width: 9px; height: 9px; border-radius: 50%; background: var(--gate); }
+.live.on i { background: var(--live); box-shadow: 0 0 0 3px color-mix(in srgb, var(--live) 25%, transparent); }
+main { display: flex; gap: 12px; padding: 16px 20px 28px; overflow-x: auto; align-items: flex-start; }
+.col { flex: 0 0 232px; background: var(--panel); border-radius: 10px; padding: 10px; min-height: 120px; }
+.col h2 { margin: 0 0 10px; font-size: 12px; text-transform: uppercase; letter-spacing: .7px; color: var(--muted); display: flex; justify-content: space-between; }
+.col.cancelled { opacity: .8; }
+.card { background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 10px; margin-bottom: 8px; box-shadow: var(--shadow); }
+.card.gated { border: 2px solid var(--gate); padding: 9px; }
+.card.moved { animation: moved 2.4s ease-out; }
+@keyframes moved { 0%, 40% { background: color-mix(in srgb, var(--accent) 28%, var(--card)); transform: scale(1.02); } 100% { background: var(--card); transform: none; } }
+.id { font-family: ui-monospace, Menlo, monospace; font-size: 11px; color: var(--muted); display: flex; justify-content: space-between; gap: 6px; }
+.title { font-weight: 600; margin: 3px 0 6px; overflow-wrap: anywhere; }
+.meta { display: flex; flex-wrap: wrap; gap: 4px 8px; align-items: center; color: var(--muted); font-size: 12px; }
+.badge { padding: 0 7px; border-radius: 99px; font-size: 11px; font-weight: 600; border: 1px solid var(--accent); color: var(--accent); }
+.badge.able { border-color: var(--warm); color: var(--warm); }
+.cost { color: var(--warm); font-variant-numeric: tabular-nums; }
+.links { margin-top: 6px; display: flex; gap: 10px; font-size: 12px; }
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+.gate-box { margin-top: 8px; padding: 6px 8px; border-radius: 6px; background: color-mix(in srgb, var(--gate) 12%, transparent); font-size: 12px; }
+.gate-box b { color: var(--gate); }
+.empty { color: var(--muted); font-size: 12px; padding: 4px 2px; }
+@media (max-width: 640px) { header { padding: 12px; } main { padding: 12px; } .controls { margin-left: 0; } }
+</style>
+</head>
+<body>
+<header>
+  <h1>Frac<span>tory</span></h1>
+  <div class="stats">
+    <div class="stat"><b id="s-open">–</b><small>open jobs</small></div>
+    <div class="stat gate"><b id="s-gates">–</b><small>open gates</small></div>
+    <div class="stat warm"><b id="s-cost">–</b><small>total cost</small></div>
+  </div>
+  <div class="controls">
+    <label>Repo <select id="repo"><option value="">all</option></select></label>
+    <label><input type="checkbox" id="show-cancelled"> cancelled</label>
+    <span class="live" id="live"><i></i><span>offline</span></span>
+  </div>
+</header>
+<main id="board"></main>
+<script>
+const STAGES = ["discovery", "spec", "build", "checks", "review", "judge", "ship", "done"];
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
+const money = (n) => "US$ " + Number(n).toFixed(2);
+let data = null;
+let stageOf = new Map();
+let moved = new Set();
+
+const link = (url, text) => (url ? `<a href="${esc(url)}" target="_blank" rel="noopener">${text}</a>` : "");
+
+function card(j) {
+  const prLabel = j.pr ? `PR #${esc(j.pr)}` : "";
+  const prLink = j.pr ? (j.pr_url ? link(j.pr_url, prLabel) : `<span>${prLabel}</span>`) : "";
+  const gate = j.gate
+    ? `<div class="gate-box"><b>Gate: ${esc(j.gate)}</b>${j.gate_detail ? `<div>${esc(j.gate_detail)}</div>` : ""}</div>`
+    : "";
+  return `<article class="card${j.gate ? " gated" : ""}${moved.has(j.id) ? " moved" : ""}" data-id="${esc(j.id)}">
+    <div class="id"><span>${esc(j.id)}</span><span>${esc(j.repo)}</span></div>
+    <div class="title">${esc(j.title)}</div>
+    <div class="meta">
+      <span class="badge${j.kind === "able" ? " able" : ""}">${j.kind === "able" ? "Able" : "internal"}</span>
+      <span class="cost">${money(j.cost_usd)} / ${Number(j.budget_usd).toFixed(0)}</span>
+      <span>judge ${j.judge_rounds}/2</span>
+    </div>
+    ${gate}
+    <div class="links">${prLink}${link(j.tracker_url, "Plane")}</div>
+  </article>`;
+}
+
+function render() {
+  if (!data) return;
+  const repo = $("repo").value;
+  const repos = [...new Set(data.jobs.map((j) => j.repo))].sort();
+  $("repo").innerHTML = '<option value="">all</option>' + repos.map((r) => `<option${r === repo ? " selected" : ""}>${esc(r)}</option>`).join("");
+  const jobs = data.jobs.filter((j) => !repo || j.repo === repo);
+  const showCancelled = $("show-cancelled").checked;
+  const stages = showCancelled ? [...STAGES, "cancelled"] : STAGES;
+  $("board").innerHTML = stages
+    .map((stage) => {
+      const items = jobs.filter((j) => j.stage === stage).sort((a, b) => (a.updated_at < b.updated_at ? 1 : -1));
+      return `<section class="col ${stage}"><h2><span>${stage}</span><span>${items.length}</span></h2>${
+        items.map(card).join("") || '<div class="empty">–</div>'
+      }</section>`;
+    })
+    .join("");
+  const t = data.totals;
+  $("s-open").textContent = t.open;
+  $("s-gates").textContent = t.gated;
+  $("s-cost").textContent = money(t.cost_usd);
+}
+
+function update(next) {
+  moved = new Set();
+  for (const j of next.jobs) {
+    if (stageOf.has(j.id) && stageOf.get(j.id) !== j.stage) moved.add(j.id);
+  }
+  stageOf = new Map(next.jobs.map((j) => [j.id, j.stage]));
+  data = next;
+  render();
+  if (moved.size) setTimeout(() => { moved = new Set(); }, 2500);
+}
+
+function setLive(on) {
+  $("live").classList.toggle("on", on);
+  $("live").lastElementChild.textContent = on ? "live" : "offline";
+}
+
+$("repo").addEventListener("change", render);
+$("show-cancelled").addEventListener("change", render);
+
+const source = new EventSource("/api/events");
+source.onopen = () => setLive(true);
+source.onerror = () => setLive(false);
+source.addEventListener("jobs", (e) => { setLive(true); update(JSON.parse(e.data)); });
+</script>
+</body>
+</html>
