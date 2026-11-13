@@ -137,6 +137,17 @@ class SyncCli(unittest.TestCase):
         self.run_cli("sync")
         self.assertEqual(self.stage(), "checks")
 
+    def test_watch_runs_sync_each_round_until_the_job_is_done(self) -> None:
+        self.new_job()
+        self.run_cli("job", "advance", "cortadas-0001", "built")
+        self.pr = pr_json(checks=[check_run("lint")])
+        with mock.patch.object(cli.time, "sleep") as sleep:
+            code, out = self.run_cli("watch", "--every", "5", "--rounds", "3")
+        self.assertEqual(code, 0, out)
+        self.assertEqual(self.stage(), "review")
+        self.assertEqual(self.gh.call_count, 3)
+        self.assertEqual([c.args for c in sleep.call_args_list], [(5.0,), (5.0,)])
+
     def test_create_project_is_idempotent_by_identifier(self) -> None:
         code, out = self.run_cli("plane", "create-project", "--name", "Fractory", "--identifier", "fractory",
                                  "--url", self.url)  # fmt: skip
