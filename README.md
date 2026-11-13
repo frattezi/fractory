@@ -95,7 +95,7 @@ job for the Plane issue X"*; these are the commands it runs):
 | 4. Build | a worker via `fractory orch launch …`, or the main itself in that worktree | worker |
 | 5. Open the PR and link it | `gh pr create`, then `fractory job link <id> --worktree … --pr <n>` and `fractory job advance <id> built` | worker / main |
 | 6. Checks | nothing: `fractory watch` sees CI; red goes back to build, green moves on to review | watch |
-| 7. Review and verdict *(manual)* | `fractory job advance <id> reviewed`, then `approved` or `rejected` | you / main |
+| 7. Review and verdict | `fractory judge <id>` (Opus vs the Plane issue, fixed rubric); with `auto_judge = true` in `config.toml`, `watch` runs it for every job in review. By hand: `fractory job advance <id> reviewed`, then `approved` or `rejected` | judge / you |
 | 8. Merge | internal with `auto_merge`: nothing, `watch` merges on green CI; otherwise merge on GitHub (Able: open the draft PR) | watch / you |
 | 9. Done | nothing: `fractory watch` sees the merge, finishes the job and moves the Plane issue to Done | watch |
 
@@ -136,6 +136,7 @@ fractory job advance cortadas-0001 red --check lint
 fractory job cost cortadas-0001 3.20
 fractory gate list
 fractory gate resolve cortadas-0001 continue --note "spec ajustada"
+fractory judge cortadas-0001        # verdict on the PR diff vs the Plane issue; moves the job, comments on PR and issue
 fractory sync                       # advance jobs from their PR and CI, mirror to Plane
 fractory watch                      # sync every 60 s until stopped (--every S, --rounds N)
 fractory watch --install            # the same, as a LaunchAgent that survives reboots
@@ -167,6 +168,6 @@ the repo as frozen history. Each issue carries `external_id` = the spec id, so a
 
 ## Next (v1)
 
-Holdout verifier, risk score and review by risk, Judge with a fixed rubric, `fractory watch` under
+Holdout verifier, risk score and review by risk, `fractory watch` under
 launchd, Orca native gates, and retiring the always-on orchestrator. The roadmap lives in the Plane
 project FRACTORY.

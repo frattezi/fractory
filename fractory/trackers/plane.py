@@ -181,5 +181,11 @@ class Plane:
     def set_status(self, ref: str, status: str) -> None:
         self._call("PATCH", f"/projects/{self.project_id}/issues/{ref}/", {"state": self.state_for(status)})
 
+    def get_item(self, ref: str) -> dict:
+        _, data = self._call("GET", f"/projects/{self.project_id}/issues/{ref}/")
+        if not isinstance(data, dict):
+            raise PlaneError(f"issue {ref}: unexpected response")
+        return data
+
     def comment(self, ref: str, body_html: str) -> None:
         self._call("POST", f"/projects/{self.project_id}/issues/{ref}/comments/", {"comment_html": body_html})

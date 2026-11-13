@@ -106,3 +106,11 @@ def should_merge(job: Job, pr: Pr) -> bool:
 
 def merge_pr(repo: str, pr: str, gh: Gh | None = None) -> None:
     (gh or run_gh)(["pr", "merge", pr, "--squash", "--delete-branch"], repo)
+
+
+def pr_diff(repo: str, pr: str, gh: Gh | None = None) -> str:
+    return (gh or run_gh)(["pr", "diff", pr], repo)
+
+
+def pr_comment(repo: str, pr: str, body: str, gh: Gh | None = None) -> None:
+    (gh or run_gh)(["pr", "comment", pr, "--body", body], repo)

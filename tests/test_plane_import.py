@@ -6,6 +6,7 @@ import contextlib
 import io
 import json
 import os
+import re
 import tempfile
 import threading
 import unittest
@@ -33,6 +34,7 @@ class FakePlane(BaseHTTPRequestHandler):
     issues: ClassVar[list[dict]] = []
     projects: ClassVar[list[dict]] = []
     patches: ClassVar[list[tuple[str, dict]]] = []
+    comments: ClassVar[list[tuple[str, dict]]] = []
 
     def log_message(self, format: str, *args: object) -> None:  # keep test output quiet
         pass
@@ -59,6 +61,9 @@ class FakePlane(BaseHTTPRequestHandler):
             self._send(200, {"results": self.projects})
         elif self.path == f"{base}/projects/{PROJECT}/states/":
             self._send(200, {"results": STATES})
+        elif m := re.fullmatch(f"{base}/projects/{PROJECT}/issues/([^/]+)/", self.path):
+            issue = next((i for i in self.issues if i["id"] == m.group(1)), None)
+            self._send(200, issue) if issue else self._send(404, {"detail": "no issue"})
         else:
             self._send(404, {"detail": "not found"})
 
@@ -78,6 +83,9 @@ class FakePlane(BaseHTTPRequestHandler):
             issue = {**body, "id": str(uuid.uuid4()), "sequence_id": len(self.issues) + 1}
             self.issues.append(issue)
             self._send(201, issue)
+        elif re.fullmatch(f"/api/v1/workspaces/cortadas/projects/{PROJECT}/issues/[^/]+/comments/", self.path):
+            self.comments.append((self.path, body))
+            self._send(201, body)
         else:
             self._send(404, {"detail": "not found"})
 
@@ -92,6 +100,7 @@ class FakePlane(BaseHTTPRequestHandler):
 def reset_fake() -> None:
     FakePlane.issues = []
     FakePlane.patches = []
+    FakePlane.comments = []
     FakePlane.projects = [{"id": PROJECT, "identifier": "CORT", "name": "Cortadas"}]
 
 
