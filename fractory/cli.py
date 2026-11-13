@@ -11,6 +11,7 @@
     fractory gate resolve ID continue|cancel [--note TEXT]
     fractory sync [ID...]          advance jobs from PR and CI; mirror to the tracker
     fractory watch [--every S] [--rounds N]   sync in a loop
+    fractory watch --install | --uninstall    keep watch running as a LaunchAgent
     fractory dash [--out FILE]
     fractory plane projects
     fractory plane import-specs --repo DIR --project ID [--identifier KEY] [--apply]
@@ -31,7 +32,7 @@ import sys
 import time
 from pathlib import Path
 
-from . import specs_import, state, store, sync
+from . import launchd, specs_import, state, store, sync
 from .trackers import plane as plane_mod
 from .trackers.base import STATUS_GROUPS
 
@@ -237,6 +238,7 @@ def plane_tracker(job: state.Job) -> plane_mod.Plane | None:
 def cmd_sync(a: argparse.Namespace) -> int:
     """Advance jobs from their PR and CI, and mirror stage changes to the tracker."""
     jobs = [store.load(i) for i in a.ids] if a.ids else store.all_jobs()
+    auto_merge = bool(store.config().get("auto_merge"))
     failed = False
     for job in jobs:
         if job.stage in state.TERMINAL or not job.links.get("pr"):
@@ -247,6 +249,9 @@ def cmd_sync(a: argparse.Namespace) -> int:
                 current = store.load(job.id)
                 found = sync.pr_event(current, pr)
                 if found is None:
+                    if auto_merge and sync.should_merge(current, pr):
+                        sync.merge_pr(current.repo, current.links["pr"])
+                        print(f"{current.id}  auto-merged PR {current.links['pr']}")
                     continue
                 event, check = found
                 updated, actions = state.apply_event(current, event, check, note="sync")
@@ -265,6 +270,13 @@ def cmd_sync(a: argparse.Namespace) -> int:
 
 def cmd_watch(a: argparse.Namespace) -> int:
     """Run sync every `--every` seconds. `--rounds 0` runs until interrupted (launchd, a terminal)."""
+    if a.uninstall:
+        print("watch agent removed" if launchd.uninstall() else "watch agent was not installed")
+        return 0
+    if a.install:
+        log = store.factory_home() / "watch.log"
+        print(f"watch agent installed: {launchd.install(log, a.every)}\nlog: {log}")
+        return 0
     a.ids = []
     done = 0
     try:
@@ -349,6 +361,8 @@ def build_parser() -> argparse.ArgumentParser:
     s = sub.add_parser("watch", help="run sync in a loop (what the supervisor does every minute)")
     s.add_argument("--every", type=float, default=60.0, help="seconds between rounds")
     s.add_argument("--rounds", type=int, default=0, help="stop after N rounds (0: forever)")
+    s.add_argument("--install", action="store_true", help="run watch as a LaunchAgent (survives reboots)")
+    s.add_argument("--uninstall", action="store_true", help="remove the LaunchAgent")
     s.set_defaults(fn=cmd_watch)
     s = sub.add_parser("sync", help="advance jobs from their PR and CI; mirror stage changes to the tracker")
     s.add_argument("ids", nargs="*", help="default: every open job with a PR")

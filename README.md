@@ -79,8 +79,10 @@ A job's life today, with the manual steps v1 will automate marked *(manual)*.
 
 1. Plane token in the Keychain: `security add-generic-password -s fractory-plane -a plane -w`.
 2. `pipx install -e ~/Factory/Fractory` so `fractory` works in every Orca terminal.
-3. Leave one Orca terminal running `fractory watch`. It moves jobs on CI and merge events and keeps the
-   Plane issues in step.
+3. `fractory watch --install`: a LaunchAgent keeps `watch` running across reboots (log:
+   `~/.factory/watch.log`). It moves jobs on CI and merge events and keeps the Plane issues in step.
+4. Optional, for internal repos: `echo 'auto_merge = true' >> ~/.factory/config.toml`. Then `watch` merges
+   the PR of every approved internal job once its CI is green. Able jobs never auto-merge.
 
 **Per task**, from the repo's main chat in Orca (ask Claude in plain words, e.g. *"start a fractory
 job for the Plane issue X"*; these are the commands it runs):
@@ -94,7 +96,7 @@ job for the Plane issue X"*; these are the commands it runs):
 | 5. Open the PR and link it | `gh pr create`, then `fractory job link <id> --worktree … --pr <n>` and `fractory job advance <id> built` | worker / main |
 | 6. Checks | nothing: `fractory watch` sees CI; red goes back to build, green moves on to review | watch |
 | 7. Review and verdict *(manual)* | `fractory job advance <id> reviewed`, then `approved` or `rejected` | you / main |
-| 8. Merge | merge the PR on GitHub (Able repos: open the draft PR instead) | you |
+| 8. Merge | internal with `auto_merge`: nothing, `watch` merges on green CI; otherwise merge on GitHub (Able: open the draft PR) | watch / you |
 | 9. Done | nothing: `fractory watch` sees the merge, finishes the job and moves the Plane issue to Done | watch |
 
 **Day to day**
@@ -136,6 +138,7 @@ fractory gate list
 fractory gate resolve cortadas-0001 continue --note "spec ajustada"
 fractory sync                       # advance jobs from their PR and CI, mirror to Plane
 fractory watch                      # sync every 60 s until stopped (--every S, --rounds N)
+fractory watch --install            # the same, as a LaunchAgent that survives reboots
 fractory dash --out /tmp/dash.json
 fractory orch alive term_…          # everything orch.py does, unchanged
 ```

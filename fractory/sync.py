@@ -90,3 +90,19 @@ def run_gh(args: list[str], cwd: str) -> str:
 def fetch_pr(repo: str, pr: str, gh: Gh | None = None) -> Pr:
     out = (gh or run_gh)(["pr", "view", pr, "--json", "state,isDraft,statusCheckRollup"], repo)
     return parse_pr(json.loads(out))
+
+
+def should_merge(job: Job, pr: Pr) -> bool:
+    """An approved internal job whose open PR has green CI. Able jobs never auto-merge."""
+    return (
+        job.gate is None
+        and job.stage == "ship"
+        and job.kind == "internal"
+        and pr.state == "OPEN"
+        and not pr.draft
+        and ci_result(pr)[0] == "green"
+    )
+
+
+def merge_pr(repo: str, pr: str, gh: Gh | None = None) -> None:
+    (gh or run_gh)(["pr", "merge", pr, "--squash", "--delete-branch"], repo)
