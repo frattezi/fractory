@@ -42,6 +42,7 @@ fractory job advance cortadas-0001 red --check lint
 fractory job cost cortadas-0001 3.20
 fractory gate list
 fractory gate resolve cortadas-0001 continue --note "spec ajustada"
+fractory sync                       # advance jobs from their PR and CI, mirror to Plane
 fractory dash --out /tmp/dash.json
 fractory orch alive term_…          # everything orch.py does, unchanged
 ```
@@ -56,6 +57,12 @@ Profile settings → Personal access tokens.
 fractory plane projects
 fractory plane import-specs --repo ~/Factory/Esquerdalha/cortadas --project <id>           # dry run
 fractory plane import-specs --repo ~/Factory/Esquerdalha/cortadas --project <id> --apply   # create
+```
+
+```sh
+fractory plane create-project --name Fractory --identifier FRACTORY
+fractory plane add-item --project <id> --title "…" --body "markdown" --status ready
+fractory job new --repo DIR --title T --tracker plane --project <id> --ref <issue id>
 ```
 
 Only open specs (`draft`, `blocked`, `ready`, `in-progress`, `in-review`) are imported; done ones stay in

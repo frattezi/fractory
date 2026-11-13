@@ -9,9 +9,12 @@
     fractory gate list
     fractory gate open ID --reason R [--detail TEXT]
     fractory gate resolve ID continue|cancel [--note TEXT]
+    fractory sync [ID...]          advance jobs from PR and CI; mirror to the tracker
     fractory dash [--out FILE]
     fractory plane projects
     fractory plane import-specs --repo DIR --project ID [--identifier KEY] [--apply]
+    fractory plane create-project --name N --identifier KEY
+    fractory plane add-item --project ID --title T [--body MD | --body-file F] [--status S]
     fractory orch ARGS...          passthrough to orch.py (the v0 build engine, unchanged)
 
 Exit 0 means it did what it says; 1 means it did not. Output is short plain text.
@@ -22,11 +25,13 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import subprocess
 import sys
 from pathlib import Path
 
-from . import specs_import, state, store
+from . import specs_import, state, store, sync
 from .trackers import plane as plane_mod
+from .trackers.base import STATUS_GROUPS
 
 ORCH = Path(os.environ.get("FRACTORY_ORCH", Path.home() / ".claude/skills/orchestrate/scripts/orch.py"))
 LINK_FIELDS = ("worktree", "terminal", "branch", "pr", "profile")
@@ -66,6 +71,8 @@ def cmd_job_new(a: argparse.Namespace) -> int:
     job = state.new_job(job_id, str(repo), a.title, a.kind or store.repo_kind(repo), a.budget, a.stage)
     if a.tracker:
         job.tracker = {"kind": a.tracker, "ref": a.ref or ""}
+        if a.tracker == "plane":
+            job.tracker.update(project=a.project or "", url=a.plane_url)
     with store.locked(job_id):
         path = store.save(job)
     print(_line(job))
@@ -198,6 +205,62 @@ def cmd_plane_import(a: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_plane_create_project(a: argparse.Namespace) -> int:
+    project, created = plane_mod.Plane.create_project(
+        plane_mod.api_key_from_env(), a.name, a.identifier, a.description or "", a.url, a.workspace
+    )
+    print(f"{'created' if created else 'exists '}  {project['id']}  {project['identifier']}  {project['name']}")
+    return 0
+
+
+def cmd_plane_add_item(a: argparse.Namespace) -> int:
+    body = Path(a.body_file).read_text() if a.body_file else (a.body or "")
+    client = plane_mod.Plane(a.project, plane_mod.api_key_from_env(), a.url, a.workspace)
+    external_id = a.external_id or store.slug(a.title)
+    try:
+        item = client.create_item(a.title, specs_import.markdown_to_html(body), a.status, external_id)
+        print(f"created  {external_id}  {item.ref}")
+    except plane_mod.Duplicate as dup:
+        print(f"exists   {external_id}  {dup.ref}")
+    return 0
+
+
+def plane_tracker(job: state.Job) -> plane_mod.Plane | None:
+    t = job.tracker
+    if t.get("kind") != "plane" or not t.get("project") or not t.get("ref"):
+        return None
+    return plane_mod.Plane(t["project"], plane_mod.api_key_from_env(), t.get("url") or plane_mod.DEFAULT_URL)
+
+
+def cmd_sync(a: argparse.Namespace) -> int:
+    """Advance jobs from their PR and CI, and mirror stage changes to the tracker."""
+    jobs = [store.load(i) for i in a.ids] if a.ids else store.all_jobs()
+    failed = False
+    for job in jobs:
+        if job.stage in state.TERMINAL or not job.links.get("pr"):
+            continue
+        try:
+            pr = sync.fetch_pr(job.repo, job.links["pr"])
+            with store.locked(job.id):
+                current = store.load(job.id)
+                found = sync.pr_event(current, pr)
+                if found is None:
+                    continue
+                event, check = found
+                updated, actions = state.apply_event(current, event, check, note="sync")
+                store.save(updated)
+            _report(updated, actions)
+            if sync.STAGE_STATUS[updated.stage] != sync.STAGE_STATUS[current.stage]:
+                tracker = plane_tracker(updated)
+                if tracker:
+                    tracker.set_status(updated.tracker["ref"], sync.STAGE_STATUS[updated.stage])
+                    print(f"  tracker: {sync.STAGE_STATUS[updated.stage]}")
+        except (OSError, ValueError, RuntimeError, subprocess.CalledProcessError) as err:  # keep syncing the rest
+            failed = True
+            print(f"{job.id}  sync error: {err}")
+    return 1 if failed else 0
+
+
 def cmd_orch(a: argparse.Namespace) -> int:
     if not ORCH.exists():
         print(f"orch.py not found at {ORCH} (set FRACTORY_ORCH)")
@@ -219,6 +282,8 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--budget", type=float, default=state.DEFAULT_BUDGET_USD)
     s.add_argument("--tracker", choices=("plane", "jira"))
     s.add_argument("--ref", help="the tracker item id")
+    s.add_argument("--project", help="Plane project id, for --tracker plane")
+    s.add_argument("--plane-url", default=plane_mod.DEFAULT_URL)
     s.set_defaults(fn=cmd_job_new)
     s = job.add_parser("list", help="open jobs")
     s.add_argument("--all", action="store_true", help="include done and cancelled")
@@ -263,8 +328,18 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--out")
     s.set_defaults(fn=cmd_dash)
 
+    s = sub.add_parser("sync", help="advance jobs from their PR and CI; mirror stage changes to the tracker")
+    s.add_argument("ids", nargs="*", help="default: every open job with a PR")
+    s.set_defaults(fn=cmd_sync)
+
     pl = sub.add_parser("plane", help="Plane tracker").add_subparsers(dest="cmd", required=True)
-    for name, fn in (("projects", cmd_plane_projects), ("import-specs", cmd_plane_import)):
+    commands = (
+        ("projects", cmd_plane_projects),
+        ("import-specs", cmd_plane_import),
+        ("create-project", cmd_plane_create_project),
+        ("add-item", cmd_plane_add_item),
+    )
+    for name, fn in commands:
         s = pl.add_parser(name)
         s.add_argument("--url", default=plane_mod.DEFAULT_URL)
         s.add_argument("--workspace", default=plane_mod.DEFAULT_WORKSPACE)
@@ -274,6 +349,17 @@ def build_parser() -> argparse.ArgumentParser:
             s.add_argument("--project", required=True, help="Plane project id (fractory plane projects)")
             s.add_argument("--identifier", help="project key, for printed item keys")
             s.add_argument("--apply", action="store_true", help="create the issues (default: dry run)")
+        elif name == "create-project":
+            s.add_argument("--name", required=True)
+            s.add_argument("--identifier", required=True, help="project key, up to 12 letters")
+            s.add_argument("--description")
+        elif name == "add-item":
+            s.add_argument("--project", required=True)
+            s.add_argument("--title", required=True)
+            s.add_argument("--body", help="Markdown")
+            s.add_argument("--body-file", help="Markdown file")
+            s.add_argument("--status", default="backlog", choices=list(STATUS_GROUPS))
+            s.add_argument("--external-id", help="dedupe key (default: slug of the title)")
 
     s = sub.add_parser("orch", help="passthrough to orch.py", add_help=False)
     s.add_argument("args", nargs=argparse.REMAINDER)

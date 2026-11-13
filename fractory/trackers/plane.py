@@ -117,6 +117,34 @@ class Plane:
             {"id": p["id"], "identifier": p.get("identifier", ""), "name": p.get("name", "")} for p in _results(data)
         ]
 
+    @classmethod
+    def create_project(
+        cls,
+        api_key: str,
+        name: str,
+        identifier: str,
+        description: str = "",
+        base_url: str = DEFAULT_URL,
+        workspace: str = DEFAULT_WORKSPACE,
+        http: Http = urllib_http,
+    ) -> tuple[dict, bool]:
+        """Create a project, or return the one that already has this identifier. (project, created)"""
+        identifier = identifier.upper()
+        for p in cls.projects(api_key, base_url, workspace, http):
+            if p["identifier"] == identifier:
+                return p, False
+        client = cls("", api_key, base_url, workspace, http)
+        _, data = client._call(
+            "POST", "/projects/", {"name": name, "identifier": identifier, "description": description}
+        )
+        if not isinstance(data, dict) or "id" not in data:
+            raise PlaneError(f"could not create project {identifier}: {str(data)[:300]}")
+        return {
+            "id": data["id"],
+            "identifier": data.get("identifier", identifier),
+            "name": data.get("name", name),
+        }, True
+
     def state_for(self, status: str) -> str:
         """The project's first state in the Plane group this Fractory status maps to."""
         if self._states is None:

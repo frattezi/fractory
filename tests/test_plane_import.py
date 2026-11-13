@@ -31,6 +31,8 @@ STATES = [
 
 class FakePlane(BaseHTTPRequestHandler):
     issues: ClassVar[list[dict]] = []
+    projects: ClassVar[list[dict]] = []
+    patches: ClassVar[list[tuple[str, dict]]] = []
 
     def log_message(self, format: str, *args: object) -> None:  # keep test output quiet
         pass
@@ -54,7 +56,7 @@ class FakePlane(BaseHTTPRequestHandler):
             return
         base = "/api/v1/workspaces/cortadas"
         if self.path == f"{base}/projects/":
-            self._send(200, {"results": [{"id": PROJECT, "identifier": "CORT", "name": "Cortadas"}]})
+            self._send(200, {"results": self.projects})
         elif self.path == f"{base}/projects/{PROJECT}/states/":
             self._send(200, {"results": STATES})
         else:
@@ -64,7 +66,11 @@ class FakePlane(BaseHTTPRequestHandler):
         if not self._authed():
             return
         body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
-        if self.path == f"/api/v1/workspaces/cortadas/projects/{PROJECT}/issues/":
+        if self.path == "/api/v1/workspaces/cortadas/projects/":
+            project = {**body, "id": str(uuid.uuid4())}
+            self.projects.append(project)
+            self._send(201, project)
+        elif self.path == f"/api/v1/workspaces/cortadas/projects/{PROJECT}/issues/":
             for issue in self.issues:
                 if issue["external_id"] == body["external_id"] and issue["external_source"] == body["external_source"]:
                     self._send(409, {"error": "exists", "id": issue["id"]})
@@ -74,6 +80,19 @@ class FakePlane(BaseHTTPRequestHandler):
             self._send(201, issue)
         else:
             self._send(404, {"detail": "not found"})
+
+    def do_PATCH(self) -> None:
+        if not self._authed():
+            return
+        body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+        self.patches.append((self.path, body))
+        self._send(200, body)
+
+
+def reset_fake() -> None:
+    FakePlane.issues = []
+    FakePlane.patches = []
+    FakePlane.projects = [{"id": PROJECT, "identifier": "CORT", "name": "Cortadas"}]
 
 
 def write_spec(d: Path, num: str, status: str, title: str = "Something") -> None:
@@ -85,7 +104,7 @@ def write_spec(d: Path, num: str, status: str, title: str = "Something") -> None
 
 class PlaneImport(unittest.TestCase):
     def setUp(self) -> None:
-        FakePlane.issues = []
+        reset_fake()
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), FakePlane)
         threading.Thread(target=self.server.serve_forever, daemon=True).start()
         self.addCleanup(self.server.server_close)
