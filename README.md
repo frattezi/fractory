@@ -43,6 +43,7 @@ fractory job cost cortadas-0001 3.20
 fractory gate list
 fractory gate resolve cortadas-0001 continue --note "spec ajustada"
 fractory sync                       # advance jobs from their PR and CI, mirror to Plane
+fractory watch                      # sync every 60 s until stopped (--every S, --rounds N)
 fractory dash --out /tmp/dash.json
 fractory orch alive term_…          # everything orch.py does, unchanged
 ```

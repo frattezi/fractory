@@ -10,6 +10,7 @@
     fractory gate open ID --reason R [--detail TEXT]
     fractory gate resolve ID continue|cancel [--note TEXT]
     fractory sync [ID...]          advance jobs from PR and CI; mirror to the tracker
+    fractory watch [--every S] [--rounds N]   sync in a loop
     fractory dash [--out FILE]
     fractory plane projects
     fractory plane import-specs --repo DIR --project ID [--identifier KEY] [--apply]
@@ -27,6 +28,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 from . import specs_import, state, store, sync
@@ -261,6 +263,22 @@ def cmd_sync(a: argparse.Namespace) -> int:
     return 1 if failed else 0
 
 
+def cmd_watch(a: argparse.Namespace) -> int:
+    """Run sync every `--every` seconds. `--rounds 0` runs until interrupted (launchd, a terminal)."""
+    a.ids = []
+    done = 0
+    try:
+        while a.rounds == 0 or done < a.rounds:
+            if done:
+                time.sleep(a.every)
+            cmd_sync(a)
+            sys.stdout.flush()
+            done += 1
+    except KeyboardInterrupt:
+        print("watch stopped")
+    return 0
+
+
 def cmd_orch(a: argparse.Namespace) -> int:
     if not ORCH.exists():
         print(f"orch.py not found at {ORCH} (set FRACTORY_ORCH)")
@@ -328,6 +346,10 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--out")
     s.set_defaults(fn=cmd_dash)
 
+    s = sub.add_parser("watch", help="run sync in a loop (what the supervisor does every minute)")
+    s.add_argument("--every", type=float, default=60.0, help="seconds between rounds")
+    s.add_argument("--rounds", type=int, default=0, help="stop after N rounds (0: forever)")
+    s.set_defaults(fn=cmd_watch)
     s = sub.add_parser("sync", help="advance jobs from their PR and CI; mirror stage changes to the tracker")
     s.add_argument("ids", nargs="*", help="default: every open job with a PR")
     s.set_defaults(fn=cmd_sync)
