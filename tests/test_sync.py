@@ -72,9 +72,17 @@ class SyncCli(unittest.TestCase):
         env.start()
         self.addCleanup(env.stop)
         self.pr = pr_json()
-        gh = mock.patch.object(sync, "run_gh", side_effect=lambda args, cwd: self.pr)
+        self.merged: list[str] = []
+        gh = mock.patch.object(sync, "run_gh", side_effect=self.fake_gh)
         self.gh = gh.start()
         self.addCleanup(gh.stop)
+
+    def fake_gh(self, args: list[str], cwd: str) -> str:
+        if args[:2] == ["pr", "merge"]:
+            self.merged.append(args[2])
+            self.pr = pr_json(state="MERGED")
+            return ""
+        return self.pr
 
     def run_cli(self, *argv: str) -> tuple[int, str]:
         out = io.StringIO()
@@ -147,6 +155,41 @@ class SyncCli(unittest.TestCase):
         self.assertEqual(self.stage(), "review")
         self.assertEqual(self.gh.call_count, 3)
         self.assertEqual([c.args for c in sleep.call_args_list], [(5.0,), (5.0,)])
+
+    def enable_auto_merge(self) -> None:
+        (self.tmp / "factory").mkdir(exist_ok=True)
+        (self.tmp / "factory" / "config.toml").write_text("auto_merge = true\n")
+
+    def approved_with_green_ci(self) -> None:
+        self.new_job(stage="judge")
+        self.run_cli("job", "advance", "cortadas-0001", "approved")
+        self.pr = pr_json(checks=[check_run("tests")])
+
+    def test_auto_merge_merges_approved_internal_job_then_finishes_it(self) -> None:
+        self.enable_auto_merge()
+        self.approved_with_green_ci()
+        _, out = self.run_cli("sync")
+        self.assertIn("auto-merged PR 42", out)
+        self.assertEqual(self.merged, ["42"])
+        self.assertEqual(self.stage(), "ship")
+        self.run_cli("sync")
+        self.assertEqual(self.stage(), "done")
+
+    def test_no_auto_merge_without_config(self) -> None:
+        self.approved_with_green_ci()
+        self.run_cli("sync")
+        self.assertEqual(self.merged, [])
+
+    def test_no_auto_merge_on_red_ci_or_before_approval(self) -> None:
+        self.enable_auto_merge()
+        self.new_job(stage="review")
+        self.pr = pr_json(checks=[check_run("tests")])
+        self.run_cli("sync")
+        self.run_cli("job", "advance", "cortadas-0001", "reviewed")
+        self.run_cli("job", "advance", "cortadas-0001", "approved")
+        self.pr = pr_json(checks=[check_run("tests", conclusion="FAILURE")])
+        self.run_cli("sync")
+        self.assertEqual(self.merged, [])
 
     def test_create_project_is_idempotent_by_identifier(self) -> None:
         code, out = self.run_cli("plane", "create-project", "--name", "Fractory", "--identifier", "fractory",

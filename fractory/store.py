@@ -7,6 +7,7 @@ import fcntl
 import json
 import os
 import re
+import tomllib
 from collections.abc import Generator
 from pathlib import Path
 
@@ -81,3 +82,9 @@ def locked(job_id: str) -> Generator[None]:
             yield
         finally:
             fcntl.flock(fh, fcntl.LOCK_UN)
+
+
+def config() -> dict:
+    """$FACTORY_HOME/config.toml, e.g. `auto_merge = true`. Missing file: defaults."""
+    path = factory_home() / "config.toml"
+    return tomllib.loads(path.read_text()) if path.exists() else {}
