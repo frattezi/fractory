@@ -52,7 +52,7 @@ class ServerCase(unittest.TestCase):
         job.links = {"pr": "7"}
         job.gate = state.Gate("cost", "over budget")
         self.save(job)
-        self.server = web.make_server("127.0.0.1", 0)
+        self.server = web.make_server(0)
         threading.Thread(target=self.server.serve_forever, daemon=True).start()
         self.addCleanup(self.server.server_close)
         self.addCleanup(self.server.shutdown)
@@ -70,6 +70,9 @@ class ServerCase(unittest.TestCase):
 
 
 class Routes(ServerCase):
+    def test_binds_loopback_only(self) -> None:
+        self.assertEqual(self.server.server_address[0], "127.0.0.1")
+
     def test_index_is_html(self) -> None:
         status, ctype, body = self.get("/")
         self.assertEqual(status, 200)

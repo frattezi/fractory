@@ -129,13 +129,17 @@ class Server(ThreadingHTTPServer):
     daemon_threads = True
 
 
-def make_server(host: str = "127.0.0.1", port: int = 8765) -> Server:
-    return Server((host, port), Handler)
+HOST = "127.0.0.1"  # local only: the board shows job state and links, never meant for the network
+DEFAULT_PORT = 8777  # 8765 is taken by the Cortadas API on the same Mac
 
 
-def serve(host: str, port: int) -> int:
-    server = make_server(host, port)
-    print(f"fractory board on http://{host}:{server.server_address[1]}  (ctrl-c to stop)", flush=True)
+def make_server(port: int = DEFAULT_PORT) -> Server:
+    return Server((HOST, port), Handler)
+
+
+def serve(port: int) -> int:
+    server = make_server(port)
+    print(f"fractory board on http://{HOST}:{server.server_address[1]}  (ctrl-c to stop)", flush=True)
     try:
         server.serve_forever()
     except KeyboardInterrupt:
