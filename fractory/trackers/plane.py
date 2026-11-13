@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import os
+import ssl
 import subprocess
 import urllib.error
 import urllib.request
@@ -23,10 +24,24 @@ EXTERNAL_SOURCE = "fractory"
 Http = Callable[[str, str, dict, bytes | None], tuple[int, object]]
 
 
+SYSTEM_CA_FILES = ("/etc/ssl/cert.pem", "/etc/ssl/certs/ca-certificates.crt")
+
+
+def tls_context() -> ssl.SSLContext:
+    """Python.org builds on macOS ship without CA certs; fall back to the system bundle."""
+    ctx = ssl.create_default_context()
+    if ctx.cert_store_stats()["x509_ca"] == 0:
+        for path in SYSTEM_CA_FILES:
+            if os.path.exists(path):
+                ctx.load_verify_locations(cafile=path)
+                break
+    return ctx
+
+
 def urllib_http(method: str, url: str, headers: dict, body: bytes | None) -> tuple[int, object]:
     req = urllib.request.Request(url, data=body, method=method, headers=headers)
     try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
+        with urllib.request.urlopen(req, timeout=30, context=tls_context()) as resp:
             raw = resp.read()
             return resp.status, json.loads(raw) if raw else None
     except urllib.error.HTTPError as err:

@@ -285,7 +285,7 @@ def main(argv: list[str] | None = None) -> int:
     a = build_parser().parse_args(argv)
     try:
         return a.fn(a)
-    except (state.TransitionError, FileNotFoundError, ValueError, RuntimeError) as err:
+    except (state.TransitionError, FileNotFoundError, ValueError, RuntimeError, OSError) as err:
         print(f"error: {err}")
         return 1
 
