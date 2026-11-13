@@ -1,0 +1,46 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 560 148" width="560" height="148" role="img" aria-label="Fractory">
+  <title>Fractory</title>
+  <style>
+    .roof, .body { fill: #1b2124; }
+    .accent { fill: #1f6f78; }
+    .win { fill: #f5f6f4; }
+    .lit { fill: #e3a35f; }
+    .word { fill: #1b2124; font: 700 58px "Space Grotesk", "Helvetica Neue", Arial, sans-serif; letter-spacing: -1px; }
+    .tag { fill: #5d676c; font: 500 17px "JetBrains Mono", ui-monospace, Menlo, monospace; letter-spacing: .5px; }
+  </style>
+  <g>
+    <polygon class="roof" points="16.00,80.00 25.00,80.00 25.00,68.00"/>
+    <polygon class="roof" points="25.00,80.00 34.00,80.00 34.00,68.00"/>
+    <polygon class="roof" points="25.00,68.00 34.00,68.00 34.00,56.00"/>
+    <polygon class="roof" points="34.00,80.00 43.00,80.00 43.00,68.00"/>
+    <polygon class="roof" points="43.00,80.00 52.00,80.00 52.00,68.00"/>
+    <polygon class="roof" points="43.00,68.00 52.00,68.00 52.00,56.00"/>
+    <polygon class="roof" points="34.00,56.00 43.00,56.00 43.00,44.00"/>
+    <polygon class="roof" points="43.00,56.00 52.00,56.00 52.00,44.00"/>
+    <polygon class="roof" points="43.00,44.00 52.00,44.00 52.00,32.00"/>
+    <polygon class="roof accent" points="52.00,80.00 61.00,80.00 61.00,68.00"/>
+    <polygon class="roof accent" points="61.00,80.00 70.00,80.00 70.00,68.00"/>
+    <polygon class="roof accent" points="61.00,68.00 70.00,68.00 70.00,56.00"/>
+    <polygon class="roof accent" points="70.00,80.00 79.00,80.00 79.00,68.00"/>
+    <polygon class="roof accent" points="79.00,80.00 88.00,80.00 88.00,68.00"/>
+    <polygon class="roof accent" points="79.00,68.00 88.00,68.00 88.00,56.00"/>
+    <polygon class="roof accent" points="70.00,56.00 79.00,56.00 79.00,44.00"/>
+    <polygon class="roof accent" points="79.00,56.00 88.00,56.00 88.00,44.00"/>
+    <polygon class="roof accent" points="79.00,44.00 88.00,44.00 88.00,32.00"/>
+    <polygon class="roof" points="88.00,80.00 97.00,80.00 97.00,68.00"/>
+    <polygon class="roof" points="97.00,80.00 106.00,80.00 106.00,68.00"/>
+    <polygon class="roof" points="97.00,68.00 106.00,68.00 106.00,56.00"/>
+    <polygon class="roof" points="106.00,80.00 115.00,80.00 115.00,68.00"/>
+    <polygon class="roof" points="115.00,80.00 124.00,80.00 124.00,68.00"/>
+    <polygon class="roof" points="115.00,68.00 124.00,68.00 124.00,56.00"/>
+    <polygon class="roof" points="106.00,56.00 115.00,56.00 115.00,44.00"/>
+    <polygon class="roof" points="115.00,56.00 124.00,56.00 124.00,44.00"/>
+    <polygon class="roof" points="115.00,44.00 124.00,44.00 124.00,32.00"/>
+    <rect class="body" x="16" y="83" width="108" height="38" rx="3"/>
+    <rect class="win" x="28.00" y="93" width="12" height="12" rx="2"/>
+    <rect class="lit" x="64.00" y="93" width="12" height="12" rx="2"/>
+    <rect class="win" x="100.00" y="93" width="12" height="12" rx="2"/>
+  </g>
+  <text class="word" x="152" y="84">Fractory</text>
+  <text class="tag" x="155" y="114">code decides · agents build</text>
+</svg>
