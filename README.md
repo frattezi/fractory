@@ -24,46 +24,51 @@ python3 -m unittest discover -s tests -t .
 
 ## How the pieces fit today
 
-Solid boxes run now (v0); dashed ones are planned (v1/v2).
+Everything outside *Planned* runs today (v0). You pick work in Plane and talk to the repo's main chat; the CLI keeps each job's state; `fractory watch` moves jobs on CI and merges and updates Plane.
 
 ```mermaid
-flowchart LR
+flowchart TB
   you(["You"])
 
-  subgraph plane["Plane · plane.cortadas.com.br"]
+  subgraph track["Plane"]
     issues["Issues<br/>Cortadas · Esquerda nas Ruas · Fractory"]
   end
 
-  subgraph orca["Orca (Mac)"]
-    main["Main chat per repo<br/>Opus: discovery, spec"]
-    watch["fractory watch<br/>sync every minute, no tokens"]
-    workers["Workers in worktrees<br/>claude / pi, routed by profile"]
-    orch["orch.py<br/>launch · route · alive · supervise"]
+  subgraph orca["Orca"]
+    main["Main chat per repo<br/>Opus · discovery, spec"]
+    orch["orch.py<br/>launch · route · supervise"]
+    workers["Workers in worktrees<br/>claude / pi by profile"]
+    watch["fractory watch<br/>sync every minute · no tokens"]
   end
 
-  cli["fractory CLI<br/>job · gate · sync · dash · plane"]
-  state[("~/.factory/jobs/&lt;id&gt;/state.json<br/>stage · gate · rounds · cost")]
-  gh["GitHub<br/>PR + CI"]
+  subgraph engine["Fractory engine"]
+    cli["fractory CLI<br/>job · gate · sync · plane · dash"]
+    state[("~/.factory/jobs/ID/state.json")]
+  end
 
-  judge["Judge + review by risk<br/>holdouts"]:::planned
-  dash["Dashboard artifact"]:::planned
-  hook["Plane webhook trigger"]:::planned
+  gh["GitHub · PR + CI"]
 
-  you -->|picks an issue| main
-  issues -->|import / add-item| cli
-  main -->|job new · advance| cli
+  you --> issues
+  you --> main
+  main --> cli
+  main --> orch --> workers --> gh
+  watch --> gh
+  watch --> cli
   cli <--> state
-  main -->|launch| orch --> workers
-  workers -->|push| gh
-  watch -->|gh pr view| gh
-  watch -->|advance| cli
-  cli -->|status| issues
-  you -->|review · merge · gates| cli
+  cli --> issues
+
+  subgraph next["Planned · v1 / v2"]
+    judge["Judge + review by risk + holdouts"]
+    dash["Dashboard artifact"]
+    hook["Plane webhook → new job"]
+  end
+
   cli -.-> judge
   state -.-> dash
-  issues -.-> hook -.-> cli
+  issues -.-> hook
 
-  classDef planned stroke-dasharray: 5 5,opacity:.7
+  classDef planned stroke-dasharray: 5 5
+  class judge,dash,hook planned
 ```
 
 ## Using it in Orca
