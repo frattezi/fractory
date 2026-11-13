@@ -1,0 +1,142 @@
+"""Plane adapter over its REST API (/api/v1, X-Api-Key header).
+
+The API key comes from $PLANE_API_KEY or, failing that, the macOS Keychain item `fractory-plane`
+(the user stores it once with `security add-generic-password -s fractory-plane -a plane -w`).
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import subprocess
+import urllib.error
+import urllib.request
+from collections.abc import Callable
+
+from .base import STATUS_GROUPS, Duplicate, Item
+
+DEFAULT_URL = "https://plane.cortadas.com.br"
+DEFAULT_WORKSPACE = "cortadas"
+EXTERNAL_SOURCE = "fractory"
+
+# (method, url, headers, body) -> (status, parsed json)
+Http = Callable[[str, str, dict, bytes | None], tuple[int, object]]
+
+
+def urllib_http(method: str, url: str, headers: dict, body: bytes | None) -> tuple[int, object]:
+    req = urllib.request.Request(url, data=body, method=method, headers=headers)
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            raw = resp.read()
+            return resp.status, json.loads(raw) if raw else None
+    except urllib.error.HTTPError as err:
+        raw = err.read()
+        try:
+            return err.code, json.loads(raw) if raw else None
+        except json.JSONDecodeError:
+            return err.code, raw.decode(errors="replace")
+
+
+def api_key_from_env() -> str:
+    key = os.environ.get("PLANE_API_KEY")
+    if key:
+        return key
+    try:
+        out = subprocess.run(
+            ["security", "find-generic-password", "-s", "fractory-plane", "-w"],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        return out.stdout.strip()
+    except (OSError, subprocess.CalledProcessError):
+        raise RuntimeError("no Plane API key: set PLANE_API_KEY or the Keychain item fractory-plane") from None
+
+
+class PlaneError(RuntimeError):
+    pass
+
+
+def _results(data: object) -> list[dict]:
+    if isinstance(data, dict) and "results" in data:
+        return list(data["results"])
+    return list(data) if isinstance(data, list) else []
+
+
+class Plane:
+    def __init__(
+        self,
+        project_id: str,
+        api_key: str,
+        base_url: str = DEFAULT_URL,
+        workspace: str = DEFAULT_WORKSPACE,
+        http: Http = urllib_http,
+        identifier: str = "",
+    ):
+        self.base = base_url.rstrip("/")
+        self.workspace = workspace
+        self.project_id = project_id
+        self.identifier = identifier
+        self._key = api_key
+        self._http = http
+        self._states: dict[str, str] | None = None
+
+    def _call(self, method: str, path: str, payload: dict | None = None) -> tuple[int, object]:
+        url = f"{self.base}/api/v1/workspaces/{self.workspace}{path}"
+        body = json.dumps(payload).encode() if payload is not None else None
+        headers = {"X-Api-Key": self._key, "Content-Type": "application/json", "Accept": "application/json"}
+        status, data = self._http(method, url, headers, body)
+        if status == 409:
+            return status, data
+        if status >= 400:
+            raise PlaneError(f"{method} {path}: HTTP {status}: {str(data)[:300]}")
+        return status, data
+
+    @classmethod
+    def projects(
+        cls, api_key: str, base_url: str = DEFAULT_URL, workspace: str = DEFAULT_WORKSPACE, http: Http = urllib_http
+    ) -> list[dict]:
+        client = cls("", api_key, base_url, workspace, http)
+        _, data = client._call("GET", "/projects/")
+        return [
+            {"id": p["id"], "identifier": p.get("identifier", ""), "name": p.get("name", "")} for p in _results(data)
+        ]
+
+    def state_for(self, status: str) -> str:
+        """The project's first state in the Plane group this Fractory status maps to."""
+        if self._states is None:
+            _, data = self._call("GET", f"/projects/{self.project_id}/states/")
+            self._states = {}
+            for s in sorted(_results(data), key=lambda s: s.get("sequence", 0)):
+                self._states.setdefault(s["group"], s["id"])
+        group = STATUS_GROUPS[status]
+        if group not in self._states:
+            raise PlaneError(f"project {self.project_id} has no state in group {group!r}")
+        return self._states[group]
+
+    def create_item(self, title: str, body_html: str, status: str, external_id: str) -> Item:
+        status_code, data = self._call(
+            "POST",
+            f"/projects/{self.project_id}/issues/",
+            {
+                "name": title[:255],
+                "description_html": body_html,
+                "state": self.state_for(status),
+                "external_id": external_id,
+                "external_source": EXTERNAL_SOURCE,
+            },
+        )
+        if status_code == 409:
+            ref = data.get("id", "") if isinstance(data, dict) else ""
+            raise Duplicate(str(ref))
+        assert isinstance(data, dict)
+        key = f"{self.identifier}-{data.get('sequence_id')}" if self.identifier else str(data.get("sequence_id", ""))
+        return Item(
+            ref=data["id"], key=key, url=f"{self.base}/{self.workspace}/projects/{self.project_id}/issues/{data['id']}"
+        )
+
+    def set_status(self, ref: str, status: str) -> None:
+        self._call("PATCH", f"/projects/{self.project_id}/issues/{ref}/", {"state": self.state_for(status)})
+
+    def comment(self, ref: str, body_html: str) -> None:
+        self._call("POST", f"/projects/{self.project_id}/issues/{ref}/comments/", {"comment_html": body_html})
