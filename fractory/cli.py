@@ -14,6 +14,7 @@
     fractory watch [--every S] [--rounds N]   sync in a loop
     fractory watch --install | --uninstall    keep watch running as a LaunchAgent
     fractory dash [--out FILE]
+    fractory serve [--port 8765] [--host 127.0.0.1]   live board of jobs in the browser
     fractory plane projects
     fractory plane import-specs --repo DIR --project ID [--identifier KEY] [--apply]
     fractory plane create-project --name N --identifier KEY
@@ -186,6 +187,12 @@ def cmd_dash(a: argparse.Namespace) -> int:
     else:
         sys.stdout.write(text)
     return 0
+
+
+def cmd_serve(a: argparse.Namespace) -> int:
+    from . import web
+
+    return web.serve(a.host, a.port)
 
 
 def cmd_plane_projects(a: argparse.Namespace) -> int:
@@ -394,6 +401,11 @@ def build_parser() -> argparse.ArgumentParser:
     s = sub.add_parser("dash", help="JSON summary of every job, for the dashboard")
     s.add_argument("--out")
     s.set_defaults(fn=cmd_dash)
+
+    s = sub.add_parser("serve", help="web view: a live board of every job")
+    s.add_argument("--port", type=int, default=8765)
+    s.add_argument("--host", default="127.0.0.1")
+    s.set_defaults(fn=cmd_serve)
 
     s = sub.add_parser("watch", help="run sync in a loop (what the supervisor does every minute)")
     s.add_argument("--every", type=float, default=60.0, help="seconds between rounds")
