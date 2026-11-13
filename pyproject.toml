@@ -15,5 +15,8 @@ build-backend = "setuptools.build_meta"
 [tool.setuptools]
 packages = ["fractory", "fractory.trackers"]
 
+[tool.setuptools.package-data]
+fractory = ["rubric.md"]
+
 [tool.ruff]
 line-length = 120

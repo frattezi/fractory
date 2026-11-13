@@ -9,6 +9,7 @@
     fractory gate list
     fractory gate open ID --reason R [--detail TEXT]
     fractory gate resolve ID continue|cancel [--note TEXT]
+    fractory judge ID              Opus verdict on the PR diff vs the Plane issue (job in review)
     fractory sync [ID...]          advance jobs from PR and CI; mirror to the tracker
     fractory watch [--every S] [--rounds N]   sync in a loop
     fractory watch --install | --uninstall    keep watch running as a LaunchAgent
@@ -32,7 +33,7 @@ import sys
 import time
 from pathlib import Path
 
-from . import launchd, specs_import, state, store, sync
+from . import judge, launchd, specs_import, state, store, sync
 from .trackers import plane as plane_mod
 from .trackers.base import STATUS_GROUPS
 
@@ -235,15 +236,51 @@ def plane_tracker(job: state.Job) -> plane_mod.Plane | None:
     return plane_mod.Plane(t["project"], plane_mod.api_key_from_env(), t.get("url") or plane_mod.DEFAULT_URL)
 
 
+def judge_job(job_id: str) -> int:
+    """Judge a job in review: verdict from the model, then reviewed + approved/rejected, comments posted."""
+    job = store.load(job_id)
+    tracker = plane_tracker(job)
+    pr = job.links.get("pr")
+    if job.stage != "review" or job.gate or not pr or not tracker:
+        print(f"{job_id}: judge needs a job in review, without a gate, with a PR and a Plane tracker")
+        return 1
+    try:
+        issue = tracker.get_item(job.tracker["ref"])
+        diff = sync.pr_diff(job.repo, pr)
+        verdict = judge.judge_diff(issue.get("name", job.title), issue.get("description_html") or "", diff)
+    except judge.JudgeError as err:
+        detail = str(err)
+        return _mutate(job_id, lambda j: (state.open_gate(j, "judge_error", detail), ["gate:judge_error"]))
+
+    def apply(j: state.Job):
+        if j.stage != "review" or j.gate:
+            raise state.TransitionError(f"{j.id} changed while judging (stage {j.stage}); verdict dropped")
+        j, _ = state.apply_event(j, "reviewed", note="judge")
+        return state.apply_event(j, verdict.decision, note=verdict.note())
+
+    code = _mutate(job_id, apply)
+    sync.pr_comment(job.repo, pr, verdict.comment_markdown())
+    tracker.comment(job.tracker["ref"], verdict.comment_html())
+    return code
+
+
+def cmd_judge(a: argparse.Namespace) -> int:
+    return judge_job(a.id)
+
+
 def cmd_sync(a: argparse.Namespace) -> int:
     """Advance jobs from their PR and CI, and mirror stage changes to the tracker."""
     jobs = [store.load(i) for i in a.ids] if a.ids else store.all_jobs()
     auto_merge = bool(store.config().get("auto_merge"))
+    auto_judge = bool(store.config().get("auto_judge"))
     failed = False
     for job in jobs:
         if job.stage in state.TERMINAL or not job.links.get("pr"):
             continue
         try:
+            if auto_judge and job.stage == "review" and not job.gate and plane_tracker(job):
+                failed |= judge_job(job.id) != 0
+                continue
             pr = sync.fetch_pr(job.repo, job.links["pr"])
             with store.locked(job.id):
                 current = store.load(job.id)
@@ -364,6 +401,9 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--install", action="store_true", help="run watch as a LaunchAgent (survives reboots)")
     s.add_argument("--uninstall", action="store_true", help="remove the LaunchAgent")
     s.set_defaults(fn=cmd_watch)
+    s = sub.add_parser("judge", help="Opus verdict on a job's PR diff against its Plane issue")
+    s.add_argument("id")
+    s.set_defaults(fn=cmd_judge)
     s = sub.add_parser("sync", help="advance jobs from their PR and CI; mirror stage changes to the tracker")
     s.add_argument("ids", nargs="*", help="default: every open job with a PR")
     s.set_defaults(fn=cmd_sync)
