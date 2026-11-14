@@ -18,6 +18,7 @@
     fractory plane projects
     fractory plane import-specs --repo DIR --project ID [--identifier KEY] [--apply]
     fractory plane create-project --name N --identifier KEY
+    fractory plane setup-project --project ID | --all   standard labels + Views feature
     fractory plane add-item --project ID --title T [--body MD | --body-file F] [--status S]
     fractory orch ARGS...          passthrough to orch.py (the v0 build engine, unchanged)
 
@@ -236,6 +237,28 @@ def cmd_plane_create_project(a: argparse.Namespace) -> int:
         plane_mod.api_key_from_env(), a.name, a.identifier, a.description or "", a.url, a.workspace
     )
     print(f"{'created' if created else 'exists '}  {project['id']}  {project['identifier']}  {project['name']}")
+    return setup_project(project["id"], project["identifier"], a)
+
+
+def setup_project(project_id: str, identifier: str, a: argparse.Namespace) -> int:
+    client = plane_mod.Plane(project_id, plane_mod.api_key_from_env(), a.url, a.workspace, identifier=identifier)
+    client.ensure_labels()
+    print(f"labels   {identifier or project_id}  {', '.join(plane_mod.STANDARD_LABELS)}")
+    if not client.enable_views():
+        print(f"manual   {identifier or project_id}  Project settings → Features → turn on Views")
+    return 0
+
+
+def cmd_plane_setup_project(a: argparse.Namespace) -> int:
+    key = plane_mod.api_key_from_env()
+    projects = plane_mod.Plane.projects(key, a.url, a.workspace)
+    if not a.all:
+        projects = [p for p in projects if p["id"] == a.project]
+        if not projects:
+            print(f"no project {a.project}; see `fractory plane projects`")
+            return 1
+    for p in projects:
+        setup_project(p["id"], p["identifier"], a)
     return 0
 
 
@@ -516,6 +539,7 @@ def build_parser() -> argparse.ArgumentParser:
         ("projects", cmd_plane_projects),
         ("import-specs", cmd_plane_import),
         ("create-project", cmd_plane_create_project),
+        ("setup-project", cmd_plane_setup_project),
         ("add-item", cmd_plane_add_item),
     )
     for name, fn in commands:
@@ -532,6 +556,10 @@ def build_parser() -> argparse.ArgumentParser:
             s.add_argument("--name", required=True)
             s.add_argument("--identifier", required=True, help="project key, up to 12 letters")
             s.add_argument("--description")
+        elif name == "setup-project":
+            g = s.add_mutually_exclusive_group(required=True)
+            g.add_argument("--project", help="Plane project id")
+            g.add_argument("--all", action="store_true", help="every project of the workspace")
         elif name == "add-item":
             s.add_argument("--project", required=True)
             s.add_argument("--title", required=True)

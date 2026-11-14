@@ -193,6 +193,22 @@ fractory plane add-item --project <id> --title "…" --body "markdown" --status 
 fractory job new --repo DIR --title T --tracker plane --project <id> --ref <issue id>
 ```
 
+`create-project` also applies the standard labels and turns on the project's Views feature. For existing
+projects: `fractory plane setup-project --project <id>` (or `--all`). It is idempotent: it creates missing
+labels and resets the colour/description of existing ones. If the API refuses the Views toggle, it prints the
+manual step (Project settings → Features → Views).
+
+| Label | Colour | Meaning |
+|---|---|---|
+| `fractory` | `#1f6f78` | the factory executes this card (intake trigger) |
+| `automação` | `#7fb3b8` | the factory could do it; waiting to be switched to `fractory` |
+| `humano` | `#e3a35f` | needs a person: decision, access, account or review |
+| `design` | `#a83b5a` | comes from a design decision |
+
+Saved views cannot be created with an API key (Plane's views endpoints are session-only), so the main session
+creates these three per project through the browser: **🤖 Fábrica** (label `fractory`), **🧭 Fila da fábrica**
+(label `automação` + state group backlog/unstarted), **👤 Humano** (label `humano` + open states).
+
 Only open specs (`draft`, `blocked`, `ready`, `in-progress`, `in-review`) are imported; done ones stay in
 the repo as frozen history. Each issue carries `external_id` = the spec id, so a second run reports
 `exists` instead of duplicating.
