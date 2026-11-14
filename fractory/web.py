@@ -4,6 +4,7 @@ GET /            the page (fractory/web/index.html)
 GET /api/jobs    dash_data() plus tracker_url and pr_url per job
 GET /api/jobs/<id>  one job: Job.to_dict() plus pr_url, tracker_url and the judge verdicts (404 if unknown)
 GET /api/activity?limit=50  latest events across all jobs (newest first) plus the tail of $FACTORY_HOME/watch.log
+GET /api/metrics?window=7|30  stage time, stuck work, flow, quality and cost (fractory/metrics.py)
 GET /api/events  Server-Sent Events: `event: jobs` whenever a state.json changes, `: ping` every 15 s
 """
 
@@ -14,13 +15,14 @@ import re
 import subprocess
 import threading
 import time
+from datetime import UTC, datetime
 from functools import lru_cache
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
-from . import cli, reload, store
+from . import cli, metrics, reload, store
 from .trackers.plane import DEFAULT_URL, DEFAULT_WORKSPACE
 
 INDEX = Path(__file__).parent / "web" / "index.html"
@@ -59,6 +61,8 @@ def repo_github_url(repo: str) -> str | None:
 def jobs_payload() -> dict:
     data = cli.dash_data()
     by_id = {j.id: j for j in store.all_jobs()}
+    now = datetime.now(UTC)
+    limits = metrics.thresholds(store.config())
     for item in data["jobs"]:
         job = by_id.get(item["id"])
         if job is None:
@@ -67,6 +71,7 @@ def jobs_payload() -> dict:
         item["pr_url"] = f"{base}/pull/{item['pr']}" if base else None
         item["tracker_url"] = plane_issue_url(job.tracker)
         item["gate_detail"] = job.gate.detail if job.gate else None
+        item["stuck"] = metrics.stuck_item(job, now, limits)
     return data
 
 
@@ -124,6 +129,14 @@ def activity_payload(limit: int = DEFAULT_LIMIT) -> dict:
     return {"events": events[: max(1, min(MAX_LIMIT, limit))], "log": lines}
 
 
+def metrics_payload(window: int) -> dict:
+    return metrics.compute(store.all_jobs(), datetime.now(UTC), window, store.config())
+
+
+def parse_window(raw: str | None) -> int:
+    return int(raw) if raw in ("7", "30") else metrics.WINDOWS[0]
+
+
 def _mtimes() -> dict[str, float]:
     out = {}
     for p in store.jobs_dir().glob("*/state.json"):
@@ -165,6 +178,10 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/api/activity":
             limit = clamp_limit(parse_qs(url.query).get("limit", [None])[0])
             body = json.dumps(activity_payload(limit), ensure_ascii=False).encode()
+            self._send(HTTPStatus.OK, body, "application/json; charset=utf-8")
+        elif path == "/api/metrics":
+            window = parse_window(parse_qs(url.query).get("window", [None])[0])
+            body = json.dumps(metrics_payload(window), ensure_ascii=False).encode()
             self._send(HTTPStatus.OK, body, "application/json; charset=utf-8")
         elif path == "/api/events":
             self._events()
