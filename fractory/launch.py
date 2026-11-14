@@ -16,7 +16,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import state, store
+from . import briefcheck, state, store
 
 Runner = Callable[[list[str]], tuple[int, str]]
 NAME_MAX = 30
@@ -90,6 +90,7 @@ class Args:
     run: str | None = None
     dry_run: bool = False
     plane_url: str | None = None
+    force: bool = False
 
 
 def _fail(job_id: str | None, step: str, detail: str, done: list[str]) -> int:
@@ -102,6 +103,17 @@ def _fail(job_id: str | None, step: str, detail: str, done: list[str]) -> int:
             store.save(state.open_gate(job, "launch_failed", f"{step}: {detail}"[:500]))
         print(f"{job_id}: gate launch_failed opened (job stays in build)")
     return 1
+
+
+def _brief_beyond_card(issue: dict, title: str, brief: str) -> list[str]:
+    """Extra items the brief asks beyond the card. A checker failure warns and returns none: never blocks a launch."""
+    try:
+        verdict = briefcheck.check(title, str(issue.get("description_html") or ""), brief)
+    except briefcheck.BriefCheckError as err:
+        print(f"warning: brief check failed, continuing: {err}")
+        return []
+    print("   brief check: " + ("ok" if verdict.ok else "brief goes beyond the card"))
+    return verdict.extra
 
 
 def launch(a: Args, plane, orch: Path) -> int:
@@ -122,12 +134,19 @@ def launch(a: Args, plane, orch: Path) -> int:
     job_id: str | None = None
     step = "1 title"
     try:
-        title = a.title or str(plane.get_item(a.issue).get("name") or "").strip()
+        issue = plane.get_item(a.issue)
+        title = a.title or str(issue.get("name") or "").strip()
         if not title:
             raise LaunchError(f"Plane issue {a.issue} has no name; pass --title")
         name = a.name or worktree_name(title)
         done.append(f"1 title: {title}")
         print(f"1. title: {title}")
+
+        extra = _brief_beyond_card(issue, title, brief.read_text())
+        if extra and not a.force:
+            print("brief goes beyond its card; nothing created (--force to launch anyway):")
+            print("\n".join(f"  - {item}" for item in extra))
+            return 1
 
         job_id = "<job id>" if a.dry_run else store.next_job_id(repo)
         step = "2 job new"
@@ -176,6 +195,10 @@ def launch(a: Args, plane, orch: Path) -> int:
         if not a.dry_run:
             with store.locked(job_id):
                 job = store.load(job_id)
+                if extra:
+                    job.history.append(
+                        {"at": state.now_iso(), "event": "brief_beyond_card", "stage": job.stage, "extra": extra}
+                    )
                 job.links.update(worktree=name, terminal=term, profile=a.profile)
                 store.save(job)
         done.append("6 job link")
