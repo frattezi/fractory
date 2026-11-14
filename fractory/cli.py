@@ -267,7 +267,11 @@ def judge_job(job_id: str) -> int:
         issue = tracker.get_item(job.tracker["ref"])
         diff = sync.pr_diff(job.repo, pr)
         verdict = judge.judge_diff(
-            issue.get("name", job.title), issue.get("description_html") or "", diff, brief=store.brief(job_id)
+            issue.get("name", job.title),
+            issue.get("description_html") or "",
+            diff,
+            brief=store.brief(job_id),
+            checks=sync.pr_checks(job.repo, pr),
         )
     except judge.JudgeError as err:
         detail = str(err)
