@@ -11,6 +11,7 @@ import os
 import ssl
 import subprocess
 import urllib.error
+import urllib.parse
 import urllib.request
 from collections.abc import Callable
 
@@ -189,3 +190,19 @@ class Plane:
 
     def comment(self, ref: str, body_html: str) -> None:
         self._call("POST", f"/projects/{self.project_id}/issues/{ref}/comments/", {"comment_html": body_html})
+
+    def labels(self) -> list[dict]:
+        _, data = self._call("GET", f"/projects/{self.project_id}/labels/")
+        return _results(data)
+
+    def list_issues(self) -> list[dict]:
+        """Every issue of the project, state expanded (`state["group"]`), following the cursor pagination."""
+        issues: list[dict] = []
+        cursor = ""
+        while True:
+            query = "?expand=state" + (f"&cursor={urllib.parse.quote(cursor)}" if cursor else "")
+            _, data = self._call("GET", f"/projects/{self.project_id}/issues/{query}")
+            issues += _results(data)
+            if not (isinstance(data, dict) and data.get("next_page_results") and data.get("next_cursor")):
+                return issues
+            cursor = str(data["next_cursor"])
