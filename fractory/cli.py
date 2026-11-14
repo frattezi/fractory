@@ -20,6 +20,7 @@
     fractory plane import-specs --repo DIR --project ID [--identifier KEY] [--apply]
     fractory plane create-project --name N --identifier KEY
     fractory plane setup-project --project ID | --all   standard labels + Views feature
+    fractory plane views-script --project ID_OR_KEY     JS that creates the 3 standard views in a logged-in tab
     fractory plane add-item --project ID --title T [--body MD | --body-file F] [--status S] [--assign-me]
                             [--label NAME ...] [--depends-on REFS]
     fractory plane items --project ID [--status backlog|ready|in_progress|done|cancelled] [--label NAME]
@@ -273,6 +274,17 @@ def setup_project(project_id: str, identifier: str, a: argparse.Namespace) -> in
     print(f"labels   {identifier or project_id}  {', '.join(plane_mod.STANDARD_LABELS)}")
     if not client.enable_views():
         print(f"manual   {identifier or project_id}  Project settings → Features → turn on Views")
+    print(
+        f"views    {identifier or project_id}  run in a logged-in Plane tab (browser tool): "
+        f"fractory plane views-script --project {identifier or project_id}"
+    )
+    return 0
+
+
+def cmd_plane_views_script(a: argparse.Namespace) -> int:
+    client = _plane(a)
+    ids = client.ensure_labels()
+    print(plane_mod.views_script(a.workspace, client.project_id, ids), end="")
     return 0
 
 
@@ -734,6 +746,7 @@ def build_parser() -> argparse.ArgumentParser:
         ("import-specs", cmd_plane_import),
         ("create-project", cmd_plane_create_project),
         ("setup-project", cmd_plane_setup_project),
+        ("views-script", cmd_plane_views_script),
         ("add-item", cmd_plane_add_item),
         ("items", cmd_plane_items),
         ("show", cmd_plane_show),
@@ -758,6 +771,8 @@ def build_parser() -> argparse.ArgumentParser:
             g = s.add_mutually_exclusive_group(required=True)
             g.add_argument("--project", help="Plane project id")
             g.add_argument("--all", action="store_true", help="every project of the workspace")
+        elif name == "views-script":
+            s.add_argument("--project", required=True, help="project UUID or identifier")
         elif name == "add-item":
             s.add_argument("--project", required=True)
             s.add_argument("--title", required=True)
