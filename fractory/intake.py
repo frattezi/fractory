@@ -6,6 +6,7 @@ built from the card. One failing launch never stops the others.
 
 from __future__ import annotations
 
+import re
 import tempfile
 from collections.abc import Callable, Iterable
 from pathlib import Path
@@ -30,21 +31,85 @@ def _state_group(issue: dict) -> str:
     return str(st.get("group", "")) if isinstance(st, dict) else ""
 
 
-def candidates(plane_issues: Iterable[dict], label_id: str, jobs: Iterable[state.Job]) -> list[dict]:
-    """Cards with the label, not started, and without any job yet (cancelled ones included)."""
+_DEPENDS_RE = re.compile(r"^\s*depends\s+on\s*:\s*(.*)$", re.IGNORECASE)
+
+
+def card_text(issue: dict) -> str:
+    return judge.html_to_text(str(issue.get("description_html") or ""))
+
+
+def depends_on(issue: dict) -> list[str]:
+    """Refs of the first `Depends on: <refs>` line of the card text (bold allowed). `none` or empty -> []."""
+    for line in card_text(issue).splitlines():
+        m = _DEPENDS_RE.match(line.replace("*", ""))
+        if m:
+            refs = [r.strip() for r in m.group(1).split(",") if r.strip()]
+            return [] if [r.lower() for r in refs] == ["none"] else refs
+    return []
+
+
+def _resolve(ref: str, issues: Iterable[dict], identifier: str) -> dict | None:
+    """The card a ref points to: a Plane key (`CUIDADO-12`) or a title prefix (`07`: `07 ...` or `07 · ...`)."""
+    for i in issues:
+        if identifier and ref.upper() == f"{identifier}-{i.get('sequence_id')}".upper():
+            return i
+        title = str(i.get("name") or "")
+        if title == ref or title.startswith((f"{ref} ", f"{ref}\u00a0")):
+            return i
+    return None
+
+
+def unmet_dependencies(
+    issue: dict, issues: list[dict], identifier: str = "", warned: set[tuple[str, str]] | None = None
+) -> list[str]:
+    """Refs of `issue` that are not in a completed card. Unknown refs are reported once per `warned`."""
+    unmet = []
+    for ref in depends_on(issue):
+        target = _resolve(ref, issues, identifier)
+        if target is None:
+            mark = (str(issue.get("id")), ref)
+            if warned is None or mark not in warned:
+                print(f"intake: {issue.get('name') or issue.get('id')}: unknown dependency {ref}")
+                if warned is not None:
+                    warned.add(mark)
+            unmet.append(ref)
+        elif _state_group(target) != "completed":
+            unmet.append(ref)
+    return unmet
+
+
+def candidates(
+    plane_issues: Iterable[dict],
+    label_id: str,
+    jobs: Iterable[state.Job],
+    identifier: str = "",
+    warned: set[tuple[str, str]] | None = None,
+    waiting: dict[str, list[str]] | None = None,
+) -> list[dict]:
+    """Cards with the label, not started, without any job yet (cancelled ones included), and whose
+    `Depends on:` cards are all completed. Blocked cards are recorded in `waiting` (id -> unmet refs)."""
+    all_issues = list(plane_issues)
     taken = {j.tracker.get("ref") for j in jobs if j.tracker}
-    return [
-        i
-        for i in plane_issues
-        if label_id in [(lb["id"] if isinstance(lb, dict) else lb) for lb in i.get("labels") or []]
-        and _state_group(i) in STARTABLE_GROUPS
-        and i["id"] not in taken
-    ]
+    found = []
+    for i in all_issues:
+        if not (
+            label_id in [(lb["id"] if isinstance(lb, dict) else lb) for lb in i.get("labels") or []]
+            and _state_group(i) in STARTABLE_GROUPS
+            and i["id"] not in taken
+        ):
+            continue
+        unmet = unmet_dependencies(i, all_issues, identifier, warned)
+        if unmet:
+            if waiting is not None:
+                waiting[i["id"]] = unmet
+            continue
+        found.append(i)
+    return found
 
 
 def build_brief(issue: dict) -> str:
     title = str(issue.get("name") or "").strip()
-    body = judge.html_to_text(str(issue.get("description_html") or ""))
+    body = card_text(issue)
     return f"# {title}\n\n{body}\n\n{FOOTER}"
 
 
@@ -70,6 +135,7 @@ def run_intake(config: dict, orch: Path, dry_run: bool = False, launcher: Launch
     free = limit - open_jobs(jobs)
     launched = 0
     key = plane_mod.api_key_from_env()
+    warned: set[tuple[str, str]] = set()
     for project, repo in repos.items():
         try:
             plane = plane_mod.Plane(project, key, plane_url)
@@ -77,10 +143,19 @@ def run_intake(config: dict, orch: Path, dry_run: bool = False, launcher: Launch
             if label is None:
                 print(f"intake: {project}: no label {label_name!r}")
                 continue
-            cards = candidates(plane.list_issues(), label["id"], jobs)
+            identifier = next(
+                (p["identifier"] for p in plane_mod.Plane.projects(key, plane_url) if p["id"] == project), ""
+            )
+            waiting: dict[str, list[str]] = {}
+            all_issues = plane.list_issues()
+            cards = candidates(all_issues, label["id"], jobs, identifier, warned, waiting)
         except (plane_mod.PlaneError, RuntimeError, OSError) as err:
             print(f"intake: {project}: {err}")
             continue
+        if dry_run:
+            for i in all_issues:
+                if i["id"] in waiting:
+                    print(f"intake: {i.get('name') or i['id']} waits for {', '.join(waiting[i['id']])}")
         for issue in cards:
             if launched >= free:
                 print(f"intake: {limit} jobs open (max_parallel_jobs); {issue['name']!r} waits")

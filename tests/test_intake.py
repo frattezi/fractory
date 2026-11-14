@@ -64,6 +64,33 @@ class Candidates(unittest.TestCase):
         self.assertEqual([i["id"] for i in found], ["issue-7"])
 
 
+def with_deps(n: int, line: str, **kw) -> dict:
+    return card(n, html=f"<p>Do it</p><p>{line}</p>", **kw)
+
+
+class DependsOn(unittest.TestCase):
+    def refs(self, html: str) -> list[str]:
+        return intake.depends_on({"description_html": html})
+
+    def test_plain(self) -> None:
+        self.assertEqual(self.refs("<p>Intro</p><p>Depends on: 07, 08</p>"), ["07", "08"])
+
+    def test_bold_and_case(self) -> None:
+        self.assertEqual(self.refs("<p><strong>Depends on:</strong> 07</p>"), ["07"])
+        self.assertEqual(self.refs("<p>**DEPENDS ON:** 07</p>"), ["07"])
+
+    def test_none_and_empty(self) -> None:
+        self.assertEqual(self.refs("<p>Depends on: none</p>"), [])
+        self.assertEqual(self.refs("<p>Depends on:</p>"), [])
+
+    def test_keys_and_prefixes(self) -> None:
+        self.assertEqual(self.refs("<p>Depends on: CUIDADO-12, 07</p>"), ["CUIDADO-12", "07"])
+
+    def test_missing(self) -> None:
+        self.assertEqual(self.refs("<p>Nothing here</p>"), [])
+        self.assertEqual(intake.depends_on({}), [])
+
+
 class IntakeCli(unittest.TestCase):
     def setUp(self) -> None:
         reset_fake()
@@ -181,6 +208,32 @@ class IntakeCli(unittest.TestCase):
         self.assertIn("would launch 'Card 1'", out)
         self.assertEqual(self.calls, [])
         self.assertEqual(FakePlane.patches, [])
+        self.assertEqual(store.all_jobs(), [])
+
+    def test_card_waits_for_its_dependency_then_launches(self) -> None:
+        dep = card(1, "s-doing")
+        dep["name"] = "07 · Tokens"
+        FakePlane.issues = [dep, with_deps(2, "Depends on: 07")]
+        _, out = self.run_cli("intake", "--dry-run")
+        self.assertIn("intake: Card 2 waits for 07", out)
+        self.assertNotIn("would launch 'Card 2'", out)
+        self.run_cli("intake")
+        self.assertEqual(store.all_jobs(), [])
+        FakePlane.issues[0]["state"] = "s-done"
+        self.run_cli("intake")
+        self.assertEqual([j.tracker["ref"] for j in store.all_jobs()], ["issue-2"])
+
+    def test_dependency_by_plane_key(self) -> None:
+        dep = card(1, "s-done", labels=())
+        dep["sequence_id"] = 12
+        FakePlane.issues = [dep, with_deps(2, "Depends on: CORT-12")]
+        self.run_cli("intake")
+        self.assertEqual([j.tracker["ref"] for j in store.all_jobs()], ["issue-2"])
+
+    def test_unknown_dependency_waits_and_is_reported_once(self) -> None:
+        FakePlane.issues = [with_deps(1, "Depends on: 99")]
+        _, out = self.run_cli("intake")
+        self.assertEqual(out.count("unknown dependency 99"), 1)
         self.assertEqual(store.all_jobs(), [])
 
     def test_custom_label_name(self) -> None:
