@@ -9,6 +9,7 @@ import os
 import tempfile
 import threading
 import unittest
+from datetime import date
 from http.server import ThreadingHTTPServer
 from pathlib import Path
 from unittest import mock
@@ -131,6 +132,7 @@ class SyncCli(unittest.TestCase):
         self.assertEqual(self.stage(), "checks")
 
     def test_merged_pr_finishes_internal_job_and_marks_the_issue_done(self) -> None:
+        FakePlane.issues.append({"id": "issue-1", "external_id": "", "external_source": ""})
         self.new_job(stage="judge")
         self.run_cli("job", "advance", "cortadas-0001", "approved")
         self.pr = pr_json(state="MERGED")
@@ -139,7 +141,7 @@ class SyncCli(unittest.TestCase):
         self.assertEqual(self.stage(), "done")
         path, body = FakePlane.patches[-1]
         self.assertTrue(path.endswith(f"/projects/{PROJECT}/issues/issue-1/"))
-        self.assertEqual(body, {"state": "s-done"})
+        self.assertEqual(body, {"state": "s-done", "target_date": date.today().isoformat()})
 
     def test_gated_job_is_left_alone(self) -> None:
         self.new_job()

@@ -18,6 +18,12 @@ class FakePlane:
     def get_item(self, ref: str) -> dict:
         return {"id": ref, "name": "Launch: job, worktree and worker!"}
 
+    def me(self) -> str:
+        return "user-me"
+
+    def start_item(self, ref: str, assignee: str) -> None:
+        pass
+
 
 class LaunchCli(unittest.TestCase):
     def setUp(self) -> None:

@@ -18,7 +18,7 @@
     fractory plane projects
     fractory plane import-specs --repo DIR --project ID [--identifier KEY] [--apply]
     fractory plane create-project --name N --identifier KEY
-    fractory plane add-item --project ID --title T [--body MD | --body-file F] [--status S]
+    fractory plane add-item --project ID --title T [--body MD | --body-file F] [--status S] [--assign-me]
     fractory orch ARGS...          passthrough to orch.py (the v0 build engine, unchanged)
 
 Exit 0 means it did what it says; 1 means it did not. Output is short plain text.
@@ -244,7 +244,8 @@ def cmd_plane_add_item(a: argparse.Namespace) -> int:
     client = plane_mod.Plane(a.project, plane_mod.api_key_from_env(), a.url, a.workspace)
     external_id = a.external_id or store.slug(a.title)
     try:
-        item = client.create_item(a.title, specs_import.markdown_to_html(body), a.status, external_id)
+        assignee = launch.owner_id(client) if a.assign_me else None
+        item = client.create_item(a.title, specs_import.markdown_to_html(body), a.status, external_id, assignee)
         print(f"created  {external_id}  {item.ref}")
     except plane_mod.Duplicate as dup:
         print(f"exists   {external_id}  {dup.ref}")
@@ -539,6 +540,7 @@ def build_parser() -> argparse.ArgumentParser:
             s.add_argument("--body-file", help="Markdown file")
             s.add_argument("--status", default="backlog", choices=list(STATUS_GROUPS))
             s.add_argument("--external-id", help="dedupe key (default: slug of the title)")
+            s.add_argument("--assign-me", action="store_true", help="assign the card to the owner (plane_assignee)")
 
     s = sub.add_parser("launch", help="open a job, its worktree and its worker in one command")
     s.add_argument("--repo", required=True)

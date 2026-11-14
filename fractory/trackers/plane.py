@@ -14,6 +14,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from collections.abc import Callable
+from datetime import date
 
 from .base import STATUS_GROUPS, Duplicate, Item
 
@@ -158,18 +159,19 @@ class Plane:
             raise PlaneError(f"project {self.project_id} has no state in group {group!r}")
         return self._states[group]
 
-    def create_item(self, title: str, body_html: str, status: str, external_id: str) -> Item:
-        status_code, data = self._call(
-            "POST",
-            f"/projects/{self.project_id}/issues/",
-            {
-                "name": title[:255],
-                "description_html": body_html,
-                "state": self.state_for(status),
-                "external_id": external_id,
-                "external_source": EXTERNAL_SOURCE,
-            },
-        )
+    def create_item(
+        self, title: str, body_html: str, status: str, external_id: str, assignee: str | None = None
+    ) -> Item:
+        payload = {
+            "name": title[:255],
+            "description_html": body_html,
+            "state": self.state_for(status),
+            "external_id": external_id,
+            "external_source": EXTERNAL_SOURCE,
+        }
+        if assignee:
+            payload["assignees"] = [assignee]
+        status_code, data = self._call("POST", f"/projects/{self.project_id}/issues/", payload)
         if status_code == 409:
             ref = data.get("id", "") if isinstance(data, dict) else ""
             raise Duplicate(str(ref))
@@ -179,8 +181,31 @@ class Plane:
             ref=data["id"], key=key, url=f"{self.base}/{self.workspace}/projects/{self.project_id}/issues/{data['id']}"
         )
 
+    def me(self) -> str:
+        """Id of the user that owns the API key (not workspace-scoped)."""
+        headers = {"X-Api-Key": self._key, "Accept": "application/json"}
+        status, data = self._http("GET", f"{self.base}/api/v1/users/me/", headers, None)
+        if status >= 400 or not isinstance(data, dict) or not data.get("id"):
+            raise PlaneError(f"GET /users/me/: HTTP {status}: {str(data)[:300]}")
+        return str(data["id"])
+
     def set_status(self, ref: str, status: str) -> None:
-        self._call("PATCH", f"/projects/{self.project_id}/issues/{ref}/", {"state": self.state_for(status)})
+        payload: dict = {"state": self.state_for(status)}
+        if status == "done" and not self.get_item(ref).get("target_date"):
+            payload["target_date"] = date.today().isoformat()
+        self._call("PATCH", f"/projects/{self.project_id}/issues/{ref}/", payload)
+
+    def start_item(self, ref: str, assignee: str) -> None:
+        """Add `assignee` to the card, keeping the existing ones, and set the start date if empty."""
+        issue = self.get_item(ref)
+        payload: dict = {}
+        current = [str(a.get("id") if isinstance(a, dict) else a) for a in issue.get("assignees") or []]
+        if assignee not in current:
+            payload["assignees"] = [*current, assignee]
+        if not issue.get("start_date"):
+            payload["start_date"] = date.today().isoformat()
+        if payload:
+            self._call("PATCH", f"/projects/{self.project_id}/issues/{ref}/", payload)
 
     def get_item(self, ref: str) -> dict:
         _, data = self._call("GET", f"/projects/{self.project_id}/issues/{ref}/")

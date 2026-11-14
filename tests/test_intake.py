@@ -123,8 +123,9 @@ class IntakeCli(unittest.TestCase):
         self.assertEqual([j.tracker["ref"] for j in jobs], ["issue-1"])
         self.assertEqual(jobs[0].stage, "build")
         self.assertEqual(jobs[0].tracker["project"], PROJECT)
-        self.assertEqual(FakePlane.patches[0][1], {"state": "s-doing"})
-        self.assertIn("issue-1", FakePlane.patches[0][0])
+        self.assertEqual(FakePlane.patches[0][1].get("assignees"), ["user-me"])
+        self.assertEqual(FakePlane.patches[-1][1], {"state": "s-doing"})
+        self.assertIn("issue-1", FakePlane.patches[-1][0])
         brief = self.briefs[0]
         self.assertTrue(brief.startswith("# Card 1\n\nAdd x"))
         self.assertIn("worker_done", brief)
@@ -171,8 +172,9 @@ class IntakeCli(unittest.TestCase):
         _, out = self.run_cli("intake")
         self.assertIn("launch failed", out)
         self.assertIn("launched 'Card 2'", out)
-        self.assertEqual(len(FakePlane.patches), 1)  # only the successful card moved to In Progress
-        self.assertIn("issue-2", FakePlane.patches[0][0])
+        # only the successful card was assigned and moved to In Progress
+        self.assertEqual(len(FakePlane.patches), 2)
+        self.assertTrue(all("issue-2" in path for path, _ in FakePlane.patches))
 
     def test_dry_run_launches_nothing(self) -> None:
         FakePlane.issues = [card(1)]

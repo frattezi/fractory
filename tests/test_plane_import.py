@@ -59,7 +59,9 @@ class FakePlane(BaseHTTPRequestHandler):
         if not self._authed():
             return
         base = "/api/v1/workspaces/cortadas"
-        if self.path == f"{base}/projects/":
+        if self.path == "/api/v1/users/me/":
+            self._send(200, {"id": "user-me"})
+        elif self.path == f"{base}/projects/":
             self._send(200, {"results": self.projects})
         elif self.path == f"{base}/projects/{PROJECT}/states/":
             self._send(200, {"results": STATES})
@@ -108,6 +110,9 @@ class FakePlane(BaseHTTPRequestHandler):
             return
         body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
         self.patches.append((self.path, body))
+        issue = next((i for i in self.issues if self.path.endswith(f"/issues/{i['id']}/")), None)
+        if issue:
+            issue.update(body)
         self._send(200, body)
 
 
