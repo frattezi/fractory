@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 
 SENSITIVE = ("auth", "secret", "migration", "infra/", ".github/", "fractory/rubric.md", "fractory/launchd.py")
 MAX_LINES = 400
@@ -40,3 +41,13 @@ def assess(files: list[tuple[str, int, int]], config: dict | None = None) -> Ris
     if len(files) > max_files:
         reasons.append(f"{len(files)} files changed (limit {max_files})")
     return Risk("medium", tuple(reasons)) if reasons else Risk("low", ())
+
+
+def reviews_merges(repo: str, config: dict | None = None) -> bool:
+    """False for a repo listed in `[risk] no_merge_review`: its PRs merge at any risk level (risk is still recorded).
+
+    For dev-only projects whose owner chose not to review merges, e.g. `no_merge_review = ["~/Factory/app"]`.
+    """
+    listed = (config or {}).get("no_merge_review", [])
+    target = Path(repo).expanduser().resolve()
+    return all(Path(r).expanduser().resolve() != target for r in listed)

@@ -354,7 +354,7 @@ def _merge_if_low_risk(job: state.Job) -> None:
                 "reasons": list(verdict.reasons),
             }
         )
-        if verdict.level != "low":
+        if verdict.level != "low" and risk.reviews_merges(job.repo, store.config().get("risk")):
             store.save(state.open_gate(job, "merge_review", verdict.summary()))
             print(f"{job.id}  GATE merge_review: {verdict.summary()}")
             return

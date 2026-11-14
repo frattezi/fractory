@@ -130,6 +130,21 @@ class MergeDecision(unittest.TestCase):
         self.run_cli("sync")
         self.assertEqual(self.merged, ["42"])
 
+    def test_repo_without_merge_review_merges_high_risk(self) -> None:
+        self.config(f'auto_merge = true\n[risk]\nno_merge_review = ["{self.repo}"]\n')
+        self.files = [{"path": "prisma/migrations/1/migration.sql", "additions": 1, "deletions": 0}]
+        self.run_cli("sync")
+        self.assertEqual(self.merged, ["42"])
+        self.assertIsNone(self.state()["gate"])
+        self.assertEqual(self.risk_events()[0]["level"], "high")
+
+    def test_other_repo_in_no_merge_review_still_gates(self) -> None:
+        self.config('auto_merge = true\n[risk]\nno_merge_review = ["/somewhere/else"]\n')
+        self.files = [{"path": "infra/main.tf", "additions": 1, "deletions": 0}]
+        self.run_cli("sync")
+        self.assertEqual(self.merged, [])
+        self.assertEqual(self.state()["gate"]["reason"], "merge_review")
+
     def test_risk_config_table_is_used(self) -> None:
         self.config('auto_merge = true\n[risk]\nsensitive = ["billing"]\n')
         self.files = [{"path": "auth.py", "additions": 1, "deletions": 0}]
