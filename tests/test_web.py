@@ -91,7 +91,37 @@ class Routes(ServerCase):
 
     def test_unknown_path_is_404(self) -> None:
         self.assertEqual(self.get("/nope")[0], 404)
-        self.assertEqual(self.get("/api/jobs/x")[0], 404)
+
+    def test_job_detail(self) -> None:
+        job = store.load("app-0001")
+        job.gate = None
+        job.links = {"pr": "7", "worktree": "wt", "branch": "b", "terminal": "term_1"}
+        job, _ = state.apply_event(job, "reviewed", note="judge")
+        job, _ = state.apply_event(job, "rejected", note="no tests; scope creep")
+        job, _ = state.add_cost(job, 1.5)
+        self.save(job)
+        status, ctype, body = self.get("/api/jobs/app-0001")
+        data = json.loads(body)
+        self.assertEqual(status, 200)
+        self.assertIn("json", ctype)
+        self.assertEqual(data["links"]["terminal"], "term_1")
+        self.assertEqual(data["pr_url"], "https://github.com/acme/app/pull/7")
+        self.assertEqual(data["tracker_url"], f"{web.DEFAULT_URL}/cortadas/projects/P1/issues/R1")
+        self.assertEqual(data["verdicts"][0]["decision"], "rejected")
+        self.assertEqual(data["verdicts"][0]["reasons"], ["no tests", "scope creep"])
+        self.assertEqual([e["event"] for e in data["history"]][-3:], ["reviewed", "rejected", "cost"])
+        self.assertEqual(data["history"][-1]["total"], 1.5)
+
+    def test_job_detail_unknown_and_malformed_ids_are_404(self) -> None:
+        for path in (
+            "/api/jobs/x",
+            "/api/jobs/",
+            "/api/jobs/..",
+            "/api/jobs/..%2F..%2Fetc",
+            "/api/jobs/App-1",
+            "/api/jobs/a/b",
+        ):
+            self.assertEqual(self.get(path)[0], 404, path)
 
 
 class Events(ServerCase):

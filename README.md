@@ -81,7 +81,9 @@ A job's life today, with the manual steps v1 will automate marked *(manual)*.
 2. `pipx install -e ~/Factory/Fractory` so `fractory` works in every Orca terminal.
 3. `fractory watch --install`: a LaunchAgent keeps `watch` running across reboots (log:
    `~/.factory/watch.log`). It moves jobs on CI and merge events and keeps the Plane issues in step.
-4. Optional, for internal repos: `echo 'auto_merge = true' >> ~/.factory/config.toml`. Then `watch` merges
+4. `fractory serve --install`: a LaunchAgent keeps the board up at http://127.0.0.1:8777 (log:
+   `~/.factory/serve.log`; `--port N` to change it).
+5. Optional, for internal repos: `echo 'auto_merge = true' >> ~/.factory/config.toml`. Then `watch` merges
    the PR of every approved internal job once its CI is green. Able jobs never auto-merge.
 
 **Per task**, from the repo's main chat in Orca (ask Claude in plain words, e.g. *"start a fractory
@@ -90,9 +92,7 @@ job for the Plane issue X"*; these are the commands it runs):
 | Step | Command | Who |
 | --- | --- | --- |
 | 1. Pick the work | an issue in Plane, or `fractory plane add-item --project <id> --title …` | you |
-| 2. Open the job | `fractory job new --repo . --title … --stage build --tracker plane --project <id> --ref <issue>` | main |
-| 3. Give it a worktree | `orca worktree create --repo path:. --name <branch> --no-parent` | main |
-| 4. Build | a worker via `fractory orch launch …`, or the main itself in that worktree | worker |
+| 2–4. Job, worktree, worker | `fractory launch --repo . --issue <plane issue> --project <id> --brief FILE` (title from the issue; run id from `orca_run` in `config.toml` or `--run`; `--dry-run` shows the steps) | main |
 | 5. Open the PR and link it | `gh pr create`, then `fractory job link <id> --worktree … --pr <n>` and `fractory job advance <id> built` | worker / main |
 | 6. Checks | nothing: `fractory watch` sees CI; red goes back to build, green moves on to review | watch |
 | 7. Review and verdict | `fractory judge <id>` (Opus vs the Plane issue, fixed rubric); with `auto_judge = true` in `config.toml`, `watch` runs it for every job in review. By hand: `fractory job advance <id> reviewed`, then `approved` or `rejected` | judge / you |
@@ -157,6 +157,11 @@ links; a job with an open gate gets a red border with the gate reason and detail
 jobs, open gates and total cost, with a live indicator. Cards that change column flash briefly. The page
 follows `state.json` changes through Server-Sent Events (`/api/events`), reads `/api/jobs`, and is
 read-only. One self-contained HTML file, no build step.
+
+Clicking a card opens a side panel (close with Esc, ×, or a click outside) with the job's links (worktree,
+terminal, branch, PR, Plane), the Judge verdicts with their reasons, a cost-over-time sparkline and the full
+history as a timeline. The URL hash `#job=<id>` opens it directly and survives a reload; the panel refreshes
+when the job changes. Data comes from `GET /api/jobs/<id>` (404 for an unknown or malformed id).
 
 ## Plane
 

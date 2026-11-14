@@ -34,7 +34,7 @@ import sys
 import time
 from pathlib import Path
 
-from . import judge, launchd, specs_import, state, store, sync
+from . import judge, launch, launchd, specs_import, state, store, sync
 from .trackers import plane as plane_mod
 from .trackers.base import STATUS_GROUPS
 
@@ -192,7 +192,16 @@ def cmd_dash(a: argparse.Namespace) -> int:
 def cmd_serve(a: argparse.Namespace) -> int:
     from . import web
 
-    return web.serve(a.port or web.DEFAULT_PORT)
+    port = a.port or web.DEFAULT_PORT
+    if a.uninstall:
+        print("serve agent removed" if launchd.uninstall("serve") else "serve agent was not installed")
+        return 0
+    if a.install:
+        log = store.factory_home() / "serve.log"
+        print(f"serve agent installed: {launchd.install('serve', ['--port', str(port)], log)}\nlog: {log}")
+        print(f"board: http://127.0.0.1:{port}")
+        return 0
+    return web.serve(port)
 
 
 def cmd_plane_projects(a: argparse.Namespace) -> int:
@@ -317,11 +326,11 @@ def cmd_sync(a: argparse.Namespace) -> int:
 def cmd_watch(a: argparse.Namespace) -> int:
     """Run sync every `--every` seconds. `--rounds 0` runs until interrupted (launchd, a terminal)."""
     if a.uninstall:
-        print("watch agent removed" if launchd.uninstall() else "watch agent was not installed")
+        print("watch agent removed" if launchd.uninstall("watch") else "watch agent was not installed")
         return 0
     if a.install:
         log = store.factory_home() / "watch.log"
-        print(f"watch agent installed: {launchd.install(log, a.every)}\nlog: {log}")
+        print(f"watch agent installed: {launchd.install('watch', ['--every', str(a.every)], log)}\nlog: {log}")
         return 0
     a.ids = []
     done = 0
@@ -343,6 +352,14 @@ def cmd_orch(a: argparse.Namespace) -> int:
         return 1
     os.execv(sys.executable, [sys.executable, str(ORCH), *a.args])
     return 1  # unreachable
+
+
+def cmd_launch(a: argparse.Namespace) -> int:
+    plane = plane_mod.Plane(a.project, plane_mod.api_key_from_env(), a.plane_url)
+    args = launch.Args(
+        Path(a.repo), a.issue, a.project, Path(a.brief), a.title, a.profile, a.name, a.run, a.dry_run, a.plane_url
+    )
+    return launch.launch(args, plane, ORCH)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -406,6 +423,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     s = sub.add_parser("serve", help="web view: a live board of every job")
     s.add_argument("--port", type=int, help="default 8777")
+    s.add_argument("--install", action="store_true", help="run serve as a LaunchAgent (board always up)")
+    s.add_argument("--uninstall", action="store_true", help="remove the LaunchAgent")
     s.set_defaults(fn=cmd_serve)
 
     s = sub.add_parser("watch", help="run sync in a loop (what the supervisor does every minute)")
@@ -449,6 +468,19 @@ def build_parser() -> argparse.ArgumentParser:
             s.add_argument("--body-file", help="Markdown file")
             s.add_argument("--status", default="backlog", choices=list(STATUS_GROUPS))
             s.add_argument("--external-id", help="dedupe key (default: slug of the title)")
+
+    s = sub.add_parser("launch", help="open a job, its worktree and its worker in one command")
+    s.add_argument("--repo", required=True)
+    s.add_argument("--issue", required=True, help="Plane issue id")
+    s.add_argument("--project", required=True, help="Plane project id")
+    s.add_argument("--brief", required=True, help="file with the worker's task")
+    s.add_argument("--title", help="default: the Plane issue name")
+    s.add_argument("--profile", default="strong")
+    s.add_argument("--name", help="worktree name (default: slug of the title)")
+    s.add_argument("--run", help="Orca run id (default: orca_run in config.toml)")
+    s.add_argument("--plane-url", default=plane_mod.DEFAULT_URL)
+    s.add_argument("--dry-run", action="store_true", help="print the commands, create nothing")
+    s.set_defaults(fn=cmd_launch)
 
     s = sub.add_parser("orch", help="passthrough to orch.py", add_help=False)
     s.add_argument("args", nargs=argparse.REMAINDER)
