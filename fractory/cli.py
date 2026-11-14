@@ -34,7 +34,7 @@ import sys
 import time
 from pathlib import Path
 
-from . import judge, launch, launchd, reload, rework, risk, specs_import, state, store, sync
+from . import intake, judge, launch, launchd, reload, rework, risk, specs_import, state, store, sync
 from .trackers import plane as plane_mod
 from .trackers.base import STATUS_GROUPS
 
@@ -385,6 +385,11 @@ def cmd_watch(a: argparse.Namespace) -> int:
             if done:
                 time.sleep(a.every)
             cmd_sync(a)
+            if store.config().get("auto_intake"):
+                try:
+                    intake.run_intake(store.config(), ORCH)
+                except (OSError, ValueError, RuntimeError) as err:  # never stop the watch loop
+                    print(f"intake error: {err}")
             sys.stdout.flush()
             done += 1
             if a.reload and a.rounds == 0 and (sha := reload.pull_if_moved(REPO_ROOT)):
@@ -392,6 +397,12 @@ def cmd_watch(a: argparse.Namespace) -> int:
                 return 0
     except KeyboardInterrupt:
         print("watch stopped")
+    return 0
+
+
+def cmd_intake(a: argparse.Namespace) -> int:
+    """Launch the cards labelled for intake (config.toml: intake_repos, intake_label, max_parallel_jobs)."""
+    intake.run_intake(store.config(), ORCH, dry_run=a.dry_run)
     return 0
 
 
@@ -542,6 +553,10 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--dry-run", action="store_true", help="print the commands, create nothing")
     s.add_argument("--force", action="store_true", help="launch even if the brief goes beyond its card")
     s.set_defaults(fn=cmd_launch)
+
+    s = sub.add_parser("intake", help="launch a job for every Plane card labelled for intake")
+    s.add_argument("--dry-run", action="store_true", help="list what would launch, launch nothing")
+    s.set_defaults(fn=cmd_intake)
 
     s = sub.add_parser("orch", help="passthrough to orch.py", add_help=False)
     s.add_argument("args", nargs=argparse.REMAINDER)

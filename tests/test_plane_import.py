@@ -35,6 +35,8 @@ class FakePlane(BaseHTTPRequestHandler):
     projects: ClassVar[list[dict]] = []
     patches: ClassVar[list[tuple[str, dict]]] = []
     comments: ClassVar[list[tuple[str, dict]]] = []
+    labels: ClassVar[list[dict]] = []
+    page_size: ClassVar[int] = 100
 
     def log_message(self, format: str, *args: object) -> None:  # keep test output quiet
         pass
@@ -61,6 +63,18 @@ class FakePlane(BaseHTTPRequestHandler):
             self._send(200, {"results": self.projects})
         elif self.path == f"{base}/projects/{PROJECT}/states/":
             self._send(200, {"results": STATES})
+        elif self.path == f"{base}/projects/{PROJECT}/labels/":
+            self._send(200, {"results": self.labels})
+        elif m := re.fullmatch(f"{base}/projects/{PROJECT}/issues/\\?expand=state(?:&cursor=(\\d+))?", self.path):
+            start = int(m.group(1) or 0)
+            groups = {s["id"]: s for s in STATES}
+            page = [{**i, "state": groups.get(i.get("state"), i.get("state"))} for i in self.issues]
+            end = start + self.page_size
+            more = end < len(page)
+            self._send(
+                200,
+                {"results": page[start:end], "next_page_results": more, "next_cursor": str(end) if more else ""},
+            )
         elif m := re.fullmatch(f"{base}/projects/{PROJECT}/issues/([^/]+)/", self.path):
             issue = next((i for i in self.issues if i["id"] == m.group(1)), None)
             self._send(200, issue) if issue else self._send(404, {"detail": "no issue"})
@@ -101,6 +115,8 @@ def reset_fake() -> None:
     FakePlane.issues = []
     FakePlane.patches = []
     FakePlane.comments = []
+    FakePlane.labels = []
+    FakePlane.page_size = 100
     FakePlane.projects = [{"id": PROJECT, "identifier": "CORT", "name": "Cortadas"}]
 
 

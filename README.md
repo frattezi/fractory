@@ -191,6 +191,24 @@ Only open specs (`draft`, `blocked`, `ready`, `in-progress`, `in-review`) are im
 the repo as frozen history. Each issue carries `external_id` = the spec id, so a second run reports
 `exists` instead of duplicating.
 
+## Intake
+
+A Plane card labelled `fractory` (state Backlog or Todo) starts a job: `fractory intake` launches it
+like `fractory launch`, with the card title and description as the brief plus a fixed footer (link the PR,
+advance to built, worker_done), then moves the card to In Progress. A card that already has a job (any
+stage, cancelled included) is never launched twice. A launch that fails prints one line and the next card
+still goes.
+
+```toml
+# $FACTORY_HOME/config.toml
+intake_repos = { "<plane project id>" = "~/Factory/Fractory" }   # Plane project -> repo
+intake_label = "fractory"        # default
+max_parallel_jobs = 3            # default; counts jobs not done or cancelled
+auto_intake = true               # `fractory watch` runs intake once per round, after sync
+```
+
+`fractory intake --dry-run` lists what would launch and changes nothing.
+
 ## Next (v1)
 
 Holdout verifier, risk score and review by risk, `fractory watch` under
