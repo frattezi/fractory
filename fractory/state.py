@@ -163,12 +163,12 @@ def apply_event(job: Job, event: str, check: str | None = None, note: str = "") 
     return job, actions
 
 
-def add_cost(job: Job, usd: float) -> tuple[Job, list[str]]:
+def add_cost(job: Job, usd: float, source: str = "") -> tuple[Job, list[str]]:
     if usd < 0:
         raise TransitionError("cost must be positive")
     job = copy.deepcopy(job)
     job.cost_usd = round(job.cost_usd + usd, 4)
-    _log(job, "cost", usd=usd, total=job.cost_usd)
+    _log(job, "cost", usd=usd, total=job.cost_usd, **({"source": source} if source else {}))
     if job.cost_usd > job.budget_usd and job.gate is None and job.stage not in TERMINAL:
         job = open_gate(job, "cost", f"US$ {job.cost_usd:.2f} over budget US$ {job.budget_usd:.2f}")
         return job, ["gate:cost"]
