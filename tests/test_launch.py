@@ -39,6 +39,7 @@ class LaunchCli(unittest.TestCase):
         self.addCleanup(check.stop)
         self.calls: list[list[str]] = []
         self.fail_on: str | None = None
+        self.coordinator: str | None = "term_coord"
         runner = mock.patch.object(launch, "run_cmd", side_effect=self.fake_run)
         runner.start()
         self.addCleanup(runner.stop)
@@ -55,6 +56,11 @@ class LaunchCli(unittest.TestCase):
             return 1, "boom"
         if "worktree" in argv:
             return 0, json.dumps({"ok": True, "result": {"worktree": {"id": "repo::/wt/launch"}}})
+        if "run-show" in argv:
+            if self.coordinator is None:
+                return 1, "no such run"
+            run = {"id": argv[argv.index("--id") + 1], "coordinator_handle": self.coordinator}
+            return 0, json.dumps({"ok": True, "result": {"run": run}})
         return 0, "launched dispatch d1 in terminal term_abc (stage running)\n"
 
     def run_cli(self, *extra: str, run: str | None = "run_1") -> tuple[int, str]:
@@ -72,14 +78,16 @@ class LaunchCli(unittest.TestCase):
     def test_happy_path_runs_six_steps_and_links_the_job(self) -> None:
         code, out = self.run_cli()
         self.assertEqual(code, 0, out)
-        wt, orch = self.calls
+        wt, show, orch = self.calls
+        self.assertEqual(show[1:3], ["orchestration", "run-show"])
+        self.assertEqual(orch[:2], ["env", "ORCA_TERMINAL_HANDLE=term_coord"])
         self.assertEqual(wt[1:3], ["worktree", "create"])
         self.assertEqual(wt[wt.index("--repo") + 1], f"path:{self.repo.resolve()}")
         self.assertEqual(wt[wt.index("--name") + 1], "launch-job-worktree-and-worker")
         self.assertIn("--no-parent", wt)
         brief = self.tmp / "factory" / "jobs" / "cortadas-0001" / "brief.md"
         self.assertEqual(brief.read_text(), "# do the thing\n")
-        self.assertEqual(orch[2], "launch")
+        self.assertEqual(orch[4], "launch")
         for flag, value in {
             "--run": "run_1",
             "--worktree": "id:repo::/wt/launch",
@@ -95,6 +103,14 @@ class LaunchCli(unittest.TestCase):
         self.assertEqual(
             job["links"], {"worktree": "launch-job-worktree-and-worker", "terminal": "term_abc", "profile": "strong"}
         )
+
+    def test_worker_launch_without_a_known_coordinator_runs_unchanged(self) -> None:
+        self.coordinator = None
+        code, out = self.run_cli()
+        self.assertEqual(code, 0, out)
+        orch = self.calls[-1]
+        self.assertNotEqual(orch[0], "env")
+        self.assertIn("launch", orch)
 
     def test_failing_worktree_opens_gate_and_does_not_launch(self) -> None:
         self.fail_on = "worktree"
@@ -126,7 +142,7 @@ class LaunchCli(unittest.TestCase):
         (self.tmp / "factory" / "config.toml").write_text('orca_run = "run_cfg"\n')
         code, _ = self.run_cli(run=None)
         self.assertEqual(code, 0)
-        self.assertEqual(self.calls[1][self.calls[1].index("--run") + 1], "run_cfg")
+        self.assertEqual(self.calls[-1][self.calls[-1].index("--run") + 1], "run_cfg")
 
     def test_brief_beyond_card_stops_before_creating_anything(self) -> None:
         self.verdict = briefcheck.Verdict(False, ["adds a --force flag"])
@@ -142,7 +158,7 @@ class LaunchCli(unittest.TestCase):
         self.verdict = briefcheck.Verdict(False, ["adds a --force flag"])
         code, out = self.run_cli("--force")
         self.assertEqual(code, 0, out)
-        self.assertEqual(len(self.calls), 2)
+        self.assertEqual(len(self.calls), 3)  # worktree, run-show, worker
         events = [h for h in self.job()["history"] if h["event"] == "brief_beyond_card"]
         self.assertEqual(events[0]["extra"], ["adds a --force flag"])
 
@@ -163,7 +179,7 @@ class LaunchCli(unittest.TestCase):
         code, out = self.run_cli()
         self.assertEqual(code, 0, out)
         self.assertIn("warning: brief check failed", out)
-        self.assertEqual(len(self.calls), 2)
+        self.assertEqual(len(self.calls), 3)  # worktree, run-show, worker
 
 
 if __name__ == "__main__":
