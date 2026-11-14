@@ -11,7 +11,7 @@ import tempfile
 from collections.abc import Callable, Iterable
 from pathlib import Path
 
-from . import judge, launch, state, store
+from . import health, judge, launch, state, store
 from .trackers import plane as plane_mod
 
 DEFAULT_LABEL = "fractory"
@@ -124,6 +124,46 @@ def open_jobs(jobs: Iterable[state.Job]) -> int:
     return sum(1 for j in jobs if j.stage not in state.TERMINAL)
 
 
+def _entry(issue: dict, identifier: str, label_names: dict[str, str], decision: str, **extra: object) -> dict:
+    st = issue.get("state")
+    return {
+        "key": f"{identifier}-{issue.get('sequence_id')}" if identifier else str(issue.get("sequence_id") or ""),
+        "title": str(issue.get("name") or issue["id"]),
+        "state": (st.get("name") or st.get("group")) if isinstance(st, dict) else st,
+        "labels": [
+            label_names.get(i, i)
+            for i in ((lb["id"] if isinstance(lb, dict) else lb) for lb in issue.get("labels") or [])
+        ],
+        "decision": decision,
+        **extra,
+    }
+
+
+def _queue_entries(
+    all_issues: list[dict],
+    label_id: str,
+    taken: set,
+    parked: list[dict],
+    waiting: dict[str, list[str]],
+    identifier: str,
+    label_names: dict[str, str],
+) -> dict[str, dict]:
+    """Decision per labelled card that is still in play (id -> entry); launch outcomes are filled in by the caller."""
+    parked_ids = {i["id"] for i in parked}
+    out = {}
+    for i in all_issues:
+        if label_id not in [(lb["id"] if isinstance(lb, dict) else lb) for lb in i.get("labels") or []]:
+            continue
+        if i["id"] in taken:
+            if _state_group(i) not in ("completed", "cancelled"):
+                out[i["id"]] = _entry(i, identifier, label_names, "has_job")
+        elif i["id"] in parked_ids:
+            out[i["id"]] = _entry(i, identifier, label_names, "parked")
+        elif i["id"] in waiting:
+            out[i["id"]] = _entry(i, identifier, label_names, "waits_for", waits_for=waiting[i["id"]])
+    return out
+
+
 Launcher = Callable[[launch.Args, plane_mod.Plane], int]
 
 
@@ -143,6 +183,8 @@ def run_intake(config: dict, orch: Path, dry_run: bool = False, launcher: Launch
     launched = 0
     key = plane_mod.api_key_from_env()
     warned: set[tuple[str, str]] = set()
+    queue: dict[str, dict] = {}
+    taken = {j.tracker.get("ref") for j in jobs if j.tracker}
     for project, repo in repos.items():
         try:
             plane = plane_mod.Plane(project, key, plane_url)
@@ -157,8 +199,14 @@ def run_intake(config: dict, orch: Path, dry_run: bool = False, launcher: Launch
             all_issues = plane.list_issues()
             parked: list[dict] = []
             cards = candidates(all_issues, label["id"], jobs, identifier, warned, waiting, parked)
+            names = {lb["id"]: lb.get("name", lb["id"]) for lb in plane.labels()}
+            entries = _queue_entries(all_issues, label["id"], taken, parked, waiting, identifier, names)
+            for issue in cards:
+                entries[issue["id"]] = _entry(issue, identifier, names, "launched")
+            queue[project] = {"identifier": identifier, "cards": entries}
         except (plane_mod.PlaneError, RuntimeError, OSError) as err:
             print(f"intake: {project}: {err}")
+            queue[project] = {"error": str(err), "cards": {}}
             continue
         if dry_run:
             for i in parked:
@@ -169,6 +217,7 @@ def run_intake(config: dict, orch: Path, dry_run: bool = False, launcher: Launch
         for issue in cards:
             if launched >= free:
                 print(f"intake: {limit} jobs open (max_parallel_jobs); {issue['name']!r} waits")
+                queue[project]["cards"][issue["id"]]["decision"] = "max_parallel"
                 continue
             title = str(issue.get("name") or issue["id"])
             if dry_run:
@@ -185,10 +234,24 @@ def run_intake(config: dict, orch: Path, dry_run: bool = False, launcher: Launch
                     code = launcher(args, plane)
                 if code != 0:
                     print(f"intake: {title!r}: launch failed (exit {code})")
+                    _failed(queue[project], issue, f"exit {code}")
                     continue
                 plane.set_status(issue["id"], "in_progress")
                 print(f"intake: launched {title!r}")
                 launched += 1
             except (plane_mod.PlaneError, launch.LaunchError, RuntimeError, OSError, ValueError) as err:
                 print(f"intake: {title!r}: {err}")
+                _failed(queue[project], issue, str(err))
+    if not dry_run:
+        health.write_json(
+            "queue.json",
+            {
+                "at": health.now_iso(),
+                "projects": {p: {**v, "cards": list(v["cards"].values())} for p, v in queue.items()},
+            },
+        )
     return launched
+
+
+def _failed(project_queue: dict, issue: dict, error: str) -> None:
+    project_queue["cards"][issue["id"]].update(decision="launch_failed", error=error)

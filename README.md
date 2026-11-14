@@ -186,6 +186,32 @@ events across all jobs, newest first, plus the last 40 lines of `$FACTORY_HOME/w
 panel. It refreshes on every `jobs` event and every 30 s. Data comes from `GET /api/activity?limit=50` (limit
 clamped to 1..200).
 
+Factory health and the intake queue come from two snapshots the watch leaves in `$FACTORY_HOME`, so the
+board never calls Plane: `heartbeat.json` (written atomically at the end of every watch cycle: cycle start,
+end and duration, cycle count, pid, start time, code sha, error counts, Plane rate-limit backoffs, last 10
+error lines) and `queue.json` (written by every intake run: per project, each labelled card with its
+decision: `launched`, `waits_for` (unmet dependencies), `max_parallel`, `parked`, `has_job` or
+`launch_failed` with the error). `GET /api/health` serves the heartbeat plus `alive` (the last cycle ended
+less than 3× `--every` ago) and `GET /api/queue` serves the queue; both answer 200 `{"missing": true}` until
+the file exists.
+
+`GET /api/metrics?window=7|30` (default 7) computes, from the job histories (`fractory/metrics.py`): time per
+stage and current stage age per job, `stuck` items (each with a one-line reason), flow (lead time median and
+p90 per repo and overall, throughput per day, WIP), quality (Judge first-pass rate, mean rework rounds, CI red
+rate, conflicts sent, gates opened by reason with median time to resolve) and cost per repo. Each item of
+`/api/jobs` also carries `stuck` (`null` when the job is moving). A job is stuck when its current stage is
+older than a per-stage limit, or when it has an open gate (any age, "waiting on you"). Limits in minutes,
+overridable in `config.toml`:
+
+```toml
+[stuck]   # defaults
+build = 60
+checks = 30
+review = 20
+judge = 20
+ship = 15
+```
+
 ## Plane
 
 API key: `$PLANE_API_KEY`, or the Keychain item `fractory-plane`
