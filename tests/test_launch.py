@@ -11,7 +11,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from fractory import cli, launch
+from fractory import briefcheck, cli, launch
 
 
 class FakePlane:
@@ -32,11 +32,22 @@ class LaunchCli(unittest.TestCase):
         plane = mock.patch.object(cli.plane_mod, "Plane", return_value=FakePlane())
         plane.start()
         self.addCleanup(plane.stop)
+        self.verdict: briefcheck.Verdict | Exception = briefcheck.Verdict(True, [])
+        self.checked: list[tuple[str, str, str]] = []
+        check = mock.patch.object(briefcheck, "check", side_effect=self.fake_check)
+        check.start()
+        self.addCleanup(check.stop)
         self.calls: list[list[str]] = []
         self.fail_on: str | None = None
         runner = mock.patch.object(launch, "run_cmd", side_effect=self.fake_run)
         runner.start()
         self.addCleanup(runner.stop)
+
+    def fake_check(self, title: str, text: str, brief: str) -> briefcheck.Verdict:
+        self.checked.append((title, text, brief))
+        if isinstance(self.verdict, Exception):
+            raise self.verdict
+        return self.verdict
 
     def fake_run(self, argv: list[str]) -> tuple[int, str]:
         self.calls.append(argv)
@@ -120,3 +131,40 @@ class LaunchCli(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+    def test_brief_beyond_card_stops_before_creating_anything(self) -> None:
+        self.verdict = briefcheck.Verdict(False, ["adds a --force flag"])
+        code, out = self.run_cli()
+        self.assertEqual(code, 1)
+        self.assertIn("adds a --force flag", out)
+        self.assertEqual(self.calls, [])
+        self.assertFalse((self.tmp / "factory" / "jobs").exists())
+        self.assertEqual(self.checked[0][0], "Launch: job, worktree and worker!")
+        self.assertEqual(self.checked[0][2], "# do the thing\n")
+
+    def test_force_continues_and_records_items_in_history(self) -> None:
+        self.verdict = briefcheck.Verdict(False, ["adds a --force flag"])
+        code, out = self.run_cli("--force")
+        self.assertEqual(code, 0, out)
+        self.assertEqual(len(self.calls), 2)
+        events = [h for h in self.job()["history"] if h["event"] == "brief_beyond_card"]
+        self.assertEqual(events[0]["extra"], ["adds a --force flag"])
+
+    def test_ok_brief_records_nothing(self) -> None:
+        code, _ = self.run_cli()
+        self.assertEqual(code, 0)
+        self.assertFalse([h for h in self.job()["history"] if h["event"] == "brief_beyond_card"])
+
+    def test_dry_run_runs_the_check_too(self) -> None:
+        self.verdict = briefcheck.Verdict(False, ["x"])
+        code, out = self.run_cli("--dry-run")
+        self.assertEqual(code, 1)
+        self.assertEqual(len(self.checked), 1)
+        self.assertIn("  - x", out)
+
+    def test_checker_error_warns_and_continues(self) -> None:
+        self.verdict = briefcheck.BriefCheckError("claude failed")
+        code, out = self.run_cli()
+        self.assertEqual(code, 0, out)
+        self.assertIn("warning: brief check failed", out)
+        self.assertEqual(len(self.calls), 2)
