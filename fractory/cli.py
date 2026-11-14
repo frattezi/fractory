@@ -34,7 +34,7 @@ import sys
 import time
 from pathlib import Path
 
-from . import judge, launch, launchd, reload, rework, specs_import, state, store, sync
+from . import judge, launch, launchd, reload, rework, risk, specs_import, state, store, sync
 from .trackers import plane as plane_mod
 from .trackers.base import STATUS_GROUPS
 
@@ -104,6 +104,9 @@ def cmd_job_status(a: argparse.Namespace) -> int:
         print(f"  {key}: {value}")
     if job.tracker:
         print(f"  tracker: {job.tracker.get('kind')} {job.tracker.get('ref', '')}")
+    last_risk = next((h for h in reversed(job.history) if h["event"] == "risk"), None)
+    if last_risk:
+        print(f"  risk: {last_risk['level']}  {'; '.join(last_risk['reasons'])}".rstrip())
     allowed = ", ".join(state.TRANSITIONS.get(job.stage, {})) or "-"
     print(f"  next events: {allowed}  judge rounds: {job.judge_rounds}/{state.MAX_JUDGE_ROUNDS}")
     for h in job.history[-5:]:
@@ -291,6 +294,39 @@ def cmd_judge(a: argparse.Namespace) -> int:
     return judge_job(a.id)
 
 
+def _approved_merge_review(job: state.Job) -> bool:
+    """A person already resolved `merge_review` with `continue` on the latest risk check."""
+    for h in reversed(job.history):
+        if h["event"] == "risk":
+            return False
+        if h["event"] == "gate_resolved":
+            return h.get("reason") == "merge_review" and h.get("decision") == "continue"
+    return False
+
+
+def _merge_if_low_risk(job: state.Job) -> None:
+    """Assess the PR diff: low merges, medium/high opens gate `merge_review` instead. Caller holds the lock."""
+    pr_number = job.links["pr"]
+    if not _approved_merge_review(job):
+        verdict = risk.assess(sync.pr_files(job.repo, pr_number), store.config().get("risk"))
+        job.history.append(
+            {
+                "at": state.now_iso(),
+                "event": "risk",
+                "stage": job.stage,
+                "level": verdict.level,
+                "reasons": list(verdict.reasons),
+            }
+        )
+        if verdict.level != "low":
+            store.save(state.open_gate(job, "merge_review", verdict.summary()))
+            print(f"{job.id}  GATE merge_review: {verdict.summary()}")
+            return
+        store.save(job)
+    sync.merge_pr(job.repo, pr_number)
+    print(f"{job.id}  auto-merged PR {pr_number}")
+
+
 def cmd_sync(a: argparse.Namespace) -> int:
     """Advance jobs from their PR and CI, and mirror stage changes to the tracker."""
     jobs = [store.load(i) for i in a.ids] if a.ids else store.all_jobs()
@@ -310,8 +346,7 @@ def cmd_sync(a: argparse.Namespace) -> int:
                 found = sync.pr_event(current, pr)
                 if found is None:
                     if auto_merge and sync.should_merge(current, pr):
-                        sync.merge_pr(current.repo, current.links["pr"])
-                        print(f"{current.id}  auto-merged PR {current.links['pr']}")
+                        _merge_if_low_risk(current)
                     continue
                 event, check = found
                 updated, actions = state.apply_event(current, event, check, note="sync")
