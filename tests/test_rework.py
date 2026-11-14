@@ -27,7 +27,7 @@ def pr_json(conclusion: str = "FAILURE") -> str:
 
 class ReworkMessage(unittest.TestCase):
     def test_judge_message_has_round_reasons_and_steps(self) -> None:
-        job = state.new_job("cortadas-0007", "x", "internal", "/r")
+        job = state.new_job("cortadas-0007", "/r", "x", "internal")
         job.judge_rounds = 1
         msg = rework.rework_message(job, "rejected", "no tests")
         self.assertNotIn("\n", msg)
@@ -42,7 +42,7 @@ class ReworkMessage(unittest.TestCase):
             self.assertIn(part, msg)
 
     def test_red_message_names_the_check(self) -> None:
-        job = state.new_job("cortadas-0007", "x", "internal", "/r")
+        job = state.new_job("cortadas-0007", "/r", "x", "internal")
         self.assertIn("check lint", rework.rework_message(job, "red", "lint"))
 
 
