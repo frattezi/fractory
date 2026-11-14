@@ -96,7 +96,7 @@ job for the Plane issue X"*; these are the commands it runs):
 | Step | Command | Who |
 | --- | --- | --- |
 | 1. Pick the work | an issue in Plane, or `fractory plane add-item --project <id> --title …` | you |
-| 2–4. Job, worktree, worker | `fractory launch --repo . --issue <plane issue> --project <id> --brief FILE` (title from the issue; run id from `orca_run` in `config.toml` or `--run`; `--dry-run` shows the steps; first checks the brief against the card and stops if it goes beyond it, unless `--force`) | main |
+| 2–4. Job, worktree, worker | `fractory launch --repo . --issue <plane issue> --project <id> --brief FILE` (title from the issue; run id from `orca_run` in `config.toml` or `--run`; `--dry-run` shows the steps; once the worker runs, it adds the owner to the card (keeping other assignees) and sets the start date if empty; first checks the brief against the card and stops if it goes beyond it, unless `--force`) | main |
 | 5. Open the PR and link it | `gh pr create`, then `fractory job link <id> --worktree … --pr <n>` and `fractory job advance <id> built` | worker / main |
 | 6. Checks | nothing: `fractory watch` sees CI; red goes back to build, green moves on to review | watch |
 | 6b. Rework | nothing: when a job goes back to `build` (CI red, Judge rejected) the reasons are typed into the worker's terminal (`links.terminal`) through `orch.py nudge`, and the history logs `rework_sent`; with no terminal or a failed nudge a `rework_needed` gate opens. A rejection that opens `judge_rounds` waits for you | watch / judge |
@@ -189,7 +189,7 @@ fractory plane import-specs --repo ~/Factory/Esquerdalha/cortadas --project <id>
 
 ```sh
 fractory plane create-project --name Fractory --identifier FRACTORY
-fractory plane add-item --project <id> --title "…" --body "markdown" --status ready
+fractory plane add-item --project <id> --title "…" --body "markdown" --status ready [--assign-me]
 fractory job new --repo DIR --title T --tracker plane --project <id> --ref <issue id>
 ```
 
@@ -211,9 +211,10 @@ intake_repos = { "<plane project id>" = "~/Factory/Fractory" }   # Plane project
 intake_label = "fractory"        # default
 max_parallel_jobs = 3            # default; counts jobs not done or cancelled
 auto_intake = true               # `fractory watch` runs intake once per round, after sync
+plane_assignee = "<plane user id>"   # owner added to cards by launch and `add-item --assign-me`; default: the API key's owner (Plane /users/me/)
 ```
 
-`fractory intake --dry-run` lists what would launch and changes nothing.
+`fractory intake --dry-run` lists what would launch and changes nothing. A job that reaches done sets the card's target date to today if empty.
 
 ## Next (v1)
 
