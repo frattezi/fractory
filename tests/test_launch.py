@@ -101,7 +101,13 @@ class LaunchCli(unittest.TestCase):
         self.assertEqual((job["stage"], job["gate"]), ("build", None))
         self.assertEqual(job["tracker"]["ref"], "iss-1")
         self.assertEqual(
-            job["links"], {"worktree": "launch-job-worktree-and-worker", "terminal": "term_abc", "profile": "strong"}
+            job["links"],
+            {
+                "worktree": "launch-job-worktree-and-worker",
+                "terminal": "term_abc",
+                "profile": "strong",
+                "dispatch": "d1",
+            },
         )
 
     def test_worker_launch_without_a_known_coordinator_runs_unchanged(self) -> None:

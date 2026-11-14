@@ -13,6 +13,7 @@
     fractory sync [ID...]          advance jobs from PR and CI; mirror to the tracker
     fractory watch [--every S] [--rounds N]   sync in a loop
     fractory watch --install | --uninstall    keep watch running as a LaunchAgent
+    fractory cleanup [--job ID] [--dry-run]   close finished jobs' terminals, worktree and branch in Orca
     fractory dash [--out FILE]
     fractory serve [--port 8777]   live board of jobs in the browser (127.0.0.1 only)
     fractory plane projects
@@ -35,7 +36,7 @@ import sys
 import time
 from pathlib import Path
 
-from . import intake, judge, launch, launchd, reload, rework, risk, specs_import, state, store, sync
+from . import cleanup, intake, judge, launch, launchd, reload, rework, risk, specs_import, state, store, sync
 from .trackers import plane as plane_mod
 from .trackers.base import STATUS_GROUPS
 
@@ -408,6 +409,10 @@ def cmd_watch(a: argparse.Namespace) -> int:
             if done:
                 time.sleep(a.every)
             cmd_sync(a)
+            try:
+                cleanup.run_cleanup(store.all_jobs())
+            except (OSError, ValueError, RuntimeError) as err:  # never stop the watch loop
+                print(f"cleanup error: {err}")
             if store.config().get("auto_intake"):
                 try:
                     intake.run_intake(store.config(), ORCH)
@@ -421,6 +426,12 @@ def cmd_watch(a: argparse.Namespace) -> int:
     except KeyboardInterrupt:
         print("watch stopped")
     return 0
+
+
+def cmd_cleanup(a: argparse.Namespace) -> int:
+    """Close finished jobs' Orca terminals and worktrees. By hand it also retries jobs whose worktree was kept."""
+    jobs = [store.load(a.job)] if a.job else store.all_jobs()
+    return cleanup.run_cleanup(jobs, dry_run=a.dry_run, retry=True)
 
 
 def cmd_intake(a: argparse.Namespace) -> int:
@@ -527,6 +538,10 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--install", action="store_true", help="run watch as a LaunchAgent (survives reboots)")
     s.add_argument("--uninstall", action="store_true", help="remove the LaunchAgent")
     s.set_defaults(fn=cmd_watch)
+    s = sub.add_parser("cleanup", help="close finished jobs' terminals, worktree and branch in Orca")
+    s.add_argument("--job", help="one job id (default: every finished job not yet cleaned)")
+    s.add_argument("--dry-run", action="store_true", help="say what would be closed, close nothing")
+    s.set_defaults(fn=cmd_cleanup)
     s = sub.add_parser("judge", help="Opus verdict on a job's PR diff against its Plane issue")
     s.add_argument("id")
     s.set_defaults(fn=cmd_judge)
