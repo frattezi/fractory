@@ -369,16 +369,23 @@ def cmd_sync(a: argparse.Namespace) -> int:
                 failed |= judge_job(job.id) != 0
                 continue
             pr = sync.fetch_pr(job.repo, job.links["pr"])
+            conflicted = False
             with store.locked(job.id):
                 current = store.load(job.id)
                 found = sync.pr_event(current, pr)
-                if found is None:
-                    if auto_merge and sync.should_merge(current, pr):
+                if found is None and auto_merge and sync.should_merge(current, pr):
+                    if sync.has_conflict(pr):
+                        conflicted = True
+                    else:
                         _merge_if_low_risk(current)
-                    continue
-                event, check = found
-                updated, actions = state.apply_event(current, event, check, note="sync")
-                store.save(updated)
+                if found is not None:
+                    event, check = found
+                    updated, actions = state.apply_event(current, event, check, note="sync")
+                    store.save(updated)
+            if found is None:
+                if conflicted:  # outside the lock: notify_conflict takes it
+                    rework.notify_conflict(job.id, ORCH)
+                continue
             _report(updated, actions)
             if event == "red":
                 rework.notify(updated.id, "red", check or "", ORCH)
