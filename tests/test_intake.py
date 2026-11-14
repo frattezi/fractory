@@ -115,6 +115,11 @@ class IntakeCli(unittest.TestCase):
         env.start()
         self.addCleanup(env.stop)
         self.write_config()
+        self.routes: list[list[str]] = []
+        self.route_reply: tuple[int, str] = (0, "profile default: --agent pi --model m  (no tag matched)\n")
+        patch = mock.patch.object(intake, "_run_orch", side_effect=self.fake_route)
+        patch.start()
+        self.addCleanup(patch.stop)
         for target, fake in ((briefcheck, "check"), (launch, "run_cmd")):
             patch = mock.patch.object(target, fake, side_effect=getattr(self, f"fake_{fake}"))
             patch.start()
@@ -127,6 +132,11 @@ class IntakeCli(unittest.TestCase):
         (self.home / "config.toml").write_text(
             f'orca_run = "run_1"\nplane_url = "{self.url}"\n{extra}\n[intake_repos]\n"{PROJECT}" = "{self.repo}"\n'
         )
+
+    def fake_route(self, argv: list[str]) -> tuple[int, str]:
+        self.routes.append(argv)
+        self.spec_seen = Path(argv[argv.index("--spec") + 1]).read_text()
+        return self.route_reply
 
     def fake_check(self, title: str, text: str, brief: str) -> briefcheck.Verdict:
         return briefcheck.Verdict(True, [])
@@ -322,6 +332,61 @@ class IntakeCli(unittest.TestCase):
         FakePlane.issues = [card(1)]
         self.run_cli("intake", "--dry-run")
         self.assertFalse((self.home / "queue.json").exists())
+
+
+class ProfileChoice(IntakeCli):
+    def launched_profile(self) -> str:
+        cmd = next(c for c in self.calls if "launch" in c and "--profile" in c)
+        return cmd[cmd.index("--profile") + 1]
+
+    def chosen_event(self) -> dict:
+        return next(h for h in store.all_jobs()[0].history if h["event"] == "profile_chosen")
+
+    def test_worker_line_wins_over_everything(self) -> None:
+        self.write_config('[intake]\ndefault_profile = "backend"\n')
+        FakePlane.issues = [card(1, html="<p>Do it</p><p>Worker: <b>ui</b></p>")]
+        self.run_cli("intake")
+        self.assertEqual(self.launched_profile(), "ui")
+        self.assertEqual(self.routes, [])
+        self.assertIn("Worker: line", self.chosen_event()["why"])
+
+    def test_per_repo_config_beats_default_and_route(self) -> None:
+        self.write_config(f'[intake]\ndefault_profile = "backend"\n[intake.profiles]\n"{self.repo}" = "infra"\n')
+        FakePlane.issues = [card(1)]
+        self.run_cli("intake")
+        self.assertEqual(self.launched_profile(), "infra")
+        self.assertEqual(self.routes, [])
+
+    def test_global_default_profile(self) -> None:
+        self.write_config('[intake]\ndefault_profile = "backend"\n')
+        FakePlane.issues = [card(1)]
+        self.run_cli("intake")
+        self.assertEqual(self.launched_profile(), "backend")
+        self.assertEqual(self.routes, [])
+
+    def test_route_picks_with_tags_and_without_ignore_quota(self) -> None:
+        self.route_reply = (0, "profile testes-ci: --agent pi --model m  (tag tests; opencode ok)\n")
+        FakePlane.labels.append({"id": "l-tests", "name": "tests"})
+        FakePlane.issues = [card(1, labels=(LABEL, "l-tests"), html="<p>Tags: ci, e2e</p>")]
+        self.run_cli("intake")
+        self.assertEqual(self.launched_profile(), "testes-ci")
+        self.assertNotIn("--ignore-quota", self.routes[0])
+        self.assertIn("--repo", self.routes[0])
+        self.assertIn("tags: [tests, ci, e2e]", self.spec_seen)
+        self.assertNotIn("fractory", self.spec_seen)
+        self.assertIn("orch.py route", self.chosen_event()["why"])
+
+    def test_route_failure_falls_back_to_strong_and_logs_it(self) -> None:
+        for reply in ((1, "no profile has quota under 90%: escalate to the main session\n"), (0, "")):
+            with self.subTest(reply=reply):
+                for j in store.all_jobs():
+                    (self.home / "jobs" / j.id / "state.json").unlink()
+                self.route_reply = reply
+                FakePlane.issues = [card(1)]
+                self.calls.clear()
+                self.run_cli("intake")
+                self.assertEqual(self.launched_profile(), "strong")
+                self.assertIn("fallback", self.chosen_event()["why"])
 
 
 class WatchIntake(unittest.TestCase):

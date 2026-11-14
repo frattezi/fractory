@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import re
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 from . import state, store
@@ -29,6 +31,49 @@ def rework_message(job: state.Job, event: str, detail: str) -> str:
     )
 
 
+def escalate_worker(job: state.Job, message: str, orch: Path, runner) -> str | None:
+    """After a first Judge rejection on a worker whose profile has `escalate_to`, start a worker of that profile in
+    the same worktree (same branch) with the rework message. Returns the new terminal, or None to nudge as usual."""
+    from . import launch  # late: launch pulls in briefcheck/judge
+
+    profile, wt = job.links.get("profile"), job.links.get("worktree_id")
+    if not profile or not wt or any(h["event"] == "profile_escalated" for h in job.history):
+        return None
+    try:
+        code, out = runner([sys.executable, str(orch), "route", "--escalate-from", profile, "--repo", job.repo])
+        m = re.match(r"profile (\S+?):", out.strip()) if code == 0 else None
+        if not m:
+            return None
+        brief = store.job_dir(job.id) / "brief.md"
+        with tempfile.TemporaryDirectory() as tmp:
+            spec = Path(tmp) / "rework.md"
+            spec.write_text((brief.read_text() if brief.is_file() else f"# {job.title}\n") + f"\n\n---\n{message}\n")
+            run = launch.run_id(None)
+            coordinator = launch.coordinator_handle(run)
+            cmd = ["env", f"ORCA_TERMINAL_HANDLE={coordinator}"] if coordinator else []
+            cmd += [sys.executable, str(orch), "launch", "--run", run, "--worktree", f"id:{wt}"]
+            cmd += ["--title", f"{job.id} {job.title}", "--task-title", f"{job.id} {job.title}"]
+            cmd += ["--spec-file", str(spec), "--profile", m.group(1), "--repo", job.repo, "--trust"]
+            code, out = runner(cmd)
+        if code != 0:
+            return None
+        term = launch.terminal_handle(out)
+    except (OSError, launch.LaunchError):
+        return None
+    job.history.append(
+        {
+            "at": state.now_iso(),
+            "event": "profile_escalated",
+            "stage": job.stage,
+            "from": profile,
+            "profile": m.group(1),
+            "terminal": term,
+        }
+    )
+    job.links.update(profile=m.group(1), terminal=term)
+    return term
+
+
 def notify(job_id: str, event: str, detail: str, orch: Path, runner=None) -> None:
     """Nudge the job's terminal and log `rework_sent`; with no terminal or a failed nudge, open `rework_needed`.
     `runner` defaults to the module's `run_cmd`, looked up now so tests can swap it."""
@@ -40,7 +85,10 @@ def notify(job_id: str, event: str, detail: str, orch: Path, runner=None) -> Non
         message = rework_message(job, event, detail)
         terminal = job.links.get("terminal")
         sent = False
-        if terminal:
+        escalated = escalate_worker(job, message, orch, runner) if event == "rejected" else None
+        if escalated:
+            terminal, sent = escalated, True
+        elif terminal:
             try:
                 code, _ = runner([sys.executable, str(orch), "nudge", terminal, "--text", message])
                 sent = code == 0

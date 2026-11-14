@@ -301,6 +301,30 @@ dependency) launches only when every ref is a card in a completed state. A ref i
 Until then the card waits; a ref that matches no card keeps it waiting and prints
 `intake: <title>: unknown dependency <ref>` once per run. Cards without the line behave as before.
 
+### Which model works a card
+
+Intake picks the worker profile (`~/.agents/workers.toml`) per card, first match wins:
+
+1. a `Worker: <profile>` line in the card text (bold allowed), e.g. `Worker: backend`;
+2. config: `[intake.profiles]` maps a repo path to a profile, `[intake] default_profile` is the global one;
+3. `orch.py route --spec <brief> --repo <repo>`, with the card's labels (other than `fractory`, `humano`, `design`)
+   and a `Tags: a, b` line as tags. It never uses `--ignore-quota`, so a provider that is signed out or over
+   quota falls to the next candidate;
+4. `strong` when route fails or answers nothing.
+
+```toml
+# $FACTORY_HOME/config.toml
+[intake]
+default_profile = "default"                  # optional
+[intake.profiles]
+"~/Factory/Fractory" = "strong"              # optional, per repo
+```
+
+The profile and the reason are printed at launch and logged as a `profile_chosen` event in the job history.
+After a first Judge rejection on a job whose profile has `escalate_to`, the factory starts a worker of that
+profile (`orch.py route --escalate-from`) in the same worktree and branch and logs `profile_escalated`; it
+happens once per job.
+
 `fractory intake --dry-run` lists what would launch (which cards wait, with `waits for <refs>`, and which labelled
 Backlog cards are `parked (backlog)`) and changes nothing. A job that reaches done sets the card's target date to today if empty.
 
