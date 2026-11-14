@@ -11,7 +11,7 @@ import json
 import re
 import subprocess
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from html import escape
 from html.parser import HTMLParser
 from pathlib import Path
@@ -37,7 +37,7 @@ Runner = Callable[[list[str], str], str]  # (argv, stdin) -> stdout
 
 
 class JudgeError(RuntimeError):
-    pass
+    cost_usd: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -47,6 +47,7 @@ class Verdict:
     scope_creep: bool
     reasons: tuple[str, ...]
     unverified: tuple[str, ...] = ()  # findings the model is unsure of; notes when they do not block
+    cost_usd: float = 0.0  # what the model call cost, from claude's total_cost_usd
 
     @property
     def approved(self) -> bool:
@@ -229,6 +230,10 @@ def run_claude(argv: list[str], stdin: str) -> str:
 
 
 def ask_model(prompt: str, runner: Runner | None = None) -> str:
+    return ask_model_with_cost(prompt, runner)[0]
+
+
+def ask_model_with_cost(prompt: str, runner: Runner | None = None) -> tuple[str, float]:
     out = (runner or run_claude)(["claude", "-p", "--model", "opus", "--output-format", "json"], prompt)
     try:
         data = json.loads(out)
@@ -237,7 +242,9 @@ def ask_model(prompt: str, runner: Runner | None = None) -> str:
         raise JudgeError("claude output has no JSON 'result' field") from None
     if data.get("is_error") or not isinstance(result, str):
         raise JudgeError(f"claude reported an error: {str(result)[:200]}")
-    return result
+    cost = data.get("total_cost_usd")
+    usable = isinstance(cost, (int, float)) and not isinstance(cost, bool) and cost > 0
+    return result, float(cost) if usable else 0.0
 
 
 def check_diff_size(diff: str) -> None:
@@ -295,4 +302,10 @@ def judge_diff(
     check_diff_size(diff)
     check_brief_size(brief)
     prompt = build_prompt(issue_title, html_to_text(issue_html), diff, brief, checks, dropped)
-    return parse_verdict(ask_model(prompt, runner), checks)
+    text, cost = ask_model_with_cost(prompt, runner)
+    try:
+        verdict = parse_verdict(text, checks)
+    except JudgeError as err:
+        err.cost_usd = cost  # the call was paid for even though the verdict is unusable
+        raise
+    return replace(verdict, cost_usd=cost)

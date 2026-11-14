@@ -385,6 +385,10 @@ def plane_tracker(job: state.Job) -> plane_mod.Plane | None:
     return plane_mod.Plane(t["project"], plane_mod.api_key_from_env(), t.get("url") or plane_mod.DEFAULT_URL)
 
 
+def _judge_cost(job: state.Job, usd: float) -> tuple[state.Job, list[str]]:
+    return state.add_cost(job, usd, source="judge") if usd > 0 else (job, [])
+
+
 def judge_job(job_id: str) -> int:
     """Judge a job in review: verdict from the model, then reviewed + approved/rejected, comments posted."""
     job = store.load(job_id)
@@ -405,14 +409,24 @@ def judge_job(job_id: str) -> int:
             generated=list(store.config().get("judge", {}).get("generated", [])),
         )
     except judge.JudgeError as err:
-        detail = str(err)
-        return _mutate(job_id, lambda j: (state.open_gate(j, "judge_error", detail), ["gate:judge_error"]))
+        detail, spent = str(err), err.cost_usd
+
+        def gate(j: state.Job):
+            j, actions = _judge_cost(j, spent)
+            if j.gate is None:
+                j = state.open_gate(j, "judge_error", detail)
+                actions = [*actions, "gate:judge_error"]
+            return j, actions
+
+        return _mutate(job_id, gate)
 
     def apply(j: state.Job):
         if j.stage != "review" or j.gate:
             raise state.TransitionError(f"{j.id} changed while judging (stage {j.stage}); verdict dropped")
         j, _ = state.apply_event(j, "reviewed", note="judge")
-        return state.apply_event(j, verdict.decision, note=verdict.note())
+        j, actions = state.apply_event(j, verdict.decision, note=verdict.note())
+        j, cost_actions = _judge_cost(j, verdict.cost_usd)
+        return j, [*actions, *cost_actions]
 
     code = _mutate(job_id, apply)
     sync.pr_comment(job.repo, pr, verdict.comment_markdown())
