@@ -138,6 +138,18 @@ class MergeDecision(unittest.TestCase):
         self.assertIsNone(self.state()["gate"])
         self.assertEqual(self.risk_events()[0]["level"], "high")
 
+    def test_gate_opened_before_repo_joined_no_merge_review_closes_and_merges(self) -> None:
+        self.files = [{"path": "infra/main.tf", "additions": 1, "deletions": 0}]
+        self.run_cli("sync")
+        self.assertEqual(self.state()["gate"]["reason"], "merge_review")
+        self.config(f'auto_merge = true\n[risk]\nno_merge_review = ["{self.repo}"]\n')
+        _, out = self.run_cli("sync")
+        self.assertIn("repo in no_merge_review", out)
+        self.assertEqual(self.merged, ["42"])
+        self.assertIsNone(self.state()["gate"])
+        resolved = [h for h in self.state()["history"] if h["event"] == "gate_resolved"]
+        self.assertEqual([(h["decision"], h["note"]) for h in resolved], [("continue", "repo in no_merge_review")])
+
     def test_other_repo_in_no_merge_review_still_gates(self) -> None:
         self.config('auto_merge = true\n[risk]\nno_merge_review = ["/somewhere/else"]\n')
         self.files = [{"path": "infra/main.tf", "additions": 1, "deletions": 0}]

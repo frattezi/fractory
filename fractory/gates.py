@@ -11,7 +11,7 @@ import html
 import json
 import re
 
-from . import state, store, sync
+from . import risk, state, store, sync
 from .trackers.base import Duplicate
 
 LABEL = "humano"
@@ -138,6 +138,22 @@ def close_card(job: state.Job, gate: state.Gate, plane_factory=None) -> None:
         print(f"warning: could not move the gate card to Done: {err}")
 
 
+def close_obsolete(job_id: str, plane_factory=None) -> bool:
+    """Close an open merge_review gate whose repo the config no longer reviews (a gate opened under an older rule)."""
+    job = store.load(job_id)
+    gate = job.gate
+    if gate is None or gate.reason != "merge_review" or risk.reviews_merges(job.repo, store.config().get("risk")):
+        return False
+    with store.locked(job_id):
+        current = store.load(job_id)
+        if current.gate is None or current.gate.opened_at != gate.opened_at:
+            return False
+        store.save(state.resolve_gate(current, "continue", "repo in no_merge_review"))
+    close_card(job, gate, plane_factory)
+    print(f"{job_id}  gate merge_review closed: repo in no_merge_review")
+    return True
+
+
 def sync_gates(job_ids: list[str] | None = None) -> bool:
     """Watch step: create missing cards, then resolve gates whose card was decided. True if any step failed."""
     failed = False
@@ -145,6 +161,8 @@ def sync_gates(job_ids: list[str] | None = None) -> bool:
         if job.gate is None:
             continue
         try:
+            if close_obsolete(job.id):
+                continue
             ensure_card(job.id)
             resolve_from_card(job.id)
         except (OSError, ValueError, RuntimeError) as err:

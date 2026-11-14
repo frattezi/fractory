@@ -51,9 +51,12 @@ def main_moved(repo_root: Path, git: Git | None = None) -> bool:
     """True when remote main is ahead of a clean checkout of `main`. Any git error means False."""
     git = git or run_git
     try:
-        if git(repo_root, "rev-parse", "--abbrev-ref", "HEAD") != "main":
+        branch = git(repo_root, "rev-parse", "--abbrev-ref", "HEAD")
+        if branch != "main":
+            print(f"reload: skipped, checkout is on {branch}, not main", flush=True)
             return False
         if git(repo_root, "status", "--porcelain"):
+            print("reload: skipped, checkout has uncommitted changes", flush=True)
             return False
         fetch_main(repo_root, git)
         return git(repo_root, "rev-parse", "HEAD") != git(repo_root, "rev-parse", "FETCH_HEAD")
