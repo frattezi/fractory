@@ -13,7 +13,7 @@ from http.server import ThreadingHTTPServer
 from pathlib import Path
 from unittest import mock
 
-from fractory import cli, judge, rework, state, sync
+from fractory import cli, judge, launch, rework, state, sync
 from tests.test_judge import verdict_json
 from tests.test_plane_import import KEY, PROJECT, FakePlane, reset_fake
 
@@ -176,6 +176,71 @@ class ReworkCli(unittest.TestCase):
         self.model_reply = verdict_json()
         self.run_cli("judge", JOB)
         self.assertEqual(self.nudges, [])
+
+
+class EscalateOnRejection(ReworkCli):
+    """A pi worker that the Judge rejects is replaced once by its profile's escalate_to, in the same worktree."""
+
+    route_reply: tuple[int, str] = (0, "profile strong: --agent claude --model sonnet  (step up from backend)\n")
+
+    def fake_orch(self, argv: list[str]) -> tuple[int, str]:
+        self.nudges.append(argv)
+        if "route" in argv:
+            return self.route_reply
+        if "launch" in argv:
+            return 0, "launched dispatch d9 in terminal term_strong (stage running)\n"
+        return self.nudge_code, ""
+
+    def setUp(self) -> None:
+        super().setUp()
+        (self.tmp / "factory").mkdir(exist_ok=True)
+        (self.tmp / "factory" / "config.toml").write_text('orca_run = "run_1"\n')
+        patch = mock.patch.object(launch, "run_cmd", return_value=(1, ""))
+        patch.start()
+        self.addCleanup(patch.stop)
+
+    def new_pi_job(self) -> None:
+        self.new_job("review")
+        self.run_cli("job", "link", JOB, "--profile", "backend")
+        path = self.tmp / "factory" / "jobs" / JOB / "state.json"
+        data = json.loads(path.read_text())
+        data["links"]["worktree_id"] = "repo::/wt/x"
+        path.write_text(json.dumps(data))
+
+    def test_rejection_calls_escalate_from_and_relaunches_on_the_same_worktree(self) -> None:
+        self.new_pi_job()
+        self.run_cli("judge", JOB)
+        route = next(a for a in self.nudges if "route" in a)
+        self.assertEqual(route[route.index("--escalate-from") + 1], "backend")
+        launch_cmd = next(a for a in self.nudges if "launch" in a)
+        self.assertEqual(launch_cmd[launch_cmd.index("--worktree") + 1], "id:repo::/wt/x")
+        self.assertEqual(launch_cmd[launch_cmd.index("--profile") + 1], "strong")
+        self.assertFalse(any("nudge" in a for a in self.nudges))
+        job = self.job()
+        self.assertEqual((job["links"]["profile"], job["links"]["terminal"]), ("strong", "term_strong"))
+        self.assertIn("profile_escalated", self.events())
+        self.assertEqual(self.events()[-1], "rework_sent")
+
+    def test_no_step_up_falls_back_to_a_nudge(self) -> None:
+        self.route_reply = (0, "no step up from backend: escalate to the main session\n")
+        self.new_pi_job()
+        self.run_cli("judge", JOB)
+        self.assertFalse(any("launch" in a for a in self.nudges))
+        self.assertTrue(any("nudge" in a for a in self.nudges))
+        self.assertNotIn("profile_escalated", self.events())
+
+    def test_a_job_without_profile_is_nudged(self) -> None:
+        self.new_job("review")
+        self.run_cli("judge", JOB)
+        self.assertFalse(any("route" in a for a in self.nudges))
+
+    def test_escalates_only_once(self) -> None:
+        self.new_pi_job()
+        self.run_cli("judge", JOB)
+        self.run_cli("job", "advance", JOB, "built")
+        self.run_cli("job", "advance", JOB, "green")
+        self.run_cli("judge", JOB)
+        self.assertEqual(sum("route" in a for a in self.nudges), 1)
 
 
 if __name__ == "__main__":
