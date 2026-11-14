@@ -91,7 +91,7 @@ body.feed-open .feed-toggle { display: none; }
 .ev.hl.good { border-left-color: var(--live); }
 .ev.hl.warn { border-left-color: var(--warm); }
 .ev b { font-size: 13px; } .ev small { color: var(--muted); display: block; font-size: 11px; }
-.ev .note { color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
+.ev .note { color: var(--muted); font-size: 12px; overflow-wrap: anywhere; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
 .feed-body h3 { margin: 14px 0 6px; font-size: 12px; text-transform: uppercase; letter-spacing: .7px; color: var(--muted); }
 .feed-log { margin: 0; font: 11px/1.4 ui-monospace, Menlo, monospace; color: var(--muted); white-space: pre-wrap; overflow-wrap: anywhere; }
 @media (max-width: 900px) { body.feed-open main { margin-right: 0; } }
