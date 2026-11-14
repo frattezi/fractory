@@ -257,17 +257,17 @@ class SyncCli(unittest.TestCase):
         args = ("plane", "setup-project", "--project", PROJECT, "--url", self.url)
         code, out = self.run_cli(*args)
         self.assertEqual(code, 0, out)
-        self.assertEqual(self.label_names(), list(plane_mod.STANDARD_LABELS)[2:3] + ["fractory", "automação", "design"])
+        self.assertEqual(self.label_names(), list(plane_mod.STANDARD_LABELS)[1:2] + ["fractory", "design"])
         self.assertEqual(FakePlane.labels[0]["color"], "#e3a35f")
         FakePlane.posts.clear()
         self.run_cli(*args)
         self.assertEqual(FakePlane.posts, [])
-        self.assertEqual(len(FakePlane.labels), 4)
+        self.assertEqual(len(FakePlane.labels), 3)
 
     def test_setup_project_all_and_unknown_project(self) -> None:
         code, _ = self.run_cli("plane", "setup-project", "--all", "--url", self.url)
         self.assertEqual(code, 0)
-        self.assertEqual(len(FakePlane.labels), 4)
+        self.assertEqual(len(FakePlane.labels), 3)
         code, _ = self.run_cli("plane", "setup-project", "--project", "nope", "--url", self.url)
         self.assertEqual(code, 1)
 

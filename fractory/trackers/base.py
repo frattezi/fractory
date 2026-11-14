@@ -31,6 +31,14 @@ class Duplicate(Exception):
 
 
 class Tracker(Protocol):
-    def create_item(self, title: str, body_html: str, status: str, external_id: str) -> Item: ...
+    def create_item(
+        self,
+        title: str,
+        body_html: str,
+        status: str,
+        external_id: str,
+        labels: list[str] | None = None,
+        assignees: list[str] | None = None,
+    ) -> Item: ...
     def set_status(self, ref: str, status: str) -> None: ...
     def comment(self, ref: str, body_html: str) -> None: ...
