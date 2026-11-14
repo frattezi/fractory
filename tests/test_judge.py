@@ -65,11 +65,11 @@ class ParseVerdict(unittest.TestCase):
 
     def test_prompt_includes_brief_only_when_present(self) -> None:
         with_brief = judge.build_prompt("T", "B", "+x", brief="Touch only a.py")
-        self.assertIn("BRIEF", with_brief)
+        self.assertIn("\nBRIEF\n", with_brief)
         self.assertIn("Touch only a.py", with_brief)
         self.assertIn("beyond both", with_brief)
         for brief in (None, "", "  \n"):
-            self.assertNotIn("BRIEF", judge.build_prompt("T", "B", "+x", brief=brief))
+            self.assertNotIn("\nBRIEF\n", judge.build_prompt("T", "B", "+x", brief=brief))
 
     def test_html_to_text(self) -> None:
         text = judge.html_to_text("<h2>Goal</h2><p>Do <code>x</code> &amp; y</p><ul><li>one</li><li>two</li></ul>")
@@ -195,12 +195,12 @@ class JudgeCli(unittest.TestCase):
     def test_brief_reaches_the_prompt(self) -> None:
         self.write_brief("Also add the helper.")
         self.run_cli("judge", "cortadas-0001")
-        self.assertIn("BRIEF", self.prompt)
+        self.assertIn("\nBRIEF\n", self.prompt)
         self.assertIn("Also add the helper.", self.prompt)
 
     def test_no_brief_file_means_no_brief_section(self) -> None:
         self.run_cli("judge", "cortadas-0001")
-        self.assertNotIn("BRIEF", self.prompt)
+        self.assertNotIn("\nBRIEF\n", self.prompt)
 
     def test_oversized_brief_gates_without_calling_the_model(self) -> None:
         self.write_brief("x" * (judge.MAX_BRIEF_CHARS + 1))
