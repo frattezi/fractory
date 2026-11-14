@@ -549,6 +549,7 @@ def _watch_loop(a: argparse.Namespace) -> int:
             if done:
                 time.sleep(a.every)
             started = time.monotonic()
+            plane_mod.begin_cycle()
             cmd_sync(a)
             try:
                 cleanup.run_cleanup(store.all_jobs())
@@ -567,6 +568,8 @@ def _watch_loop(a: argparse.Namespace) -> int:
                 return 0
     except KeyboardInterrupt:
         print("watch stopped")
+    finally:
+        plane_mod.end_cycle()
     return 0
 
 
