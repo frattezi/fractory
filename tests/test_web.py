@@ -124,6 +124,47 @@ class Routes(ServerCase):
             self.assertEqual(self.get(path)[0], 404, path)
 
 
+class Activity(ServerCase):
+    def add_events(self, job_id: str, events: list[tuple[str, str]]) -> None:
+        job = state.new_job(job_id, "/work/app", f"Job {job_id}", "internal", 50.0, "build")
+        job.history = [{"at": at, "event": ev, "stage": "build", "note": f"n-{ev}"} for at, ev in events]
+        self.save(job)
+
+    def test_events_across_jobs_newest_first_with_highlights(self) -> None:
+        self.add_events("app-0002", [("2030-01-01T10:00:00+00:00", "created"), ("2030-01-01T12:00:00+00:00", "red")])
+        self.add_events("app-0003", [("2030-01-01T11:00:00+00:00", "reviewed")])
+        _, ctype, body = self.get("/api/activity")
+        data = json.loads(body)
+        self.assertIn("json", ctype)
+        top = data["events"][:3]
+        self.assertEqual(
+            [(e["job"], e["event"]) for e in top],
+            [("app-0002", "red"), ("app-0003", "reviewed"), ("app-0002", "created")],
+        )
+        self.assertEqual([e["highlight"] for e in top], [True, False, True])
+        self.assertEqual(top[0]["title"], "Job app-0002")
+        self.assertEqual((top[0]["stage"], top[0]["note"]), ("build", "n-red"))
+
+    def test_limit_is_clamped(self) -> None:
+        self.add_events("app-0002", [(f"2030-01-01T10:{i:02d}:00+00:00", "cost") for i in range(60)])
+        count = lambda q: len(json.loads(self.get("/api/activity" + q)[2])["events"])
+        self.assertEqual(count(""), 50)
+        self.assertEqual(count("?limit=5"), 5)
+        self.assertEqual(count("?limit=0"), 1)
+        self.assertEqual(count("?limit=-3"), 1)
+        self.assertEqual(count("?limit=9999"), 61)
+        self.assertEqual(count("?limit=abc"), 50)
+
+    def test_missing_log_is_empty_list(self) -> None:
+        self.assertEqual(json.loads(self.get("/api/activity")[2])["log"], [])
+
+    def test_log_tail_is_last_40_lines(self) -> None:
+        (self.home / "watch.log").write_text("\n".join(f"line {i}" for i in range(100)) + "\n")
+        log = json.loads(self.get("/api/activity")[2])["log"]
+        self.assertEqual(len(log), 40)
+        self.assertEqual((log[0], log[-1]), ("line 60", "line 99"))
+
+
 class Events(ServerCase):
     def test_event_follows_state_change(self) -> None:
         conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=5)
