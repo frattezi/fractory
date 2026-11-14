@@ -306,6 +306,18 @@ class IntakeCli(unittest.TestCase):
         self.assertNotIn("Card 7", q)
         self.assertEqual(set(q["Card 5"]), {"key", "title", "state", "labels", "decision"})
 
+    def test_a_watch_round_writes_heartbeat_and_queue(self) -> None:
+        self.write_config("auto_intake = true")
+        FakePlane.issues = [card(1), card(2, "s-backlog")]
+        with mock.patch.object(cli, "cmd_sync", return_value=0):
+            code, _ = self.run_cli("watch", "--rounds", "1", "--every", "0")
+        self.assertEqual(code, 0)
+        beat = json.loads((self.home / "heartbeat.json").read_text())
+        self.assertEqual(beat["cycles"], 1)
+        self.assertEqual(
+            {c["title"]: c["decision"] for c in self.queue().values()}, {"Card 1": "launched", "Card 2": "parked"}
+        )
+
     def test_dry_run_leaves_no_queue(self) -> None:
         FakePlane.issues = [card(1)]
         self.run_cli("intake", "--dry-run")

@@ -186,6 +186,15 @@ events across all jobs, newest first, plus the last 40 lines of `$FACTORY_HOME/w
 panel. It refreshes on every `jobs` event and every 30 s. Data comes from `GET /api/activity?limit=50` (limit
 clamped to 1..200).
 
+Factory health and the intake queue come from two snapshots the watch leaves in `$FACTORY_HOME`, so the
+board never calls Plane: `heartbeat.json` (written atomically at the end of every watch cycle: cycle start,
+end and duration, cycle count, pid, start time, code sha, error counts, Plane rate-limit backoffs, last 10
+error lines) and `queue.json` (written by every intake run: per project, each labelled card with its
+decision: `launched`, `waits_for` (unmet dependencies), `max_parallel`, `parked`, `has_job` or
+`launch_failed` with the error). `GET /api/health` serves the heartbeat plus `alive` (the last cycle ended
+less than 3× `--every` ago) and `GET /api/queue` serves the queue; both answer 200 `{"missing": true}` until
+the file exists.
+
 ## Plane
 
 API key: `$PLANE_API_KEY`, or the Keychain item `fractory-plane`
