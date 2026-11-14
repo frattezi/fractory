@@ -43,7 +43,22 @@ import time
 from datetime import UTC, datetime
 from pathlib import Path
 
-from . import cleanup, gates, intake, judge, launch, launchd, reload, rework, risk, specs_import, state, store, sync
+from . import (
+    cleanup,
+    gates,
+    health,
+    intake,
+    judge,
+    launch,
+    launchd,
+    reload,
+    rework,
+    risk,
+    specs_import,
+    state,
+    store,
+    sync,
+)
 from .trackers import plane as plane_mod
 from .trackers.base import STATUS_GROUPS
 
@@ -551,14 +566,15 @@ def cmd_watch(a: argparse.Namespace) -> int:
         return 0
     a.ids = []
     real_stdout = sys.stdout
-    sys.stdout = _Stamped(real_stdout)
+    beat = health.Heartbeat(_Stamped(real_stdout), a.every, REPO_ROOT)
+    sys.stdout = beat
     try:
-        return _watch_loop(a)
+        return _watch_loop(a, beat)
     finally:
         sys.stdout = real_stdout
 
 
-def _watch_loop(a: argparse.Namespace) -> int:
+def _watch_loop(a: argparse.Namespace, beat: health.Heartbeat | None = None) -> int:
     done = 0
     try:
         while a.rounds == 0 or done < a.rounds:
@@ -578,6 +594,8 @@ def _watch_loop(a: argparse.Namespace) -> int:
                     print(f"intake error: {err}")
             print(f"watch: cycle took {time.monotonic() - started:.1f}s")
             sys.stdout.flush()
+            if beat:
+                beat.end_cycle()
             done += 1
             if a.reload and a.rounds == 0 and (sha := reload.pull_if_moved(REPO_ROOT)):
                 print(f"watch: main moved to {sha}, restarting", flush=True)
