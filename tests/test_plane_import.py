@@ -36,6 +36,8 @@ class FakePlane(BaseHTTPRequestHandler):
     patches: ClassVar[list[tuple[str, dict]]] = []
     comments: ClassVar[list[tuple[str, dict]]] = []
     labels: ClassVar[list[dict]] = []
+    posts: ClassVar[list[str]] = []
+    reject_project_patch: ClassVar[bool] = False
     page_size: ClassVar[int] = 100
 
     def log_message(self, format: str, *args: object) -> None:  # keep test output quiet
@@ -63,7 +65,7 @@ class FakePlane(BaseHTTPRequestHandler):
             self._send(200, {"results": self.projects})
         elif self.path == f"{base}/projects/{PROJECT}/states/":
             self._send(200, {"results": STATES})
-        elif self.path == f"{base}/projects/{PROJECT}/labels/":
+        elif re.fullmatch(f"{base}/projects/[^/]+/labels/", self.path):
             self._send(200, {"results": self.labels})
         elif m := re.fullmatch(f"{base}/projects/{PROJECT}/issues/\\?expand=state(?:&cursor=(\\d+))?", self.path):
             start = int(m.group(1) or 0)
@@ -85,6 +87,7 @@ class FakePlane(BaseHTTPRequestHandler):
         if not self._authed():
             return
         body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+        self.posts.append(self.path)
         if self.path == "/api/v1/workspaces/cortadas/projects/":
             project = {**body, "id": str(uuid.uuid4())}
             self.projects.append(project)
@@ -97,6 +100,10 @@ class FakePlane(BaseHTTPRequestHandler):
             issue = {**body, "id": str(uuid.uuid4()), "sequence_id": len(self.issues) + 1}
             self.issues.append(issue)
             self._send(201, issue)
+        elif re.fullmatch("/api/v1/workspaces/cortadas/projects/[^/]+/labels/", self.path):
+            label = {**body, "id": str(uuid.uuid4())}
+            self.labels.append(label)
+            self._send(201, label)
         elif re.fullmatch(f"/api/v1/workspaces/cortadas/projects/{PROJECT}/issues/[^/]+/comments/", self.path):
             self.comments.append((self.path, body))
             self._send(201, body)
@@ -108,6 +115,12 @@ class FakePlane(BaseHTTPRequestHandler):
             return
         body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
         self.patches.append((self.path, body))
+        if m := re.fullmatch("/api/v1/workspaces/cortadas/projects/[^/]+/labels/([^/]+)/", self.path):
+            label = next(lb for lb in self.labels if lb["id"] == m.group(1))
+            label.update(body)
+        elif self.reject_project_patch and re.fullmatch("/api/v1/workspaces/cortadas/projects/[^/]+/", self.path):
+            self._send(400, {"error": "unknown field"})
+            return
         self._send(200, body)
 
 
@@ -116,6 +129,8 @@ def reset_fake() -> None:
     FakePlane.patches = []
     FakePlane.comments = []
     FakePlane.labels = []
+    FakePlane.posts = []
+    FakePlane.reject_project_patch = False
     FakePlane.page_size = 100
     FakePlane.projects = [{"id": PROJECT, "identifier": "CORT", "name": "Cortadas"}]
 
