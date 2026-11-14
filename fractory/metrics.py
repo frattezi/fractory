@@ -11,6 +11,7 @@ import statistics
 from collections import defaultdict
 from datetime import UTC, datetime, timedelta
 
+from . import pt
 from .state import TERMINAL, Job
 
 DEFAULT_STUCK_MINUTES = {"build": 60, "checks": 30, "review": 20, "judge": 20, "ship": 15}
@@ -94,7 +95,13 @@ def stuck_item(job: Job, now: datetime, limits: dict[str, float] | None = None) 
     if job.gate is not None:
         age = max(0.0, _minutes(now - parse(job.gate.opened_at)))
         reason = f"gate {job.gate.reason} open {fmt_duration(age)}"
-        return {"kind": "gate", "stage": job.stage, "age_min": round(age, 1), "reason": reason}
+        return {
+            "kind": "gate",
+            "stage": job.stage,
+            "age_min": round(age, 1),
+            "reason": reason,
+            "reason_pt": pt.stuck_reason("gate", job.stage, fmt_duration(age), job.gate.reason),
+        }
     limit = limits.get(job.stage)
     age = stage_age_minutes(job, now)
     if limit is None or age <= limit:
@@ -106,7 +113,13 @@ def stuck_item(job: Job, now: datetime, limits: dict[str, float] | None = None) 
         reason = f"CI running {span}"
     else:
         reason = f"{job.stage} for {span}"
-    return {"kind": "stage", "stage": job.stage, "age_min": round(age, 1), "reason": reason}
+    return {
+        "kind": "stage",
+        "stage": job.stage,
+        "age_min": round(age, 1),
+        "reason": reason,
+        "reason_pt": pt.stuck_reason("stage", job.stage, span, has_pr=bool(job.links.get("pr"))),
+    }
 
 
 def stuck_items(jobs: list[Job], now: datetime, limits: dict[str, float] | None = None) -> list[dict]:

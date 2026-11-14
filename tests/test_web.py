@@ -91,6 +91,27 @@ class Routes(ServerCase):
         self.assertIn("prefers-color-scheme: dark", page)
         self.assertNotIn("http://", page.replace("http://www.w3.org", ""))  # no CDN, no external assets
 
+    def test_jobs_api_gate_is_in_portuguese(self) -> None:
+        job = store.load("app-0001")
+        job.gate = state.Gate("merge_review", "high: sensitive path db/migrations/1.sql (matches 'migrat')")
+        self.save(job)
+        [item] = json.loads(self.get("/api/jobs")[2])["jobs"]
+        self.assertEqual(item["gate_text"], "Revisar merge: mexe em migração")
+        self.assertIn("sensitive path", item["gate_detail"])  # raw detail kept, shown behind <details>
+        self.assertIn("rawDetail(j.gate_detail)", self.get("/")[2].decode())
+
+    def test_parado_items_carry_portuguese_reason(self) -> None:
+        old = state.new_job("app-0002", "/work/app", "Old", "internal", 50.0, "build")
+        old.history[0]["at"] = (datetime.now(UTC) - timedelta(hours=3)).isoformat()
+        self.save(old)
+        items = {i["job"]: i for i in json.loads(self.get("/api/metrics")[2])["stuck"]}
+        self.assertEqual(items["app-0002"]["title"], "Old")
+        self.assertEqual(items["app-0002"]["kind"], "stage")
+        self.assertEqual(items["app-0002"]["reason_pt"], "em construção há 3h sem PR")
+        self.assertEqual(items["app-0002"]["reason"], "build for 3h with no PR")
+        self.assertEqual(items["app-0001"]["kind"], "gate")
+        self.assertIn("reason_pt", self.get("/")[2].decode())
+
     def test_jobs_api_has_what_the_board_needs(self) -> None:
         job = store.load("app-0001")
         job.links = {"pr": "7", "terminal": "term_9"}

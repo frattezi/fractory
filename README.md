@@ -179,9 +179,9 @@ until DB05). Page text is Portuguese. Three parts:
 - **Parado:** jobs stuck in a stage past the `[stuck]` limits, with reason, age, and links to the card and PR plus
   the worker terminal handle. Gate-stuck jobs are not repeated here.
 
-The page reads `GET /api/health` (strip), `GET /api/metrics` (`stuck`) and `GET /api/jobs`, and follows
+The page reads `GET /api/health` (strip), `GET /api/metrics` (`stuck`, each with `reason` and its Portuguese `reason_pt`) and `GET /api/jobs`, and follows
 `state.json` changes through Server-Sent Events (`/api/events`). `/api/jobs` carries, per job, `pr_url`,
-`tracker_url`, `stuck`, `terminal`, `gate_detail`, `gate_opened_at` and `gate_card_url`, plus a top-level
+`tracker_url`, `stuck`, `terminal`, `gate_detail` (raw, shown behind a "detalhe" toggle), `gate_text` (the Portuguese sentence from `fractory/pt.py`), `gate_opened_at` and `gate_card_url`, plus a top-level
 `wip {open, max}` (`max` is `max_parallel_jobs`, default 3). Read-only, one self-contained HTML file, no
 build step. `GET /api/jobs/<id>` and `GET /api/activity?limit=50` (clamped to 1..200) still exist for the
 next board parts.

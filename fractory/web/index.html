@@ -45,6 +45,8 @@ a { color: var(--accent); }
 .item .reason { margin: 4px 0; overflow-wrap: anywhere; }
 .item .links { display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 13px; }
 .item code { font: 12px ui-monospace, Menlo, monospace; color: var(--muted); overflow-wrap: anywhere; }
+.raw { font-size: 12px; color: var(--muted); margin: 2px 0 4px; }
+.raw summary { cursor: pointer; }
 .empty { color: var(--muted); padding: 8px 2px; }
 </style>
 </head>
@@ -77,14 +79,8 @@ function ago(seconds) {
 }
 const ageOf = (iso) => (iso ? (Date.now() - Date.parse(iso)) / 1000 : 0);
 
-// plain-Portuguese reason for a gate; unknown reasons stay readable
-function gateText(j) {
-  const d = j.gate_detail ? `: ${j.gate_detail}` : "";
-  if (j.gate === "merge_review") return `Revisar merge${d}`;
-  if (j.gate === "cost") return `Orçamento estourado${d}`;
-  if (j.gate === "judge_rounds") return `Judge rejeitou demais, decidir como seguir${d}`;
-  return `Decisão pendente (${j.gate})${d}`;
-}
+// Portuguese wording comes from the server (fractory/pt.py): gate_text and reason_pt. The raw English detail only goes in <details>.
+const rawDetail = (text) => (text ? `<details class="raw"><summary>detalhe</summary><code>${esc(text)}</code></details>` : "");
 
 function tile(label, value, tone, icon) {
   return `<div class="tile ${tone || ""}"><small>${label}</small><b>${icon ? icon + " " : ""}${value}</b></div>`;
@@ -123,7 +119,8 @@ function renderNeeds() {
   $("needs-list").innerHTML = open.map((j) => `<article class="item" data-id="${esc(j.id)}">
     <div class="top"><span class="title">${esc(j.title)}</span><span class="age">há ${ago(ageOf(j.gate_opened_at))}</span></div>
     <div class="repo">${esc(j.repo)} · ${esc(j.id)}</div>
-    <div class="reason">⚠ ${esc(gateText(j))}</div>
+    <div class="reason">⚠ ${esc(j.gate_text)}</div>
+    ${rawDetail(j.gate_detail)}
     <div class="links">${link(j.gate_card_url || j.tracker_url, "Card no Plane")}${prLink(j)}</div>
   </article>`).join("") || '<div class="empty">Nada esperando por você.</div>';
 }
@@ -135,8 +132,9 @@ function renderStuck() {
     const j = byId.get(s.job) || {};
     return `<article class="item stuck" data-id="${esc(s.job)}">
     <div class="top"><span class="title">${esc(s.title)}</span><span class="age">há ${ago(s.age_min * 60)}</span></div>
-    <div class="repo">${esc(j.repo || s.repo)} · ${esc(s.job)} · ${esc(s.stage)}</div>
-    <div class="reason">✕ ${esc(s.reason)}</div>
+    <div class="repo">${esc(j.repo || s.repo)} · ${esc(s.job)}</div>
+    <div class="reason">✕ ${esc(s.reason_pt)}</div>
+    ${rawDetail(s.reason)}
     <div class="links">${link(j.tracker_url, "Card no Plane")}${prLink(j)}${j.terminal ? `<code>terminal ${esc(j.terminal)}</code>` : ""}</div>
   </article>`;
   }).join("") || '<div class="empty">Nada parado.</div>';
