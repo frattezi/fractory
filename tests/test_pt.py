@@ -15,7 +15,8 @@ class GateText(unittest.TestCase):
         self.assertEqual(pt.gate_text("merge_review", big.summary()), "Revisar merge: 689 linhas (limite 400)")
         many = risk.assess([(f"f{i}.py", 100, 0) for i in range(13)])
         self.assertEqual(
-            pt.gate_text("merge_review", many.summary()), "Revisar merge: 1300 linhas (limite 400); 13 arquivos (limite 12)"
+            pt.gate_text("merge_review", many.summary()),
+            "Revisar merge: 1300 linhas (limite 400); 13 arquivos (limite 12)",
         )
 
     def test_merge_review_has_no_english_left(self) -> None:

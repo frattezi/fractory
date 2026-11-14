@@ -62,7 +62,11 @@ def gate_text(reason: str, detail: str = "") -> str:
         return f"Orçamento estourado: US$ {m.group(1)} de US$ {m.group(2)}" if m else "Orçamento estourado"
     if reason == "judge_rounds":
         m = re.match(r"(\d+) judge rounds", detail)
-        return f"O Judge reprovou {m.group(1)} vezes: decidir como seguir" if m else "O Judge reprovou várias vezes: decidir como seguir"
+        return (
+            f"O Judge reprovou {m.group(1)} vezes: decidir como seguir"
+            if m
+            else "O Judge reprovou várias vezes: decidir como seguir"
+        )
     if reason == "judge_error":
         return "O Judge falhou ao revisar o PR"
     if reason == "launch_failed":
