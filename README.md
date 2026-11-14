@@ -199,9 +199,18 @@ fractory plane import-specs --repo ~/Factory/Esquerdalha/cortadas --project <id>
 
 ```sh
 fractory plane create-project --name Fractory --identifier FRACTORY
-fractory plane add-item --project <id> --title "…" --body "markdown" --status ready [--assign-me]
+fractory plane add-item --project <id> --title "…" --body "markdown" --status ready [--assign-me] [--label fractory ...] [--depends-on CORT-3,CORT-4]
+fractory plane items --project <id> [--status backlog|ready|in_progress|done|cancelled] [--label NAME]
+fractory plane show --project <id> --ref <id or key>
+fractory plane move --project <id> --ref <id or key> --status ready [--add-label fractory]
+fractory plane comment --project <id> --ref <id or key> --body "markdown"     # or --body-file F
 fractory job new --repo DIR --title T --tracker plane --project <id> --ref <issue id>
 ```
+
+`--project` takes the UUID or the project identifier (`CUIDADO`); `--ref` takes a card id or a key (`CUIDADO-12`).
+`--label` and `--add-label` use the standard labels (created if missing); `--depends-on` appends the final
+`Depends on: <refs>` line that intake parses. Convention: label = who (`fractory`, `humano`, `design`), state =
+when (Backlog = not ready, Todo = go).
 
 `create-project` also applies the standard labels and turns on the project's Views feature. For existing
 projects: `fractory plane setup-project --project <id>` (or `--all`). It is idempotent: it creates missing
