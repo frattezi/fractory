@@ -11,6 +11,7 @@ import os
 import re
 import ssl
 import subprocess
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -29,6 +30,38 @@ STANDARD_LABELS: dict[str, tuple[str, str]] = {
     "humano": ("#e3a35f", "Exige uma pessoa: decisão, acesso, conta ou revisão."),
     "design": ("#a83b5a", "Vem de uma decisão de design."),
 }
+
+RATE_LIMIT_RETRIES = 3
+RATE_LIMIT_BASE_WAIT = 2.0
+sleep = time.sleep  # swapped in tests
+
+_cycle: dict | None = None
+
+
+def begin_cycle() -> None:
+    """Start a watch cycle: project list, labels and states are fetched once per project until the next call."""
+    global _cycle
+    _cycle = {}
+
+
+def end_cycle() -> None:
+    global _cycle
+    _cycle = None
+
+
+def _cached[T](key: tuple, fetch: Callable[[], T]) -> T:
+    if _cycle is None:
+        return fetch()
+    if key not in _cycle:
+        _cycle[key] = fetch()
+    return _cycle[key]
+
+
+def _invalidate(prefix: tuple) -> None:
+    if _cycle is not None:
+        for k in [k for k in _cycle if k[: len(prefix)] == prefix]:
+            del _cycle[k]
+
 
 # (method, url, headers, body) -> (status, parsed json)
 Http = Callable[[str, str, dict, bytes | None], tuple[int, object]]
@@ -56,6 +89,8 @@ def urllib_http(method: str, url: str, headers: dict, body: bytes | None) -> tup
             return resp.status, json.loads(raw) if raw else None
     except urllib.error.HTTPError as err:
         raw = err.read()
+        if err.code == 429:
+            return 429, {"retry_after": err.headers.get("Retry-After"), "body": raw.decode(errors="replace")[:300]}
         try:
             return err.code, json.loads(raw) if raw else None
         except json.JSONDecodeError:
@@ -88,6 +123,14 @@ def _results(data: object) -> list[dict]:
     return list(data) if isinstance(data, list) else []
 
 
+def _retry_after(data: object) -> float | None:
+    raw = data.get("retry_after") if isinstance(data, dict) else None
+    try:
+        return max(float(raw), 0.0) if raw is not None else None
+    except (TypeError, ValueError):
+        return None  # an HTTP-date; fall back to the exponential backoff
+
+
 class Plane:
     def __init__(
         self,
@@ -111,6 +154,16 @@ class Plane:
         body = json.dumps(payload).encode() if payload is not None else None
         headers = {"X-Api-Key": self._key, "Content-Type": "application/json", "Accept": "application/json"}
         status, data = self._http(method, url, headers, body)
+        for attempt in range(RATE_LIMIT_RETRIES):
+            if status != 429:
+                break
+            wait = _retry_after(data)
+            if wait is None:
+                wait = RATE_LIMIT_BASE_WAIT * 2**attempt
+            if attempt == 0:  # one line per call, not one per retry
+                print(f"plane: rate limited, backing off {wait:g}s", flush=True)
+            sleep(wait)
+            status, data = self._http(method, url, headers, body)
         if status == 409:
             return status, data
         if status >= 400:
@@ -121,11 +174,14 @@ class Plane:
     def projects(
         cls, api_key: str, base_url: str = DEFAULT_URL, workspace: str = DEFAULT_WORKSPACE, http: Http = urllib_http
     ) -> list[dict]:
-        client = cls("", api_key, base_url, workspace, http)
-        _, data = client._call("GET", "/projects/")
-        return [
-            {"id": p["id"], "identifier": p.get("identifier", ""), "name": p.get("name", "")} for p in _results(data)
-        ]
+        def fetch() -> list[dict]:
+            _, data = cls("", api_key, base_url, workspace, http)._call("GET", "/projects/")
+            return [
+                {"id": p["id"], "identifier": p.get("identifier", ""), "name": p.get("name", "")}
+                for p in _results(data)
+            ]
+
+        return list(_cached(("projects", base_url.rstrip("/"), workspace), fetch))
 
     @classmethod
     def resolve_project(
@@ -158,6 +214,7 @@ class Plane:
         for p in cls.projects(api_key, base_url, workspace, http):
             if p["identifier"] == identifier:
                 return p, False
+        _invalidate(("projects",))
         client = cls("", api_key, base_url, workspace, http)
         _, data = client._call(
             "POST", "/projects/", {"name": name, "identifier": identifier, "description": description}
@@ -181,6 +238,7 @@ class Plane:
     def ensure_labels(self, spec: dict[str, tuple[str, str]] = STANDARD_LABELS) -> dict[str, str]:
         """Create missing labels, fix colour/description of existing ones. Idempotent. name -> id"""
         existing = {lb["name"]: lb for lb in self.labels()}
+        _invalidate(("labels", self.base, self.workspace, self.project_id))
         ids: dict[str, str] = {}
         for name, (color, description) in spec.items():
             wanted = {"color": color, "description": description}
@@ -199,9 +257,8 @@ class Plane:
     def state_for(self, status: str) -> str:
         """The project's first state in the Plane group this Fractory status maps to."""
         if self._states is None:
-            _, data = self._call("GET", f"/projects/{self.project_id}/states/")
             self._states = {}
-            for s in sorted(_results(data), key=lambda s: s.get("sequence", 0)):
+            for s in sorted(self._state_rows(), key=lambda s: s.get("sequence", 0)):
                 self._states.setdefault(s["group"], s["id"])
         group = STATUS_GROUPS[status]
         if group not in self._states:
@@ -278,8 +335,14 @@ class Plane:
 
     def states(self) -> dict[str, dict]:
         """State id -> {name, group}."""
-        _, data = self._call("GET", f"/projects/{self.project_id}/states/")
-        return {s["id"]: {"name": s.get("name", ""), "group": s.get("group", "")} for s in _results(data)}
+        return {s["id"]: {"name": s.get("name", ""), "group": s.get("group", "")} for s in self._state_rows()}
+
+    def _state_rows(self) -> list[dict]:
+        def fetch() -> list[dict]:
+            _, data = self._call("GET", f"/projects/{self.project_id}/states/")
+            return _results(data)
+
+        return _cached(("states", self.base, self.workspace, self.project_id), fetch)
 
     def resolve_ref(self, ref: str) -> str:
         """Issue id from an id or a key like CUIDADO-12 (matched on the project's sequence ids)."""
@@ -303,8 +366,7 @@ class Plane:
         state = self.get_item(ref).get("state")
         if isinstance(state, dict):
             return str(state.get("group", ""))
-        _, data = self._call("GET", f"/projects/{self.project_id}/states/")
-        return next((str(s["group"]) for s in _results(data) if s["id"] == state), "")
+        return next((str(s["group"]) for s in self._state_rows() if s["id"] == state), "")
 
     def comment_texts(self, ref: str) -> list[str]:
         _, data = self._call("GET", f"/projects/{self.project_id}/issues/{ref}/comments/")
@@ -320,8 +382,11 @@ class Plane:
         self._call("POST", f"/projects/{self.project_id}/issues/{ref}/comments/", {"comment_html": body_html})
 
     def labels(self) -> list[dict]:
-        _, data = self._call("GET", f"/projects/{self.project_id}/labels/")
-        return _results(data)
+        def fetch() -> list[dict]:
+            _, data = self._call("GET", f"/projects/{self.project_id}/labels/")
+            return _results(data)
+
+        return list(_cached(("labels", self.base, self.workspace, self.project_id), fetch))
 
     def list_issues(self) -> list[dict]:
         """Every issue of the project, state expanded (`state["group"]`), following the cursor pagination."""
