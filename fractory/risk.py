@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 
-SENSITIVE = ("auth", "secret", "migration", "infra/", ".github/", "fractory/rubric.md", "fractory/launchd.py")
+SENSITIVE = ("auth", "secret", "migrat", "schema", "infra/", ".github/", "fractory/rubric.md", "fractory/launchd.py")
 MAX_LINES = 400
 MAX_FILES = 12
 
@@ -19,13 +20,24 @@ class Risk:
         return f"{self.level}: {'; '.join(self.reasons) or 'small, no sensitive paths'}"
 
 
-def assess(files: list[tuple[str, int, int]], config: dict | None = None) -> Risk:
+def repo_config(repo: str) -> dict:
+    """The `[risk]` table of `<repo>/fractory.toml` (the local checkout); {} when absent or unreadable."""
+    path = Path(repo).expanduser() / "fractory.toml"
+    try:
+        return tomllib.loads(path.read_text()).get("risk", {})
+    except (OSError, tomllib.TOMLDecodeError):
+        return {}
+
+
+def assess(files: list[tuple[str, int, int]], config: dict | None = None, repo: dict | None = None) -> Risk:
     """high: a path matches a sensitive pattern. medium: too many lines or files. Otherwise low.
 
-    `config` is the `[risk]` table: `sensitive` (list of substrings), `max_lines`, `max_files`.
+    `config` is the factory's `[risk]` table: `sensitive` (list of substrings), `max_lines`, `max_files`.
+    `repo` is the repo's own `[risk]` table (`repo_config`): its `sensitive` extends the patterns, never replaces
+    them; its `max_lines` / `max_files` override.
     """
-    cfg = config or {}
-    patterns = [p.lower() for p in cfg.get("sensitive", SENSITIVE)]
+    cfg = {**(config or {}), **{k: v for k, v in (repo or {}).items() if k in ("max_lines", "max_files")}}
+    patterns = [p.lower() for p in [*cfg.get("sensitive", SENSITIVE), *(repo or {}).get("sensitive", [])]]
     max_lines = int(cfg.get("max_lines", MAX_LINES))
     max_files = int(cfg.get("max_files", MAX_FILES))
 

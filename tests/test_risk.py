@@ -20,11 +20,26 @@ class Assess(unittest.TestCase):
         self.assertEqual((r.level, r.reasons), ("low", ()))
 
     def test_sensitive_paths_are_high_with_reason(self) -> None:
-        for path in ("src/auth/login.py", "db/migrations/1.sql", "infra/main.tf", ".github/ci.yml",
+        for path in ("src/auth/login.py", "db/migrations/1.sql", "app/migrate.py", "db/schema.sql", "infra/main.tf", ".github/ci.yml",
                      "fractory/rubric.md", "fractory/launchd.py", "app/secrets.py"):  # fmt: skip
             r = risk.assess([("README.md", 1, 0), (path, 1, 0)], {})
             self.assertEqual(r.level, "high", path)
             self.assertIn(path, r.reasons[0])
+
+    def test_repo_config_extends_defaults_and_overrides_limits(self) -> None:
+        repo = {"sensitive": ["billing/"], "max_lines": 10}
+        self.assertEqual(risk.assess([("billing/x.py", 1, 0)], {}, repo).level, "high")
+        self.assertEqual(risk.assess([("auth.py", 1, 0)], {}, repo).level, "high")
+        self.assertEqual(risk.assess([("a.py", 11, 0)], {}, repo).level, "medium")
+        self.assertEqual(risk.assess([("billing/x.py", 1, 0)], {}, None).level, "low")
+
+    def test_repo_config_reads_fractory_toml(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            self.assertEqual(risk.repo_config(d), {})
+            Path(d, "fractory.toml").write_text('[risk]\nsensitive = ["seed"]\n')
+            self.assertEqual(risk.repo_config(d), {"sensitive": ["seed"]})
+            Path(d, "fractory.toml").write_text("not = [toml")
+            self.assertEqual(risk.repo_config(d), {})
 
     def test_many_lines_or_files_is_medium(self) -> None:
         lines = risk.assess([("a.py", 300, 101)], {})
