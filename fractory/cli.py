@@ -40,7 +40,7 @@ import os
 import subprocess
 import sys
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 from . import cleanup, gates, intake, judge, launch, launchd, reload, rework, risk, specs_import, state, store, sync
@@ -515,7 +515,7 @@ class _Stamped:
     def write(self, text: str) -> int:
         for part in text.splitlines(keepends=True):
             if self._at_line_start:
-                self._out.write(datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ "))
+                self._out.write(datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ "))
             self._out.write(part)
             self._at_line_start = part.endswith("\n")
         return len(text)
