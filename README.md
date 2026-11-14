@@ -83,6 +83,9 @@ A job's life today, with the manual steps v1 will automate marked *(manual)*.
    `~/.factory/watch.log`). It moves jobs on CI and merge events and keeps the Plane issues in step.
 4. `fractory serve --install`: a LaunchAgent keeps the board up at http://127.0.0.1:8777 (log:
    `~/.factory/serve.log`; `--port N` to change it).
+   Run both installs from an Orca terminal: they copy `ORCA_USER_DATA_PATH` and `ORCA_CLI_COMMAND` into the
+   agent, without which `orca` answers `runtime_unavailable` under launchd and the rework hook cannot reach
+   workers (the install warns when it is unset).
 5. Optional, for internal repos: `echo 'auto_merge = true' >> ~/.factory/config.toml`. Then `watch` merges
    the PR of every approved internal job once its CI is green. Able jobs never auto-merge.
    Only low-risk diffs merge; a sensitive path or a big diff (>400 lines, >12 files) opens the gate `merge_review`. Tune in a `[risk]` table.
