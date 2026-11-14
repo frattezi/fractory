@@ -299,6 +299,7 @@ def judge_job(job_id: str) -> int:
             diff,
             brief=store.brief(job_id),
             checks=sync.pr_checks(job.repo, pr),
+            generated=list(store.config().get("judge", {}).get("generated", [])),
         )
     except judge.JudgeError as err:
         detail = str(err)

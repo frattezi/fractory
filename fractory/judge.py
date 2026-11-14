@@ -6,6 +6,7 @@ The model only judges. `parse_verdict` and `build_prompt` are pure; `ask_model` 
 
 from __future__ import annotations
 
+import fnmatch
 import json
 import re
 import subprocess
@@ -24,6 +25,13 @@ KEYS = {"decision", "spec_match", "scope_creep", "reasons"}
 OPTIONAL_KEYS = {"unverified"}
 PASSED = {"SUCCESS", "NEUTRAL", "SKIPPED"}
 Checks = list[tuple[str, str]]  # (name, conclusion)
+
+GENERATED_NAMES = (
+    "pnpm-lock.yaml", "package-lock.json", "yarn.lock", "poetry.lock", "uv.lock", "Cargo.lock", "go.sum",
+    "*.min.js", "*.min.css", "*.snap",
+)  # fmt: skip
+GENERATED_DIRS = ("dist", "build", "coverage")
+BIG_SVG_LINES = 200
 
 Runner = Callable[[list[str], str], str]  # (argv, stdin) -> stdout
 
@@ -66,9 +74,68 @@ class Verdict:
         )
 
 
+def _file_path(header: str) -> str:
+    rest = header.removeprefix("diff --git ").rstrip("\n")
+    return rest.rsplit(" b/", 1)[1] if " b/" in rest else rest
+
+
+def _changed_lines(section: list[str]) -> int:
+    return sum(1 for line in section if line[:1] in "+-" and not line.startswith(("+++", "---")))
+
+
+def _is_generated(path: str, changed: int, extra: tuple[str, ...]) -> bool:
+    parts = path.split("/")
+    name = parts[-1]
+    if any(d in GENERATED_DIRS for d in parts[:-1]):
+        return True
+    if any(fnmatch.fnmatchcase(name, pat) or fnmatch.fnmatchcase(path, pat) for pat in (*GENERATED_NAMES, *extra)):
+        return True
+    return name.endswith(".svg") and changed > BIG_SVG_LINES
+
+
+def trim_diff(diff: str, extra_patterns: tuple[str, ...] | list[str] = ()) -> tuple[str, list[str]]:
+    """Drop the bodies of generated files (lockfiles, minified, snapshots, build output) from a `gh pr diff`.
+
+    Each dropped file becomes one stub line; every other file is kept byte for byte.
+    Returns the trimmed diff and the dropped paths.
+    """
+    sections: list[list[str]] = []
+    for line in diff.splitlines(keepends=True):
+        if line.startswith("diff --git ") or not sections:
+            sections.append([])
+        sections[-1].append(line)
+    out: list[str] = []
+    dropped: list[str] = []
+    extra = tuple(extra_patterns)
+    for section in sections:
+        if not section[0].startswith("diff --git "):
+            out.extend(section)
+            continue
+        path = _file_path(section[0])
+        changed = _changed_lines(section)
+        if _is_generated(path, changed, extra):
+            dropped.append(path)
+            out.append(f"# {path}: generated file, {changed} lines changed, not shown\n")
+        else:
+            out.extend(section)
+    return "".join(out), dropped
+
+
 def build_prompt(
-    issue_title: str, issue_text: str, diff: str, brief: str | None = None, checks: Checks | None = None
+    issue_title: str,
+    issue_text: str,
+    diff: str,
+    brief: str | None = None,
+    checks: Checks | None = None,
+    dropped: list[str] | None = None,
 ) -> str:
+    dropped_section = (
+        "GENERATED FILES NOT SHOWN\nChanged in the PR, left out of the diff as generated:\n"
+        + "\n".join(f"- {p}" for p in dropped)
+        + "\n\n"
+        if dropped
+        else ""
+    )
     brief_section = (
         "BRIEF\nThe detailed scope the worker was given. The issue is the goal; the brief says how far to go. "
         f"Scope creep means beyond both.\n{brief.strip()}\n\n"
@@ -88,6 +155,7 @@ def build_prompt(
         f"ISSUE: {issue_title}\n{issue_text}\n\n"
         f"{brief_section}"
         f"{ci_section}"
+        f"{dropped_section}"
         f"DIFF\n{diff}\n\n"
         "Reply with ONLY a JSON object, no prose, in exactly this shape:\n"
         '{"decision": "approved" | "rejected", "spec_match": true | false, '
@@ -217,9 +285,14 @@ def judge_diff(
     runner: Runner | None = None,
     brief: str | None = None,
     checks: Checks | None = None,
+    generated: list[str] | None = None,
 ) -> Verdict:
-    """Size checks, prompt, model, parse. Raises JudgeError before any model call if the diff or brief is too big."""
+    """Trim generated files, size checks, prompt, model, parse.
+
+    Raises JudgeError before any model call if the trimmed diff or the brief is too big.
+    """
+    diff, dropped = trim_diff(diff, generated or ())
     check_diff_size(diff)
     check_brief_size(brief)
-    prompt = build_prompt(issue_title, html_to_text(issue_html), diff, brief, checks)
+    prompt = build_prompt(issue_title, html_to_text(issue_html), diff, brief, checks, dropped)
     return parse_verdict(ask_model(prompt, runner), checks)
