@@ -90,6 +90,41 @@ class Routes(ServerCase):
         self.assertEqual(job["tracker_url"], f"{web.DEFAULT_URL}/cortadas/projects/P1/issues/R1")
         self.assertEqual((job["gate"], job["gate_detail"]), ("cost", "over budget"))
 
+    def test_jobs_api_includes_stuck(self) -> None:
+        [job] = json.loads(self.get("/api/jobs")[2])["jobs"]
+        self.assertEqual(job["stuck"]["kind"], "gate")  # the fixture job has an open gate
+
+    def test_metrics_api(self) -> None:
+        now = datetime.now(UTC)
+        old = state.new_job("app-0002", "/work/app", "Old", "internal", 50.0, "build")
+        old.created_at = old.history[0]["at"] = (now - timedelta(hours=3)).isoformat()
+        merged = state.new_job("app-0003", "/work/app", "Done", "internal", 50.0, "ship")
+        merged.created_at = merged.history[0]["at"] = (now - timedelta(hours=2)).isoformat()
+        merged, _ = state.apply_event(merged, "merged")
+        merged, _ = state.add_cost(merged, 2.0)
+        self.save(old)
+        self.save(merged)
+        status, ctype, body = self.get("/api/metrics?window=30")
+        data = json.loads(body)
+        self.assertEqual((status, data["window_days"]), (200, 30))
+        self.assertIn("json", ctype)
+        self.assertEqual({i["job"] for i in data["stuck"]}, {"app-0001", "app-0002"})
+        self.assertEqual(data["flow"]["lead_time"]["overall"]["count"], 1)
+        self.assertEqual(data["flow"]["wip"]["overall"], 2)
+        self.assertEqual(data["cost"]["total_usd"], 2.0)
+        self.assertEqual(json.loads(self.get("/api/metrics?window=99")[2])["window_days"], 7)
+        self.assertEqual(json.loads(self.get("/api/metrics")[2])["window_days"], 7)
+
+    def test_metrics_stuck_threshold_from_config(self) -> None:
+        old = state.new_job("app-0002", "/work/app", "Old", "internal", 50.0, "build")
+        old.history[0]["at"] = (datetime.now(UTC) - timedelta(minutes=30)).isoformat()
+        self.save(old)
+        stuck = lambda: {i["job"] for i in json.loads(self.get("/api/metrics")[2])["stuck"]}
+        self.assertNotIn("app-0002", stuck())
+        self.home.mkdir(parents=True, exist_ok=True)
+        (self.home / "config.toml").write_text("[stuck]\nbuild = 10\n")
+        self.assertIn("app-0002", stuck())
+
     def test_unknown_path_is_404(self) -> None:
         self.assertEqual(self.get("/nope")[0], 404)
 

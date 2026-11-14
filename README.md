@@ -195,6 +195,23 @@ decision: `launched`, `waits_for` (unmet dependencies), `max_parallel`, `parked`
 less than 3× `--every` ago) and `GET /api/queue` serves the queue; both answer 200 `{"missing": true}` until
 the file exists.
 
+`GET /api/metrics?window=7|30` (default 7) computes, from the job histories (`fractory/metrics.py`): time per
+stage and current stage age per job, `stuck` items (each with a one-line reason), flow (lead time median and
+p90 per repo and overall, throughput per day, WIP), quality (Judge first-pass rate, mean rework rounds, CI red
+rate, conflicts sent, gates opened by reason with median time to resolve) and cost per repo. Each item of
+`/api/jobs` also carries `stuck` (`null` when the job is moving). A job is stuck when its current stage is
+older than a per-stage limit, or when it has an open gate (any age, "waiting on you"). Limits in minutes,
+overridable in `config.toml`:
+
+```toml
+[stuck]   # defaults
+build = 60
+checks = 30
+review = 20
+judge = 20
+ship = 15
+```
+
 ## Plane
 
 API key: `$PLANE_API_KEY`, or the Keychain item `fractory-plane`
