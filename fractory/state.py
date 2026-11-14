@@ -43,6 +43,9 @@ class Gate:
     reason: str
     detail: str = ""
     opened_at: str = field(default_factory=now_iso)
+    card: str = ""  # Plane card id of the 'Needs you' card, once created
+    card_key: str = ""
+    card_url: str = ""
 
 
 @dataclass

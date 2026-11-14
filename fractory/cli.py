@@ -36,7 +36,7 @@ import sys
 import time
 from pathlib import Path
 
-from . import cleanup, intake, judge, launch, launchd, reload, rework, risk, specs_import, state, store, sync
+from . import cleanup, gates, intake, judge, launch, launchd, reload, rework, risk, specs_import, state, store, sync
 from .trackers import plane as plane_mod
 from .trackers.base import STATUS_GROUPS
 
@@ -153,7 +153,11 @@ def cmd_gate_open(a: argparse.Namespace) -> int:
 
 
 def cmd_gate_resolve(a: argparse.Namespace) -> int:
-    return _mutate(a.id, lambda j: (state.resolve_gate(j, a.decision, a.note or ""), []))
+    before = store.load(a.id)
+    code = _mutate(a.id, lambda j: (state.resolve_gate(j, a.decision, a.note or ""), []))
+    if code == 0 and before.gate:
+        gates.close_card(before, before.gate)
+    return code
 
 
 def dash_data() -> dict:
@@ -360,7 +364,8 @@ def cmd_sync(a: argparse.Namespace) -> int:
     jobs = [store.load(i) for i in a.ids] if a.ids else store.all_jobs()
     auto_merge = bool(store.config().get("auto_merge"))
     auto_judge = bool(store.config().get("auto_judge"))
-    failed = False
+    failed = gates.sync_gates(a.ids or None)
+    jobs = [store.load(j.id) for j in jobs]  # a gate card may just have resolved a job
     for job in jobs:
         if job.stage in state.TERMINAL or not job.links.get("pr"):
             continue
