@@ -168,23 +168,23 @@ fractory orch alive term_…          # everything orch.py does, unchanged
 fractory serve [--port 8777]          # binds 127.0.0.1 only
 ```
 
-A live board of every job: one column per stage (discovery … done), cancelled jobs behind a toggle. Each
-card shows the job, repo, kind (Able / internal), cost against budget, judge rounds and the PR and Plane
-links; a job with an open gate gets a red border with the gate reason and detail. The header counts open
-jobs, open gates and total cost, with a live indicator. Cards that change column flash briefly. The page
-follows `state.json` changes through Server-Sent Events (`/api/events`), reads `/api/jobs`, and is
-read-only. One self-contained HTML file, no build step.
+The board opens on what needs attention now (the per-stage kanban, detail panel and activity feed are gone
+until DB05). Page text is Portuguese. Three parts:
 
-Clicking a card opens a side panel (close with Esc, ×, or a click outside) with the job's links (worktree,
-terminal, branch, PR, Plane), the Judge verdicts with their reasons, a cost-over-time sparkline and the full
-history as a timeline. The URL hash `#job=<id>` opens it directly and survives a reload; the panel refreshes
-when the job changes. Data comes from `GET /api/jobs/<id>` (404 for an unknown or malformed id).
+- **Health strip:** watch alive or stopped, last cycle (`há 40 s · 12 s`: time since it ended, how long it took),
+  WIP `n / max_parallel_jobs`, open gates, stuck jobs, Plane rate-limit backoffs of the last cycle and the code
+  sha. Problems carry an icon (✕ / ⚠) as well as colour.
+- **Precisa de você:** open gates, oldest first: title, repo, the gate reason in plain Portuguese (e.g.
+  `merge_review` → "Revisar merge: mexe em migração"), age, and links to the Plane card and the PR.
+- **Parado:** jobs stuck in a stage past the `[stuck]` limits, with reason, age, and links to the card and PR plus
+  the worker terminal handle. Gate-stuck jobs are not repeated here.
 
-A collapsible activity panel (open state remembered in localStorage; a bottom sheet on phones) lists the latest
-events across all jobs, newest first, plus the last 40 lines of `$FACTORY_HOME/watch.log`. `red`, `rejected`,
-`gate_opened`, `rework_sent`, `merged` and `created` are highlighted; clicking an entry opens that job's detail
-panel. It refreshes on every `jobs` event and every 30 s. Data comes from `GET /api/activity?limit=50` (limit
-clamped to 1..200).
+The page reads `GET /api/health` (strip), `GET /api/metrics` (`stuck`) and `GET /api/jobs`, and follows
+`state.json` changes through Server-Sent Events (`/api/events`). `/api/jobs` carries, per job, `pr_url`,
+`tracker_url`, `stuck`, `terminal`, `gate_detail`, `gate_opened_at` and `gate_card_url`, plus a top-level
+`wip {open, max}` (`max` is `max_parallel_jobs`, default 3). Read-only, one self-contained HTML file, no
+build step. `GET /api/jobs/<id>` and `GET /api/activity?limit=50` (clamped to 1..200) still exist for the
+next board parts.
 
 Factory health and the intake queue come from two snapshots the watch leaves in `$FACTORY_HOME`, so the
 board never calls Plane: `heartbeat.json` (written atomically at the end of every watch cycle: cycle start,
