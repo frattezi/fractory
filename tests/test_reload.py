@@ -15,6 +15,32 @@ from unittest import mock
 
 from fractory import cli, reload, web
 
+FETCH = (
+    "-c",
+    "credential.helper=",
+    "-c",
+    "credential.helper=!gh auth git-credential",
+    "fetch",
+    "-q",
+    "https://github.com/o/r.git",
+    "main",
+)
+
+
+class HttpsRemote(unittest.TestCase):
+    def test_ssh_and_https_forms(self) -> None:
+        for url in (
+            "git@github.com:o/r.git",
+            "ssh://git@github.com/o/r",
+            "https://github.com/o/r.git",
+            "https://github.com/o/r",
+        ):
+            self.assertEqual(reload.https_remote(url), "https://github.com/o/r.git")
+
+    def test_non_github_remote_is_rejected(self) -> None:
+        with self.assertRaises(ValueError):
+            reload.https_remote("git@gitlab.com:o/r.git")
+
 
 class FakeGit:
     def __init__(self, branch="main", dirty="", head="aaa111", remote="bbb222", fail_on=None):
@@ -23,15 +49,17 @@ class FakeGit:
 
     def __call__(self, repo_root, *args):
         self.calls.append(args)
-        if self.fail_on and args[0] == self.fail_on:
-            raise subprocess.CalledProcessError(1, ["git", *args])
+        if self.fail_on and self.fail_on in args:
+            raise subprocess.CalledProcessError(128, ["git", *args], stderr="fatal: boom\nmore\n")
         if args[:2] == ("rev-parse", "--abbrev-ref"):
             return self.branch
         if args[0] == "status":
             return self.dirty
         if args == ("rev-parse", "HEAD"):
             return self.head
-        if args == ("rev-parse", "origin/main"):
+        if args[:2] == ("remote", "get-url"):
+            return "git@github.com:o/r.git"
+        if args == ("rev-parse", "FETCH_HEAD"):
             return self.remote
         if args[0] == "merge":
             self.head = self.remote
@@ -47,7 +75,7 @@ class MainMoved(unittest.TestCase):
     def test_moved_on_clean_main(self) -> None:
         git = FakeGit()
         self.assertTrue(reload.main_moved(self.root, git))
-        self.assertIn(("fetch", "-q", "origin", "main"), git.calls)
+        self.assertIn(FETCH, git.calls)
 
     def test_same_sha_is_not_moved(self) -> None:
         self.assertFalse(reload.main_moved(self.root, FakeGit(remote="aaa111")))
@@ -55,13 +83,14 @@ class MainMoved(unittest.TestCase):
     def test_other_branch_or_dirty_tree_never_reloads(self) -> None:
         for git in (FakeGit(branch="feature"), FakeGit(dirty=" M fractory/cli.py")):
             self.assertFalse(reload.main_moved(self.root, git))
-            self.assertNotIn(("fetch", "-q", "origin", "main"), git.calls)
+            self.assertNotIn(FETCH, git.calls)
 
     def test_git_error_is_false_and_fast_forward_is_a_noop(self) -> None:
         with contextlib.redirect_stdout(io.StringIO()) as out:
             self.assertFalse(reload.main_moved(self.root, FakeGit(fail_on="fetch")))
             self.assertIsNone(reload.fast_forward(self.root, FakeGit(fail_on="merge")))
         self.assertEqual(len(out.getvalue().splitlines()), 2)
+        self.assertIn("fatal: boom more", out.getvalue())
 
     def test_pull_if_moved_returns_new_sha(self) -> None:
         self.assertEqual(reload.pull_if_moved(self.root, FakeGit()), "bbb222")
@@ -90,7 +119,7 @@ class WatchReload(unittest.TestCase):
         code, out = self.run_watch(git)
         self.assertEqual(code, 0)
         self.assertIn("watch: main moved to bbb222, restarting", out)
-        self.assertIn(("merge", "--ff-only", "origin/main"), git.calls)
+        self.assertIn(("merge", "--ff-only", "FETCH_HEAD"), git.calls)
 
     def test_no_reload_and_rounds_runs_never_touch_git(self) -> None:
         for argv in (("--no-reload", "--rounds", "1"), ("--rounds", "1")):
