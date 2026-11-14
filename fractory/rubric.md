@@ -6,3 +6,4 @@ Judge the pull request diff against the issue it was built for. When a BRIEF is 
 4. No loosened or skipped tests, no widened timeouts.
 5. No secrets in the diff.
 6. README/AGENTS are updated when behaviour changes.
+7. A finding about lint, format or tests must be backed by the CI RESULTS or by a line in the diff. Never reject on something you say you could not verify (for example "could not confirm ruff passes"): list it in `unverified` instead of treating it as a defect.

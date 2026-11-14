@@ -92,6 +92,11 @@ def fetch_pr(repo: str, pr: str, gh: Gh | None = None) -> Pr:
     return parse_pr(json.loads(out))
 
 
+def pr_checks(repo: str, pr: str, gh: Gh | None = None) -> list[tuple[str, str]]:
+    """(name, conclusion) of the PR's checks; PENDING while one still runs."""
+    return list(fetch_pr(repo, pr, gh).checks)
+
+
 def should_merge(job: Job, pr: Pr) -> bool:
     """An approved internal job whose open PR has green CI. Able jobs never auto-merge."""
     return (

@@ -18,11 +18,20 @@ from tests.test_plane_import import KEY, PROJECT, FakePlane, reset_fake
 
 
 def verdict_json(
-    decision: str = "approved", spec_match: bool = True, scope_creep: bool = False, reasons=("ok",)
+    decision: str = "approved",
+    spec_match: bool = True,
+    scope_creep: bool = False,
+    reasons=("ok",),
+    unverified=None,
 ) -> str:
-    return json.dumps(
-        {"decision": decision, "spec_match": spec_match, "scope_creep": scope_creep, "reasons": list(reasons)}
-    )
+    data = {"decision": decision, "spec_match": spec_match, "scope_creep": scope_creep, "reasons": list(reasons)}
+    if unverified is not None:
+        data["unverified"] = list(unverified)
+    return json.dumps(data)
+
+
+GREEN = [("lint", "SUCCESS"), ("test", "SUCCESS")]
+RED = [("lint", "FAILURE"), ("test", "SUCCESS")]
 
 
 class ParseVerdict(unittest.TestCase):
@@ -62,6 +71,41 @@ class ParseVerdict(unittest.TestCase):
         prompt = judge.build_prompt("Title", "Body", "+line")
         for part in (judge.RUBRIC, "Title", "Body", "+line", "ONLY a JSON object"):
             self.assertIn(part, prompt)
+
+    def test_prompt_lists_ci_results_only_when_given(self) -> None:
+        prompt = judge.build_prompt("T", "B", "+x", checks=RED)
+        self.assertIn("\nCI RESULTS\n", prompt)
+        self.assertIn("- lint: FAILURE", prompt)
+        self.assertIn("- test: SUCCESS", prompt)
+        self.assertIn('"unverified"', prompt)
+        self.assertNotIn("\nCI RESULTS\n", judge.build_prompt("T", "B", "+x"))
+
+    def test_rejection_on_only_unverified_findings_is_approved_with_notes_when_ci_green(self) -> None:
+        text = verdict_json(
+            "rejected", reasons=("could not verify ruff passes",), unverified=["could not verify ruff passes"]
+        )
+        v = judge.parse_verdict(text, GREEN)
+        self.assertEqual(v.decision, "approved")
+        self.assertEqual(v.unverified, ("could not verify ruff passes",))
+        self.assertIn("could not verify ruff passes", v.comment_markdown())
+        self.assertIn("could not verify ruff passes", v.comment_html())
+
+    def test_same_rejection_stays_rejected_with_red_pending_or_no_ci(self) -> None:
+        text = verdict_json("rejected", reasons=("maybe lint",), unverified=["maybe lint"])
+        for checks in (RED, [("lint", "PENDING")], [], None):
+            with self.subTest(checks=checks):
+                self.assertEqual(judge.parse_verdict(text, checks).decision, "rejected")
+
+    def test_rejection_with_a_verified_reason_stays_rejected_on_green_ci(self) -> None:
+        text = verdict_json("rejected", reasons=("no tests", "maybe lint"), unverified=["maybe lint"])
+        self.assertEqual(judge.parse_verdict(text, GREEN).decision, "rejected")
+
+    def test_unverified_must_be_a_list_of_strings(self) -> None:
+        for bad in ("maybe", [""], [1]):
+            with self.subTest(bad=bad), self.assertRaises(judge.JudgeError):
+                judge.parse_verdict(
+                    verdict_json("rejected", unverified=None).replace("}", f', "unverified": {json.dumps(bad)}}}')
+                )
 
     def test_prompt_includes_brief_only_when_present(self) -> None:
         with_brief = judge.build_prompt("T", "B", "+x", brief="Touch only a.py")
