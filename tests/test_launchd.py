@@ -10,17 +10,35 @@ from fractory import launchd
 
 
 class Plist(unittest.TestCase):
-    def test_plist_runs_watch_forever_with_logs_and_path(self) -> None:
-        data = plistlib.loads(
-            launchd.plist_bytes("/py/python3", Path("/repo"), Path("/home/.factory/watch.log"), "/opt/bin:/usr/bin", 60)
+    def plist(self, name: str, args: list[str]) -> dict:
+        return plistlib.loads(
+            launchd.plist_bytes(
+                name, "/py/python3", Path("/repo"), Path(f"/home/.factory/{name}.log"), "/opt/bin:/usr/bin", args
+            )
         )
+
+    def test_watch_plist_unchanged(self) -> None:
+        data = self.plist("watch", ["--every", "60.0"])
+        self.assertEqual(data["Label"], "com.fractory.watch")
         self.assertEqual(data["Label"], launchd.LABEL)
-        self.assertEqual(data["ProgramArguments"], ["/py/python3", "-m", "fractory", "watch", "--every", "60"])
+        self.assertEqual(data["ProgramArguments"], ["/py/python3", "-m", "fractory", "watch", "--every", "60.0"])
         self.assertTrue(data["KeepAlive"])
         self.assertTrue(data["RunAtLoad"])
         self.assertEqual(data["EnvironmentVariables"]["PYTHONPATH"], "/repo")
         self.assertEqual(data["EnvironmentVariables"]["PATH"], "/opt/bin:/usr/bin")
         self.assertEqual(data["StandardErrorPath"], "/home/.factory/watch.log")
+
+    def test_serve_plist_runs_serve_on_the_port(self) -> None:
+        data = self.plist("serve", ["--port", "8123"])
+        self.assertEqual(data["Label"], "com.fractory.serve")
+        self.assertEqual(data["ProgramArguments"], ["/py/python3", "-m", "fractory", "serve", "--port", "8123"])
+        self.assertTrue(data["KeepAlive"])
+        self.assertEqual(data["EnvironmentVariables"]["PATH"], "/opt/bin:/usr/bin")
+        self.assertEqual(data["StandardOutPath"], "/home/.factory/serve.log")
+
+    def test_agent_paths_differ_per_agent(self) -> None:
+        self.assertEqual(launchd.agent_path("serve").name, "com.fractory.serve.plist")
+        self.assertEqual(launchd.agent_path("watch").name, "com.fractory.watch.plist")
 
 
 class PathEnv(unittest.TestCase):
