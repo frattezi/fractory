@@ -126,6 +126,43 @@ class FakeLaunchctl(unittest.TestCase):
         self.assertIn("watch agent was not installed", self.main("watch", "--uninstall")[1])
 
 
+class OrcaEnv(FakeLaunchctl):
+    def install(self, environ: dict[str, str]) -> tuple[dict, str]:
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            launchd.install("watch", [], self.tmp / "x.log", environ)
+        return self.plist("watch")["EnvironmentVariables"], err.getvalue()
+
+    def test_orca_variables_are_copied_and_nothing_else(self) -> None:
+        env, err = self.install(
+            {
+                "ORCA_USER_DATA_PATH": "/data/orca-dev",
+                "ORCA_CLI_COMMAND": "orca-dev",
+                "PLANE_TOKEN": "secret",
+                "HOME": "/h",
+            }
+        )
+        self.assertEqual(env["ORCA_USER_DATA_PATH"], "/data/orca-dev")
+        self.assertEqual(env["ORCA_CLI_COMMAND"], "orca-dev")
+        self.assertEqual(
+            set(env), {"ORCA_USER_DATA_PATH", "ORCA_CLI_COMMAND", "PATH", "PYTHONPATH", "PYTHONUNBUFFERED"}
+        )
+        self.assertNotIn("secret", launchd.agent_path("watch").read_text())
+        self.assertEqual(err, "")
+
+    def test_absent_variables_are_not_written_and_warn(self) -> None:
+        env, err = self.install({"PLANE_TOKEN": "secret"})
+        self.assertNotIn("ORCA_USER_DATA_PATH", env)
+        self.assertNotIn("ORCA_CLI_COMMAND", env)
+        self.assertIn("ORCA_USER_DATA_PATH is not set", err)
+        self.assertIn("Orca terminal", err)
+
+    def test_default_source_is_os_environ_at_call_time(self) -> None:
+        with mock.patch.dict(os.environ, {"ORCA_USER_DATA_PATH": "/late"}):
+            launchd.install("watch", [], self.tmp / "x.log")
+        self.assertEqual(self.plist("watch")["EnvironmentVariables"]["ORCA_USER_DATA_PATH"], "/late")
+
+
 class PathEnv(unittest.TestCase):
     def test_path_has_every_tool_dir_first_then_defaults(self) -> None:
         where = {"gh": "/opt/homebrew/bin/gh", "git": "/usr/bin/git", "claude": "/Users/x/.local/bin/claude"}
