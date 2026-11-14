@@ -111,6 +111,14 @@ job for the Plane issue X"*; these are the commands it runs):
 fractory job list            # what is open and where it stands
 fractory gate list           # what waits on you (judge rounds, cost, scope)
 fractory gate resolve <id> continue --note "…"    # or cancel
+```
+
+Every gate on a job with a Plane tracker also becomes a card in the same project (`Needs you: <gate> · <job title>`,
+label `humano`, state Todo, assignee `plane_assignee` from `config.toml`), created by `watch`/`sync`. Move the card to
+Done to continue the job or to Cancelled to cancel it; comments on the card are copied into the decision note.
+`gate resolve` on the CLI moves the card to Done.
+
+```sh
 fractory job status <id>     # history, links, next allowed events
 fractory dash                # JSON for the dashboard
 ```
