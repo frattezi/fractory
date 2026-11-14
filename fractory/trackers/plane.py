@@ -24,7 +24,6 @@ EXTERNAL_SOURCE = "fractory"
 # Same labels in every project: they tell factory work from human work. name -> (colour, description)
 STANDARD_LABELS: dict[str, tuple[str, str]] = {
     "fractory": ("#1f6f78", "A fábrica executa este card (gatilho do intake)."),
-    "automação": ("#7fb3b8", "Pode ser feito pela fábrica; aguarda trocar para 'fractory'."),
     "humano": ("#e3a35f", "Exige uma pessoa: decisão, acesso, conta ou revisão."),
     "design": ("#a83b5a", "Vem de uma decisão de design."),
 }
