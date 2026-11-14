@@ -33,7 +33,7 @@ def _rows(out: str, key: str) -> list[dict]:
 
 
 def find_worktree(job: state.Job, runner: Runner) -> dict | None:
-    """The job's Orca worktree: same repo, never the main checkout, directory name or display name == links.worktree."""
+    """The job's Orca worktree: same repo, never the main checkout, directory name == links.worktree."""
     name = str(job.links["worktree"])
     code, out = runner([launch.orca_exe(), "worktree", "list", "--repo", f"path:{job.repo}", "--json"])
     if code != 0:
@@ -41,7 +41,7 @@ def find_worktree(job: state.Job, runner: Runner) -> dict | None:
     for row in _rows(out, "worktrees"):
         if row.get("isMainWorktree") or not row.get("path"):
             continue
-        if Path(str(row["path"])).name == name or row.get("displayName") == name:
+        if Path(str(row["path"])).name == name:
             return row
     return None
 

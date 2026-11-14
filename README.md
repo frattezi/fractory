@@ -102,7 +102,7 @@ job for the Plane issue X"*; these are the commands it runs):
 | 6b. Rework | nothing: when a job goes back to `build` (CI red, Judge rejected) the reasons are typed into the worker's terminal (`links.terminal`) through `orch.py nudge`, and the history logs `rework_sent`; with no terminal or a failed nudge a `rework_needed` gate opens. A rejection that opens `judge_rounds` waits for you | watch / judge |
 | 7. Review and verdict | `fractory judge <id>` (Opus vs the Plane issue, fixed rubric; also reads `$FACTORY_HOME/jobs/<id>/brief.md` when present, default `~/.factory`, and a brief over 20,000 chars opens a `judge_error` gate); the PR's CI results go into the prompt, and a rejection whose every reason the model also lists as `unverified` becomes `approved` only when all CI checks are green (the guesses stay as notes in the comment), otherwise it stays rejected; with `auto_judge = true` in `config.toml`, `watch` runs it for every job in review. By hand: `fractory job advance <id> reviewed`, then `approved` or `rejected` | judge / you |
 | 8. Merge | internal with `auto_merge`: nothing, `watch` merges on green CI; otherwise merge on GitHub (Able: open the draft PR) | watch / you |
-| 9. Done | nothing: `fractory watch` sees the merge, finishes the job and moves the Plane issue to Done | watch |
+| 9. Done | nothing: `fractory watch` sees the merge, finishes the job and moves the Plane issue to Done, then cleans up once: stops or releases the worker's dispatch, closes the job worktree's terminals, removes the worktree (only if clean and merged; otherwise keeps it and records `cleanup_skipped`) and deletes the local branch | watch |
 
 **Day to day**
 
@@ -145,6 +145,7 @@ fractory judge cortadas-0001        # verdict on the PR diff vs the Plane issue;
 fractory sync                       # advance jobs from their PR and CI, mirror to Plane
 fractory watch                      # sync every 60 s until stopped (--every S, --rounds N)
 fractory watch --install            # the same, as a LaunchAgent that survives reboots
+fractory cleanup [--job ID] [--dry-run]  # close a finished job's terminals, worktree and branch in Orca (also retries kept ones)
                                     # watch and serve exit when main moves, launchd restarts them (watch: --no-reload)
 fractory dash --out /tmp/dash.json
 fractory serve                      # the live board at http://127.0.0.1:8777
