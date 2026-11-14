@@ -102,7 +102,7 @@ job for the Plane issue X"*; these are the commands it runs):
 | 6b. Rework | nothing: when a job goes back to `build` (CI red, Judge rejected) the reasons are typed into the worker's terminal (`links.terminal`) through `orch.py nudge`, and the history logs `rework_sent`; with no terminal or a failed nudge a `rework_needed` gate opens. A rejection that opens `judge_rounds` waits for you | watch / judge |
 | 7. Review and verdict | `fractory judge <id>` (Opus vs the Plane issue, fixed rubric; also reads `$FACTORY_HOME/jobs/<id>/brief.md` when present, default `~/.factory`, and a brief over 20,000 chars opens a `judge_error` gate); the PR's CI results go into the prompt, and a rejection whose every reason the model also lists as `unverified` becomes `approved` only when all CI checks are green (the guesses stay as notes in the comment), otherwise it stays rejected; with `auto_judge = true` in `config.toml`, `watch` runs it for every job in review. By hand: `fractory job advance <id> reviewed`, then `approved` or `rejected` | judge / you |
 | 8. Merge | internal with `auto_merge`: nothing, `watch` merges on green CI; otherwise merge on GitHub (Able: open the draft PR) | watch / you |
-| 9. Done | nothing: `fractory watch` sees the merge, finishes the job and moves the Plane issue to Done | watch |
+| 9. Done | nothing: `fractory watch` sees the merge, finishes the job and moves the Plane issue to Done, then cleans up once: stops or releases the worker's dispatch, closes the job worktree's terminals, removes the worktree (only if clean and merged; otherwise keeps it and records `cleanup_skipped`) and deletes the local branch | watch |
 
 **Day to day**
 
@@ -145,6 +145,7 @@ fractory judge cortadas-0001        # verdict on the PR diff vs the Plane issue;
 fractory sync                       # advance jobs from their PR and CI, mirror to Plane
 fractory watch                      # sync every 60 s until stopped (--every S, --rounds N)
 fractory watch --install            # the same, as a LaunchAgent that survives reboots
+fractory cleanup [--job ID] [--dry-run]  # close a finished job's terminals, worktree and branch in Orca (also retries kept ones)
                                     # watch and serve exit when main moves, launchd restarts them (watch: --no-reload)
 fractory dash --out /tmp/dash.json
 fractory serve                      # the live board at http://127.0.0.1:8777
@@ -192,6 +193,22 @@ fractory plane create-project --name Fractory --identifier FRACTORY
 fractory plane add-item --project <id> --title "…" --body "markdown" --status ready [--assign-me]
 fractory job new --repo DIR --title T --tracker plane --project <id> --ref <issue id>
 ```
+
+`create-project` also applies the standard labels and turns on the project's Views feature. For existing
+projects: `fractory plane setup-project --project <id>` (or `--all`). It is idempotent: it creates missing
+labels and resets the colour/description of existing ones. If the API refuses the Views toggle, it prints the
+manual step (Project settings → Features → Views).
+
+| Label | Colour | Meaning |
+|---|---|---|
+| `fractory` | `#1f6f78` | the factory executes this card (intake trigger) |
+| `automação` | `#7fb3b8` | the factory could do it; waiting to be switched to `fractory` |
+| `humano` | `#e3a35f` | needs a person: decision, access, account or review |
+| `design` | `#a83b5a` | comes from a design decision |
+
+Saved views cannot be created with an API key (Plane's views endpoints are session-only), so the main session
+creates these three per project through the browser: **🤖 Fábrica** (label `fractory`), **🧭 Fila da fábrica**
+(label `automação` + state group backlog/unstarted), **👤 Humano** (label `humano` + open states).
 
 Only open specs (`draft`, `blocked`, `ready`, `in-progress`, `in-review`) are imported; done ones stay in
 the repo as frozen history. Each issue carries `external_id` = the spec id, so a second run reports

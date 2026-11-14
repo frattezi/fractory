@@ -15,6 +15,7 @@ from pathlib import Path
 from unittest import mock
 
 from fractory import cli, rework, sync
+from fractory.trackers import plane as plane_mod
 from tests.test_plane_import import KEY, PROJECT, FakePlane, reset_fake
 
 
@@ -206,6 +207,44 @@ class SyncCli(unittest.TestCase):
                               "--url", self.url)  # fmt: skip
         self.assertIn("exists", out)
         self.assertEqual([p["identifier"] for p in FakePlane.projects], ["CORT", "FRACTORY"])
+
+    def label_names(self) -> list[str]:
+        return [lb["name"] for lb in FakePlane.labels]
+
+    def test_create_project_applies_standard_labels_and_views(self) -> None:
+        _, out = self.run_cli("plane", "create-project", "--name", "Fractory", "--identifier", "FRACTORY",
+                              "--url", self.url)  # fmt: skip
+        self.assertEqual(self.label_names(), list(plane_mod.STANDARD_LABELS))
+        self.assertIn(("fractory", "#1f6f78"), [(lb["name"], lb["color"]) for lb in FakePlane.labels])
+        self.assertTrue(any(body == {"issue_views_view": True} for _, body in FakePlane.patches))
+        self.assertNotIn("manual", out)
+
+    def test_views_refused_by_the_api_prints_the_manual_step(self) -> None:
+        FakePlane.reject_project_patch = True
+        code, out = self.run_cli("plane", "create-project", "--name", "Fractory", "--identifier", "FRACTORY",
+                                 "--url", self.url)  # fmt: skip
+        self.assertEqual(code, 0, out)
+        self.assertIn("manual", out)
+        self.assertEqual(self.label_names(), list(plane_mod.STANDARD_LABELS))
+
+    def test_setup_project_is_idempotent_and_fixes_drift(self) -> None:
+        FakePlane.labels = [{"id": "x", "name": "humano", "color": "#000000", "description": "old"}]
+        args = ("plane", "setup-project", "--project", PROJECT, "--url", self.url)
+        code, out = self.run_cli(*args)
+        self.assertEqual(code, 0, out)
+        self.assertEqual(self.label_names(), list(plane_mod.STANDARD_LABELS)[2:3] + ["fractory", "automação", "design"])
+        self.assertEqual(FakePlane.labels[0]["color"], "#e3a35f")
+        FakePlane.posts.clear()
+        self.run_cli(*args)
+        self.assertEqual(FakePlane.posts, [])
+        self.assertEqual(len(FakePlane.labels), 4)
+
+    def test_setup_project_all_and_unknown_project(self) -> None:
+        code, _ = self.run_cli("plane", "setup-project", "--all", "--url", self.url)
+        self.assertEqual(code, 0)
+        self.assertEqual(len(FakePlane.labels), 4)
+        code, _ = self.run_cli("plane", "setup-project", "--project", "nope", "--url", self.url)
+        self.assertEqual(code, 1)
 
     def test_add_item_renders_markdown_and_dedupes(self) -> None:
         args = ("plane", "add-item", "--project", PROJECT, "--title", "Sync from CI", "--body", "- one\n- two",

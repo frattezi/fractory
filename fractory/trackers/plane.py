@@ -22,6 +22,14 @@ DEFAULT_URL = "https://plane.cortadas.com.br"
 DEFAULT_WORKSPACE = "cortadas"
 EXTERNAL_SOURCE = "fractory"
 
+# Same labels in every project: they tell factory work from human work. name -> (colour, description)
+STANDARD_LABELS: dict[str, tuple[str, str]] = {
+    "fractory": ("#1f6f78", "A fábrica executa este card (gatilho do intake)."),
+    "automação": ("#7fb3b8", "Pode ser feito pela fábrica; aguarda trocar para 'fractory'."),
+    "humano": ("#e3a35f", "Exige uma pessoa: decisão, acesso, conta ou revisão."),
+    "design": ("#a83b5a", "Vem de uma decisão de design."),
+}
+
 # (method, url, headers, body) -> (status, parsed json)
 Http = Callable[[str, str, dict, bytes | None], tuple[int, object]]
 
@@ -146,6 +154,32 @@ class Plane:
             "identifier": data.get("identifier", identifier),
             "name": data.get("name", name),
         }, True
+
+    def enable_views(self) -> bool:
+        """Turn on the project's Views feature. False if the API refuses it (then it is a manual step)."""
+        try:
+            self._call("PATCH", f"/projects/{self.project_id}/", {"issue_views_view": True})
+        except PlaneError:
+            return False
+        return True
+
+    def ensure_labels(self, spec: dict[str, tuple[str, str]] = STANDARD_LABELS) -> dict[str, str]:
+        """Create missing labels, fix colour/description of existing ones. Idempotent. name -> id"""
+        existing = {lb["name"]: lb for lb in self.labels()}
+        ids: dict[str, str] = {}
+        for name, (color, description) in spec.items():
+            wanted = {"color": color, "description": description}
+            label = existing.get(name)
+            if label is None:
+                _, data = self._call("POST", f"/projects/{self.project_id}/labels/", {"name": name, **wanted})
+                if not isinstance(data, dict) or "id" not in data:
+                    raise PlaneError(f"could not create label {name!r}: {str(data)[:300]}")
+                ids[name] = data["id"]
+            else:
+                ids[name] = label["id"]
+                if any(label.get(k) != v for k, v in wanted.items()):
+                    self._call("PATCH", f"/projects/{self.project_id}/labels/{label['id']}/", wanted)
+        return ids
 
     def state_for(self, status: str) -> str:
         """The project's first state in the Plane group this Fractory status maps to."""
