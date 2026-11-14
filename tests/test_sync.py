@@ -13,7 +13,7 @@ from http.server import ThreadingHTTPServer
 from pathlib import Path
 from unittest import mock
 
-from fractory import cli, sync
+from fractory import cli, rework, sync
 from tests.test_plane_import import KEY, PROJECT, FakePlane, reset_fake
 
 
@@ -76,6 +76,9 @@ class SyncCli(unittest.TestCase):
         gh = mock.patch.object(sync, "run_gh", side_effect=self.fake_gh)
         self.gh = gh.start()
         self.addCleanup(gh.stop)
+        orch = mock.patch.object(rework, "run_cmd", return_value=(0, ""))
+        orch.start()
+        self.addCleanup(orch.stop)
 
     def fake_gh(self, args: list[str], cwd: str) -> str:
         if args[:2] == ["pr", "merge"]:
@@ -99,6 +102,7 @@ class SyncCli(unittest.TestCase):
             "--tracker", "plane", "--project", PROJECT, "--ref", "issue-1", "--plane-url", self.url,
         )  # fmt: skip
         self.run_cli("job", "link", "cortadas-0001", "--pr", "42")
+        self.run_cli("job", "link", "cortadas-0001", "--terminal", "term_1")
 
     def test_green_ci_moves_checks_to_review(self) -> None:
         self.new_job()

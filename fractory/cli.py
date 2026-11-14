@@ -34,7 +34,7 @@ import sys
 import time
 from pathlib import Path
 
-from . import judge, launch, launchd, reload, specs_import, state, store, sync
+from . import judge, launch, launchd, reload, rework, specs_import, state, store, sync
 from .trackers import plane as plane_mod
 from .trackers.base import STATUS_GROUPS
 
@@ -282,6 +282,8 @@ def judge_job(job_id: str) -> int:
     code = _mutate(job_id, apply)
     sync.pr_comment(job.repo, pr, verdict.comment_markdown())
     tracker.comment(job.tracker["ref"], verdict.comment_html())
+    if code == 0 and not verdict.approved:
+        rework.notify(job_id, "rejected", verdict.note(), ORCH)
     return code
 
 
@@ -315,6 +317,8 @@ def cmd_sync(a: argparse.Namespace) -> int:
                 updated, actions = state.apply_event(current, event, check, note="sync")
                 store.save(updated)
             _report(updated, actions)
+            if event == "red":
+                rework.notify(updated.id, "red", check or "", ORCH)
             if sync.STAGE_STATUS[updated.stage] != sync.STAGE_STATUS[current.stage]:
                 tracker = plane_tracker(updated)
                 if tracker:
