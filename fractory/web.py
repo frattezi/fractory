@@ -2,6 +2,7 @@
 
 GET /            the page (fractory/web/index.html)
 GET /api/jobs    dash_data() plus tracker_url and pr_url per job
+GET /api/jobs/<id>  one job: Job.to_dict() plus pr_url, tracker_url and the judge verdicts (404 if unknown)
 GET /api/events  Server-Sent Events: `event: jobs` whenever a state.json changes, `: ping` every 15 s
 """
 
@@ -66,6 +67,26 @@ def jobs_payload() -> dict:
     return data
 
 
+def job_payload(job_id: str) -> dict | None:
+    """Full job state for the detail panel; None for an unknown or malformed id."""
+    try:
+        job = store.load(job_id)
+    except (FileNotFoundError, ValueError):
+        return None
+    data = job.to_dict()
+    pr = job.links.get("pr")
+    base = repo_github_url(job.repo) if pr else None
+    data["pr_url"] = f"{base}/pull/{pr}" if base else None
+    data["tracker_url"] = plane_issue_url(job.tracker)
+    # the Judge writes its reasons joined with "; " as the note of approved/rejected; `sync` and gates use other notes
+    data["verdicts"] = [
+        {"at": e["at"], "decision": e["event"], "reasons": e["note"].split("; ")}
+        for e in job.history
+        if e["event"] in ("approved", "rejected") and e.get("note") and e["note"] != "sync"
+    ]
+    return data
+
+
 def _mtimes() -> dict[str, float]:
     out = {}
     for p in store.jobs_dir().glob("*/state.json"):
@@ -95,6 +116,14 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/api/jobs":
             body = json.dumps(jobs_payload(), ensure_ascii=False).encode()
             self._send(HTTPStatus.OK, body, "application/json; charset=utf-8")
+        elif path.startswith("/api/jobs/"):
+            data = job_payload(path.removeprefix("/api/jobs/"))
+            if data is None:
+                self._send(HTTPStatus.NOT_FOUND, b"not found", "text/plain; charset=utf-8")
+            else:
+                self._send(
+                    HTTPStatus.OK, json.dumps(data, ensure_ascii=False).encode(), "application/json; charset=utf-8"
+                )
         elif path == "/api/events":
             self._events()
         else:
