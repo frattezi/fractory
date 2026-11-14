@@ -23,8 +23,10 @@ def check_run(name: str, status: str = "COMPLETED", conclusion: str | None = "SU
     return {"__typename": "CheckRun", "name": name, "status": status, "conclusion": conclusion}
 
 
-def pr_json(state: str = "OPEN", draft: bool = False, checks: list[dict] | None = None) -> str:
-    return json.dumps({"state": state, "isDraft": draft, "statusCheckRollup": checks or []})
+def pr_json(
+    state: str = "OPEN", draft: bool = False, checks: list[dict] | None = None, mergeable: str = "MERGEABLE"
+) -> str:
+    return json.dumps({"state": state, "isDraft": draft, "statusCheckRollup": checks or [], "mergeable": mergeable})
 
 
 class ParsePr(unittest.TestCase):
@@ -182,6 +184,31 @@ class SyncCli(unittest.TestCase):
         self.run_cli("sync")
         self.assertEqual(self.stage(), "done")
 
+    def job_state(self) -> dict:
+        return json.loads((self.tmp / "factory" / "jobs" / "cortadas-0001" / "state.json").read_text())
+
+    def test_conflicting_pr_goes_back_to_the_worker_once_and_is_not_merged(self) -> None:
+        self.enable_auto_merge()
+        self.approved_with_green_ci()
+        self.pr = pr_json(checks=[check_run("tests")], mergeable="CONFLICTING")
+        with mock.patch.object(rework, "run_cmd", return_value=(0, "")) as nudge:
+            for _ in range(3):
+                self.run_cli("sync")
+        self.assertEqual(self.merged, [])
+        self.assertEqual(nudge.call_count, 1)
+        self.assertIn("conflicts with main", nudge.call_args.args[0][-1])
+        events = [e["event"] for e in self.job_state()["history"]]
+        self.assertEqual(events.count("conflict_sent"), 1)
+
+    def test_conflicting_pr_without_a_reachable_worker_opens_merge_conflict(self) -> None:
+        self.enable_auto_merge()
+        self.approved_with_green_ci()
+        self.pr = pr_json(checks=[check_run("tests")], mergeable="CONFLICTING")
+        with mock.patch.object(rework, "run_cmd", return_value=(1, "")):
+            self.run_cli("sync")
+        self.assertEqual(self.job_state()["gate"]["reason"], "merge_conflict")
+        self.assertEqual(self.merged, [])
+
     def test_no_auto_merge_without_config(self) -> None:
         self.approved_with_green_ci()
         self.run_cli("sync")
@@ -232,17 +259,17 @@ class SyncCli(unittest.TestCase):
         args = ("plane", "setup-project", "--project", PROJECT, "--url", self.url)
         code, out = self.run_cli(*args)
         self.assertEqual(code, 0, out)
-        self.assertEqual(self.label_names(), list(plane_mod.STANDARD_LABELS)[2:3] + ["fractory", "automação", "design"])
+        self.assertEqual(self.label_names(), list(plane_mod.STANDARD_LABELS)[1:2] + ["fractory", "design"])
         self.assertEqual(FakePlane.labels[0]["color"], "#e3a35f")
         FakePlane.posts.clear()
         self.run_cli(*args)
         self.assertEqual(FakePlane.posts, [])
-        self.assertEqual(len(FakePlane.labels), 4)
+        self.assertEqual(len(FakePlane.labels), 3)
 
     def test_setup_project_all_and_unknown_project(self) -> None:
         code, _ = self.run_cli("plane", "setup-project", "--all", "--url", self.url)
         self.assertEqual(code, 0)
-        self.assertEqual(len(FakePlane.labels), 4)
+        self.assertEqual(len(FakePlane.labels), 3)
         code, _ = self.run_cli("plane", "setup-project", "--project", "nope", "--url", self.url)
         self.assertEqual(code, 1)
 

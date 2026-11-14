@@ -97,11 +97,12 @@ job for the Plane issue X"*; these are the commands it runs):
 | --- | --- | --- |
 | 1. Pick the work | an issue in Plane, or `fractory plane add-item --project <id> --title …` | you |
 | 2–4. Job, worktree, worker | `fractory launch --repo . --issue <plane issue> --project <id> --brief FILE` (title from the issue; run id from `orca_run` in `config.toml` or `--run`; `--dry-run` shows the steps; once the worker runs, it adds the owner to the card (keeping other assignees) and sets the start date if empty; first checks the brief against the card and stops if it goes beyond it, unless `--force`) | main |
+| 1b. Let the factory take it | label the card `fractory` (who) and move it to Todo (when); `fractory intake` launches only Todo cards, Backlog ones are parked | you / intake |
 | 5. Open the PR and link it | `gh pr create`, then `fractory job link <id> --worktree … --pr <n>` and `fractory job advance <id> built` | worker / main |
 | 6. Checks | nothing: `fractory watch` sees CI; red goes back to build, green moves on to review | watch |
-| 6b. Rework | nothing: when a job goes back to `build` (CI red, Judge rejected) the reasons are typed into the worker's terminal (`links.terminal`) through `orch.py nudge`, and the history logs `rework_sent`; with no terminal or a failed nudge a `rework_needed` gate opens. A rejection that opens `judge_rounds` waits for you | watch / judge |
+| 6b. Rework | nothing: when a job goes back to `build` (CI red, Judge rejected) the reasons are typed into the worker's terminal (`links.terminal`) through `orch.py nudge`, and the history logs `rework_sent`; with no terminal or a failed nudge a `rework_needed` gate opens. A rejection that opens `judge_rounds` waits for you. A conflicting PR (`mergeable = CONFLICTING`) is never merged: the worker gets a rework message once (merge origin/main, resolve, push) and the history logs `conflict_sent`; with no reachable worker a `merge_conflict` gate opens | watch / judge |
 | 7. Review and verdict | `fractory judge <id>` (Opus vs the Plane issue, fixed rubric; also reads `$FACTORY_HOME/jobs/<id>/brief.md` when present, default `~/.factory`, and a brief over 20,000 chars opens a `judge_error` gate); the PR's CI results go into the prompt, and a rejection whose every reason the model also lists as `unverified` becomes `approved` only when all CI checks are green (the guesses stay as notes in the comment), otherwise it stays rejected; with `auto_judge = true` in `config.toml`, `watch` runs it for every job in review. By hand: `fractory job advance <id> reviewed`, then `approved` or `rejected` | judge / you |
-| 8. Merge | internal with `auto_merge`: nothing, `watch` merges on green CI; otherwise merge on GitHub (Able: open the draft PR) | watch / you |
+| 8. Merge | internal with `auto_merge`: nothing, `watch` merges on green CI (not while the PR conflicts with main, see 6b); otherwise merge on GitHub (Able: open the draft PR) | watch / you |
 | 9. Done | nothing: `fractory watch` sees the merge, finishes the job and moves the Plane issue to Done, then cleans up once: stops or releases the worker's dispatch, closes the job worktree's terminals, removes the worktree (only if clean and merged; otherwise keeps it and records `cleanup_skipped`) and deletes the local branch | watch |
 
 **Day to day**
@@ -110,6 +111,14 @@ job for the Plane issue X"*; these are the commands it runs):
 fractory job list            # what is open and where it stands
 fractory gate list           # what waits on you (judge rounds, cost, scope)
 fractory gate resolve <id> continue --note "…"    # or cancel
+```
+
+Every gate on a job with a Plane tracker also becomes a card in the same project (`Needs you: <gate> · <job title>`,
+label `humano`, state Todo, assignee `plane_assignee` from `config.toml`), created by `watch`/`sync`. Move the card to
+Done to continue the job or to Cancelled to cancel it; comments on the card are copied into the decision note.
+`gate resolve` on the CLI moves the card to Done.
+
+```sh
 fractory job status <id>     # history, links, next allowed events
 fractory dash                # JSON for the dashboard
 ```
@@ -202,13 +211,12 @@ manual step (Project settings → Features → Views).
 | Label | Colour | Meaning |
 |---|---|---|
 | `fractory` | `#1f6f78` | the factory executes this card (intake trigger) |
-| `automação` | `#7fb3b8` | the factory could do it; waiting to be switched to `fractory` |
 | `humano` | `#e3a35f` | needs a person: decision, access, account or review |
 | `design` | `#a83b5a` | comes from a design decision |
 
 Saved views cannot be created with an API key (Plane's views endpoints are session-only), so the main session
-creates these three per project through the browser: **🤖 Fábrica** (label `fractory`), **🧭 Fila da fábrica**
-(label `automação` + state group backlog/unstarted), **👤 Humano** (label `humano` + open states).
+creates these per project through the browser: **🤖 Fábrica** (label `fractory`), **👤 Humano** (label `humano`
++ open states). `setup-project` never deletes labels, so an existing `automação` stays until removed by hand.
 
 Only open specs (`draft`, `blocked`, `ready`, `in-progress`, `in-review`) are imported; done ones stay in
 the repo as frozen history. Each issue carries `external_id` = the spec id, so a second run reports
@@ -216,7 +224,11 @@ the repo as frozen history. Each issue carries `external_id` = the spec id, so a
 
 ## Intake
 
-A Plane card labelled `fractory` (state Backlog or Todo) starts a job: `fractory intake` launches it
+The label says who does a card (`fractory` = the factory, `humano` = a person, `design` = informative); the state
+says when: Backlog = not ready (nobody picks it), Todo = ready, In Progress = being worked on. So a `fractory`
+card in Backlog waits, and moving it to Todo is the "go".
+
+A Plane card labelled `fractory` in state Todo starts a job: `fractory intake` launches it
 like `fractory launch`, with the card title and description as the brief plus a fixed footer (link the PR,
 advance to built, worker_done), then moves the card to In Progress. A card that already has a job (any
 stage, cancelled included) is never launched twice. A launch that fails prints one line and the next card
@@ -237,7 +249,8 @@ dependency) launches only when every ref is a card in a completed state. A ref i
 Until then the card waits; a ref that matches no card keeps it waiting and prints
 `intake: <title>: unknown dependency <ref>` once per run. Cards without the line behave as before.
 
-`fractory intake --dry-run` lists what would launch (and which cards wait, with `waits for <refs>`) and changes nothing. A job that reaches done sets the card's target date to today if empty.
+`fractory intake --dry-run` lists what would launch (which cards wait, with `waits for <refs>`, and which labelled
+Backlog cards are `parked (backlog)`) and changes nothing. A job that reaches done sets the card's target date to today if empty.
 
 ## Next (v1)
 

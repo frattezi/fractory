@@ -36,7 +36,7 @@ import sys
 import time
 from pathlib import Path
 
-from . import cleanup, intake, judge, launch, launchd, reload, rework, risk, specs_import, state, store, sync
+from . import cleanup, gates, intake, judge, launch, launchd, reload, rework, risk, specs_import, state, store, sync
 from .trackers import plane as plane_mod
 from .trackers.base import STATUS_GROUPS
 
@@ -153,7 +153,11 @@ def cmd_gate_open(a: argparse.Namespace) -> int:
 
 
 def cmd_gate_resolve(a: argparse.Namespace) -> int:
-    return _mutate(a.id, lambda j: (state.resolve_gate(j, a.decision, a.note or ""), []))
+    before = store.load(a.id)
+    code = _mutate(a.id, lambda j: (state.resolve_gate(j, a.decision, a.note or ""), []))
+    if code == 0 and before.gate:
+        gates.close_card(before, before.gate)
+    return code
 
 
 def dash_data() -> dict:
@@ -268,8 +272,10 @@ def cmd_plane_add_item(a: argparse.Namespace) -> int:
     client = plane_mod.Plane(a.project, plane_mod.api_key_from_env(), a.url, a.workspace)
     external_id = a.external_id or store.slug(a.title)
     try:
-        assignee = launch.owner_id(client) if a.assign_me else None
-        item = client.create_item(a.title, specs_import.markdown_to_html(body), a.status, external_id, assignee)
+        assignees = [launch.owner_id(client)] if a.assign_me else None
+        item = client.create_item(
+            a.title, specs_import.markdown_to_html(body), a.status, external_id, assignees=assignees
+        )
         print(f"created  {external_id}  {item.ref}")
     except plane_mod.Duplicate as dup:
         print(f"exists   {external_id}  {dup.ref}")
@@ -361,7 +367,8 @@ def cmd_sync(a: argparse.Namespace) -> int:
     jobs = [store.load(i) for i in a.ids] if a.ids else store.all_jobs()
     auto_merge = bool(store.config().get("auto_merge"))
     auto_judge = bool(store.config().get("auto_judge"))
-    failed = False
+    failed = gates.sync_gates(a.ids or None)
+    jobs = [store.load(j.id) for j in jobs]  # a gate card may just have resolved a job
     for job in jobs:
         if job.stage in state.TERMINAL or not job.links.get("pr"):
             continue
@@ -370,16 +377,23 @@ def cmd_sync(a: argparse.Namespace) -> int:
                 failed |= judge_job(job.id) != 0
                 continue
             pr = sync.fetch_pr(job.repo, job.links["pr"])
+            conflicted = False
             with store.locked(job.id):
                 current = store.load(job.id)
                 found = sync.pr_event(current, pr)
-                if found is None:
-                    if auto_merge and sync.should_merge(current, pr):
+                if found is None and auto_merge and sync.should_merge(current, pr):
+                    if sync.has_conflict(pr):
+                        conflicted = True
+                    else:
                         _merge_if_low_risk(current)
-                    continue
-                event, check = found
-                updated, actions = state.apply_event(current, event, check, note="sync")
-                store.save(updated)
+                if found is not None:
+                    event, check = found
+                    updated, actions = state.apply_event(current, event, check, note="sync")
+                    store.save(updated)
+            if found is None:
+                if conflicted:  # outside the lock: notify_conflict takes it
+                    rework.notify_conflict(job.id, ORCH)
+                continue
             _report(updated, actions)
             if event == "red":
                 rework.notify(updated.id, "red", check or "", ORCH)

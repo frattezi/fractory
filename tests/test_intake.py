@@ -56,10 +56,15 @@ class Candidates(unittest.TestCase):
 
     def test_label_and_state_filters(self) -> None:
         found = intake.candidates(self.issues(), LABEL, [])
-        self.assertEqual([i["id"] for i in found], ["issue-1", "issue-2", "issue-7"])
+        self.assertEqual([i["id"] for i in found], ["issue-1", "issue-7"])
+
+    def test_backlog_cards_are_parked_not_launched(self) -> None:
+        parked: list[dict] = []
+        intake.candidates(self.issues(), LABEL, [], parked=parked)
+        self.assertEqual([i["id"] for i in parked], ["issue-2"])
 
     def test_a_card_with_any_job_is_skipped_even_cancelled(self) -> None:
-        jobs = [job_for("issue-1", "cancelled"), job_for("issue-2", "done")]
+        jobs = [job_for("issue-1", "cancelled"), job_for("issue-2", "done")]  # issue-2 is parked anyway
         found = intake.candidates(self.issues(), LABEL, jobs)
         self.assertEqual([i["id"] for i in found], ["issue-7"])
 
@@ -211,6 +216,20 @@ class IntakeCli(unittest.TestCase):
         self.assertEqual(self.calls, [])
         self.assertEqual(FakePlane.patches, [])
         self.assertEqual(store.all_jobs(), [])
+
+    def test_backlog_card_waits_and_todo_launches(self) -> None:
+        FakePlane.issues = [card(1, "s-backlog")]
+        _, out = self.run_cli("intake", "--dry-run")
+        self.assertIn("intake: Card 1 parked (backlog)", out)
+        self.assertNotIn("would launch", out)
+        self.run_cli("intake")
+        self.assertEqual(store.all_jobs(), [])
+        FakePlane.issues[0]["state"] = "s-todo"
+        _, out = self.run_cli("intake", "--dry-run")
+        self.assertIn("would launch 'Card 1'", out)
+        self.assertNotIn("parked", out)
+        self.run_cli("intake")
+        self.assertEqual([j.tracker["ref"] for j in store.all_jobs()], ["issue-1"])
 
     def test_card_waits_for_its_dependency_then_launches(self) -> None:
         dep = card(1, "s-doing")

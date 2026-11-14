@@ -25,7 +25,6 @@ EXTERNAL_SOURCE = "fractory"
 # Same labels in every project: they tell factory work from human work. name -> (colour, description)
 STANDARD_LABELS: dict[str, tuple[str, str]] = {
     "fractory": ("#1f6f78", "A fábrica executa este card (gatilho do intake)."),
-    "automação": ("#7fb3b8", "Pode ser feito pela fábrica; aguarda trocar para 'fractory'."),
     "humano": ("#e3a35f", "Exige uma pessoa: decisão, acesso, conta ou revisão."),
     "design": ("#a83b5a", "Vem de uma decisão de design."),
 }
@@ -194,17 +193,25 @@ class Plane:
         return self._states[group]
 
     def create_item(
-        self, title: str, body_html: str, status: str, external_id: str, assignee: str | None = None
+        self,
+        title: str,
+        body_html: str,
+        status: str,
+        external_id: str,
+        labels: list[str] | None = None,
+        assignees: list[str] | None = None,
     ) -> Item:
-        payload = {
+        payload: dict = {
             "name": title[:255],
             "description_html": body_html,
             "state": self.state_for(status),
             "external_id": external_id,
             "external_source": EXTERNAL_SOURCE,
         }
-        if assignee:
-            payload["assignees"] = [assignee]
+        if labels:
+            payload["labels"] = labels
+        if assignees:
+            payload["assignees"] = assignees
         status_code, data = self._call("POST", f"/projects/{self.project_id}/issues/", payload)
         if status_code == 409:
             ref = data.get("id", "") if isinstance(data, dict) else ""
@@ -240,6 +247,22 @@ class Plane:
             payload["start_date"] = date.today().isoformat()
         if payload:
             self._call("PATCH", f"/projects/{self.project_id}/issues/{ref}/", payload)
+
+    def label_id(self, name: str) -> str:
+        """Id of a standard label, created if the project lacks it."""
+        return self.ensure_labels({name: STANDARD_LABELS[name]})[name]
+
+    def item_group(self, ref: str) -> str:
+        """Plane state group of an issue: backlog | unstarted | started | completed | cancelled."""
+        state = self.get_item(ref).get("state")
+        if isinstance(state, dict):
+            return str(state.get("group", ""))
+        _, data = self._call("GET", f"/projects/{self.project_id}/states/")
+        return next((str(s["group"]) for s in _results(data) if s["id"] == state), "")
+
+    def comment_texts(self, ref: str) -> list[str]:
+        _, data = self._call("GET", f"/projects/{self.project_id}/issues/{ref}/comments/")
+        return [str(c.get("comment_stripped") or c.get("comment_html") or "") for c in _results(data)]
 
     def get_item(self, ref: str) -> dict:
         _, data = self._call("GET", f"/projects/{self.project_id}/issues/{ref}/")

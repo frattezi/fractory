@@ -79,6 +79,9 @@ class FakePlane(BaseHTTPRequestHandler):
                 200,
                 {"results": page[start:end], "next_page_results": more, "next_cursor": str(end) if more else ""},
             )
+        elif m := re.fullmatch(f"{base}/projects/{PROJECT}/issues/([^/]+)/comments/", self.path):
+            texts = [b for p, b in self.comments if p.split("/")[-3] == m.group(1)]
+            self._send(200, {"results": [{"comment_html": b["comment_html"]} for b in texts]})
         elif m := re.fullmatch(f"{base}/projects/{PROJECT}/issues/([^/]+)/", self.path):
             issue = next((i for i in self.issues if i["id"] == m.group(1)), None)
             self._send(200, issue) if issue else self._send(404, {"detail": "no issue"})
@@ -123,6 +126,10 @@ class FakePlane(BaseHTTPRequestHandler):
         elif m := re.fullmatch("/api/v1/workspaces/cortadas/projects/[^/]+/labels/([^/]+)/", self.path):
             label = next(lb for lb in self.labels if lb["id"] == m.group(1))
             label.update(body)
+        elif m := re.fullmatch(f"/api/v1/workspaces/cortadas/projects/{PROJECT}/issues/([^/]+)/", self.path):
+            for issue in self.issues:
+                if issue["id"] == m.group(1):
+                    issue.update(body)
         elif self.reject_project_patch and re.fullmatch("/api/v1/workspaces/cortadas/projects/[^/]+/", self.path):
             self._send(400, {"error": "unknown field"})
             return
