@@ -131,6 +131,11 @@ def _brief_beyond_card(issue: dict, title: str, brief: str) -> list[str]:
     return verdict.extra
 
 
+def owner_id(plane) -> str:
+    """The card owner: `plane_assignee` from config, else the owner of the Plane API key."""
+    return str(store.config().get("plane_assignee") or plane.me())
+
+
 def launch(a: Args, plane, orch: Path) -> int:
     """`plane` has `get_item(ref)`; `orch` is the orch.py path (cli.ORCH)."""
     try:
@@ -225,6 +230,13 @@ def launch(a: Args, plane, orch: Path) -> int:
         done.append("6 job link")
     except (LaunchError, OSError, ValueError, RuntimeError) as err:
         return _fail(None if a.dry_run or job_id in (None, "<job id>") else job_id, step, str(err), done)
+
+    if not a.dry_run:
+        try:
+            plane.start_item(a.issue, owner_id(plane))
+            print("7. card: assignee and start date set")
+        except (RuntimeError, OSError) as err:  # the job is already running; a card without owner is not fatal
+            print(f"warning: could not assign the card: {err}")
 
     print(f"launched {job_id}" + (" (dry run, nothing created)" if a.dry_run else f" in {term}"))
     return 0
