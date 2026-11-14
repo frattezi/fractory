@@ -141,6 +141,7 @@ fractory judge cortadas-0001        # verdict on the PR diff vs the Plane issue;
 fractory sync                       # advance jobs from their PR and CI, mirror to Plane
 fractory watch                      # sync every 60 s until stopped (--every S, --rounds N)
 fractory watch --install            # the same, as a LaunchAgent that survives reboots
+                                    # watch and serve exit when main moves, launchd restarts them (watch: --no-reload)
 fractory dash --out /tmp/dash.json
 fractory serve                      # the live board at http://127.0.0.1:8777
 fractory orch alive term_…          # everything orch.py does, unchanged

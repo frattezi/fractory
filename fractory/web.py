@@ -11,13 +11,14 @@ from __future__ import annotations
 import json
 import re
 import subprocess
+import threading
 import time
 from functools import lru_cache
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-from . import cli, store
+from . import cli, reload, store
 from .trackers.plane import DEFAULT_URL, DEFAULT_WORKSPACE
 
 INDEX = Path(__file__).parent / "web" / "index.html"
@@ -166,13 +167,28 @@ def make_server(port: int = DEFAULT_PORT) -> Server:
     return Server((HOST, port), Handler)
 
 
-def serve(port: int) -> int:
+RELOAD_SECONDS = 60
+
+
+def _reload_loop(server: Server, repo_root: Path, stop: threading.Event) -> None:
+    while not stop.wait(RELOAD_SECONDS):
+        if sha := reload.pull_if_moved(repo_root):
+            print(f"serve: main moved to {sha}, restarting", flush=True)
+            server.shutdown()
+            return
+
+
+def serve(port: int, reload_root: Path | None = None) -> int:
     server = make_server(port)
+    stop = threading.Event()
+    if reload_root is not None:
+        threading.Thread(target=_reload_loop, args=(server, reload_root, stop), daemon=True).start()
     print(f"fractory board on http://{HOST}:{server.server_address[1]}  (ctrl-c to stop)", flush=True)
     try:
         server.serve_forever()
     except KeyboardInterrupt:
         print("serve stopped")
     finally:
+        stop.set()
         server.server_close()
     return 0
