@@ -71,6 +71,16 @@ def worktree_id(output: str) -> str:
     return str(found)
 
 
+def coordinator_handle(run: str) -> str | None:
+    """The terminal bound as the Run's coordinator. Orca only lets that terminal start workers, and under launchd
+    `watch` runs in no terminal at all, so the worker launch borrows this identity through ORCA_TERMINAL_HANDLE."""
+    code, out = run_cmd([orca_exe(), "orchestration", "run-show", "--id", run, "--json"])
+    if code != 0:
+        return None
+    found = ((json_payload(out).get("result") or {}).get("run") or {}).get("coordinator_handle")
+    return str(found) if found else None
+
+
 def terminal_handle(output: str) -> str:
     m = re.search(r"in terminal (term_[A-Za-z0-9_-]+)", output)
     if not m:
@@ -178,7 +188,9 @@ def launch(a: Args, plane, orch: Path) -> int:
 
         step = "5 launch worker"
         task_title = f"{job_id} {title}"
-        cmd = [sys.executable, str(orch), "launch", "--run", run, "--worktree", f"id:{wt}", "--title", task_title]
+        coordinator = None if a.dry_run else coordinator_handle(run)
+        cmd = ["env", f"ORCA_TERMINAL_HANDLE={coordinator}"] if coordinator else []
+        cmd += [sys.executable, str(orch), "launch", "--run", run, "--worktree", f"id:{wt}", "--title", task_title]
         cmd += ["--task-title", task_title, "--spec-file", str(dest), "--profile", a.profile]
         cmd += ["--repo", str(repo), "--trust"]
         print("5. " + shlex.join(cmd))

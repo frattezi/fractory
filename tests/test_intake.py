@@ -104,6 +104,8 @@ class IntakeCli(unittest.TestCase):
             if argv[argv.index("--name") + 1] in self.fail_worktree:
                 return 1, "boom"
             return 0, json.dumps({"ok": True, "result": {"worktree": {"id": "repo::/wt/x"}}})
+        if "run-show" in argv:
+            return 0, json.dumps({"ok": True, "result": {"run": {"coordinator_handle": "term_coord"}}})
         self.briefs.append(Path(argv[argv.index("--spec-file") + 1]).read_text())
         return 0, "launched dispatch d1 in terminal term_abc (stage running)\n"
 
