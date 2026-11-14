@@ -16,7 +16,7 @@ from .trackers import plane as plane_mod
 
 DEFAULT_LABEL = "fractory"
 DEFAULT_MAX_PARALLEL = 3
-STARTABLE_GROUPS = ("backlog", "unstarted")
+STARTABLE_GROUPS = ("unstarted",)  # Backlog = not ready; moving the card to Todo is the "go"
 
 FOOTER = """---
 Done when: the checks pass, the change is pushed and a pull request is open. Then, from the Fractory
@@ -85,18 +85,25 @@ def candidates(
     identifier: str = "",
     warned: set[tuple[str, str]] | None = None,
     waiting: dict[str, list[str]] | None = None,
+    parked: list[dict] | None = None,
 ) -> list[dict]:
-    """Cards with the label, not started, without any job yet (cancelled ones included), and whose
-    `Depends on:` cards are all completed. Blocked cards are recorded in `waiting` (id -> unmet refs)."""
+    """Cards with the label in Todo, without any job yet (cancelled ones included), and whose
+    `Depends on:` cards are all completed. Blocked cards are recorded in `waiting` (id -> unmet refs);
+    labelled Backlog cards without a job are appended to `parked`."""
     all_issues = list(plane_issues)
     taken = {j.tracker.get("ref") for j in jobs if j.tracker}
     found = []
     for i in all_issues:
         if not (
             label_id in [(lb["id"] if isinstance(lb, dict) else lb) for lb in i.get("labels") or []]
-            and _state_group(i) in STARTABLE_GROUPS
             and i["id"] not in taken
         ):
+            continue
+        if _state_group(i) == "backlog":
+            if parked is not None:
+                parked.append(i)
+            continue
+        if _state_group(i) not in STARTABLE_GROUPS:
             continue
         unmet = unmet_dependencies(i, all_issues, identifier, warned)
         if unmet:
@@ -148,11 +155,14 @@ def run_intake(config: dict, orch: Path, dry_run: bool = False, launcher: Launch
             )
             waiting: dict[str, list[str]] = {}
             all_issues = plane.list_issues()
-            cards = candidates(all_issues, label["id"], jobs, identifier, warned, waiting)
+            parked: list[dict] = []
+            cards = candidates(all_issues, label["id"], jobs, identifier, warned, waiting, parked)
         except (plane_mod.PlaneError, RuntimeError, OSError) as err:
             print(f"intake: {project}: {err}")
             continue
         if dry_run:
+            for i in parked:
+                print(f"intake: {i.get('name') or i['id']} parked (backlog)")
             for i in all_issues:
                 if i["id"] in waiting:
                     print(f"intake: {i.get('name') or i['id']} waits for {', '.join(waiting[i['id']])}")
