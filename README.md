@@ -90,9 +90,7 @@ job for the Plane issue X"*; these are the commands it runs):
 | Step | Command | Who |
 | --- | --- | --- |
 | 1. Pick the work | an issue in Plane, or `fractory plane add-item --project <id> --title …` | you |
-| 2. Open the job | `fractory job new --repo . --title … --stage build --tracker plane --project <id> --ref <issue>` | main |
-| 3. Give it a worktree | `orca worktree create --repo path:. --name <branch> --no-parent` | main |
-| 4. Build | a worker via `fractory orch launch …`, or the main itself in that worktree | worker |
+| 2–4. Job, worktree, worker | `fractory launch --repo . --issue <plane issue> --project <id> --brief FILE` (title from the issue; run id from `orca_run` in `config.toml` or `--run`; `--dry-run` shows the steps) | main |
 | 5. Open the PR and link it | `gh pr create`, then `fractory job link <id> --worktree … --pr <n>` and `fractory job advance <id> built` | worker / main |
 | 6. Checks | nothing: `fractory watch` sees CI; red goes back to build, green moves on to review | watch |
 | 7. Review and verdict | `fractory judge <id>` (Opus vs the Plane issue, fixed rubric); with `auto_judge = true` in `config.toml`, `watch` runs it for every job in review. By hand: `fractory job advance <id> reviewed`, then `approved` or `rejected` | judge / you |
