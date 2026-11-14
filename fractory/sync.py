@@ -35,6 +35,7 @@ class Pr:
     state: str  # OPEN | CLOSED | MERGED
     draft: bool
     checks: tuple[tuple[str, str], ...]  # (name, PENDING|SUCCESS|FAILURE|...)
+    mergeable: str = "UNKNOWN"  # MERGEABLE | CONFLICTING | UNKNOWN
 
 
 def parse_pr(data: dict) -> Pr:
@@ -49,7 +50,12 @@ def parse_pr(data: dict) -> Pr:
             result = (c.get("conclusion") or "").upper() if c.get("status") == "COMPLETED" else "PENDING"
             result = result or "PENDING"
         checks.append((name, result))
-    return Pr(state=data.get("state", "OPEN"), draft=bool(data.get("isDraft")), checks=tuple(checks))
+    return Pr(
+        state=data.get("state", "OPEN"),
+        draft=bool(data.get("isDraft")),
+        checks=tuple(checks),
+        mergeable=(data.get("mergeable") or "UNKNOWN").upper(),
+    )
 
 
 def ci_result(pr: Pr) -> tuple[str, str | None]:
@@ -88,7 +94,7 @@ def run_gh(args: list[str], cwd: str) -> str:
 
 
 def fetch_pr(repo: str, pr: str, gh: Gh | None = None) -> Pr:
-    out = (gh or run_gh)(["pr", "view", pr, "--json", "state,isDraft,statusCheckRollup"], repo)
+    out = (gh or run_gh)(["pr", "view", pr, "--json", "state,isDraft,statusCheckRollup,mergeable"], repo)
     return parse_pr(json.loads(out))
 
 
@@ -107,6 +113,11 @@ def should_merge(job: Job, pr: Pr) -> bool:
         and not pr.draft
         and ci_result(pr)[0] == "green"
     )
+
+
+def has_conflict(pr: Pr) -> bool:
+    """The PR cannot merge into main until its branch is updated (`gh pr merge` would fail every time)."""
+    return pr.state == "OPEN" and pr.mergeable == "CONFLICTING"
 
 
 def pr_files(repo: str, pr: str, gh: Gh | None = None) -> list[tuple[str, int, int]]:
