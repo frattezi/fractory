@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import ssl
 import subprocess
 import urllib.error
@@ -125,6 +126,21 @@ class Plane:
         return [
             {"id": p["id"], "identifier": p.get("identifier", ""), "name": p.get("name", "")} for p in _results(data)
         ]
+
+    @classmethod
+    def resolve_project(
+        cls,
+        ref: str,
+        api_key: str,
+        base_url: str = DEFAULT_URL,
+        workspace: str = DEFAULT_WORKSPACE,
+        http: Http = urllib_http,
+    ) -> tuple[str, str]:
+        """(project id, identifier) from a UUID or an identifier like CUIDADO."""
+        for p in cls.projects(api_key, base_url, workspace, http):
+            if ref == p["id"] or ref.upper() == p["identifier"].upper():
+                return p["id"], p["identifier"]
+        raise PlaneError(f"no project {ref}; see `fractory plane projects`")
 
     @classmethod
     def create_project(
@@ -250,7 +266,37 @@ class Plane:
 
     def label_id(self, name: str) -> str:
         """Id of a standard label, created if the project lacks it."""
+        if name not in STANDARD_LABELS:
+            raise PlaneError(f"unknown label {name!r}; standard labels: {', '.join(STANDARD_LABELS)}")
         return self.ensure_labels({name: STANDARD_LABELS[name]})[name]
+
+    def label_names(self, issue: dict) -> list[str]:
+        """Names of the labels on an issue (the API lists ids, or objects when expanded)."""
+        by_id = {lb["id"]: lb["name"] for lb in self.labels()}
+        raw = issue.get("labels") or []
+        return [str(lb["name"]) if isinstance(lb, dict) else by_id.get(lb, str(lb)) for lb in raw]
+
+    def states(self) -> dict[str, dict]:
+        """State id -> {name, group}."""
+        _, data = self._call("GET", f"/projects/{self.project_id}/states/")
+        return {s["id"]: {"name": s.get("name", ""), "group": s.get("group", "")} for s in _results(data)}
+
+    def resolve_ref(self, ref: str) -> str:
+        """Issue id from an id or a key like CUIDADO-12 (matched on the project's sequence ids)."""
+        m = re.fullmatch(r"([A-Za-z][A-Za-z0-9]*)-(\d+)", ref)
+        if not m:
+            return ref
+        for issue in self.list_issues():
+            if issue.get("sequence_id") == int(m.group(2)):
+                return str(issue["id"])
+        raise PlaneError(f"no card {ref} in project {self.project_id}")
+
+    def add_labels(self, ref: str, names: list[str]) -> None:
+        """Add labels to a card, keeping the ones it has."""
+        current = [str(lb["id"] if isinstance(lb, dict) else lb) for lb in self.get_item(ref).get("labels") or []]
+        wanted = [i for i in (self.label_id(n) for n in names) if i not in current]
+        if wanted:
+            self._call("PATCH", f"/projects/{self.project_id}/issues/{ref}/", {"labels": [*current, *wanted]})
 
     def item_group(self, ref: str) -> str:
         """Plane state group of an issue: backlog | unstarted | started | completed | cancelled."""

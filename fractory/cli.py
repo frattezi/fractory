@@ -21,6 +21,12 @@
     fractory plane create-project --name N --identifier KEY
     fractory plane setup-project --project ID | --all   standard labels + Views feature
     fractory plane add-item --project ID --title T [--body MD | --body-file F] [--status S] [--assign-me]
+                            [--label NAME ...] [--depends-on REFS]
+    fractory plane items --project ID [--status backlog|ready|in_progress|done|cancelled] [--label NAME]
+    fractory plane show --project ID --ref ID_OR_KEY
+    fractory plane move --project ID --ref ID_OR_KEY --status S [--add-label NAME]
+    fractory plane comment --project ID --ref ID_OR_KEY (--body MD | --body-file F)
+                            (--project takes the UUID or the identifier, e.g. CUIDADO; --ref an id or CUIDADO-12)
     fractory orch ARGS...          passthrough to orch.py (the v0 build engine, unchanged)
 
 Exit 0 means it did what it says; 1 means it did not. Output is short plain text.
@@ -267,19 +273,108 @@ def cmd_plane_setup_project(a: argparse.Namespace) -> int:
     return 0
 
 
+def _plane(a: argparse.Namespace) -> plane_mod.Plane:
+    key = plane_mod.api_key_from_env()
+    project_id, identifier = plane_mod.Plane.resolve_project(a.project, key, a.url, a.workspace)
+    return plane_mod.Plane(project_id, key, a.url, a.workspace, identifier=identifier)
+
+
+def _body(a: argparse.Namespace) -> str:
+    return Path(a.body_file).read_text() if a.body_file else (a.body or "")
+
+
 def cmd_plane_add_item(a: argparse.Namespace) -> int:
-    body = Path(a.body_file).read_text() if a.body_file else (a.body or "")
-    client = plane_mod.Plane(a.project, plane_mod.api_key_from_env(), a.url, a.workspace)
+    body = _body(a)
+    if a.depends_on:
+        body = f"{body.rstrip()}\n\nDepends on: {a.depends_on}"
+    client = _plane(a)
     external_id = a.external_id or store.slug(a.title)
     try:
         assignees = [launch.owner_id(client)] if a.assign_me else None
+        labels = [client.label_id(name) for name in a.label or []]
         item = client.create_item(
-            a.title, specs_import.markdown_to_html(body), a.status, external_id, assignees=assignees
+            a.title, specs_import.markdown_to_html(body), a.status, external_id, labels=labels, assignees=assignees
         )
         print(f"created  {external_id}  {item.ref}")
     except plane_mod.Duplicate as dup:
         print(f"exists   {external_id}  {dup.ref}")
     return 0
+
+
+def _plane_or_fail(a: argparse.Namespace, fn) -> int:
+    try:
+        return fn(_plane(a))
+    except plane_mod.PlaneError as err:
+        print(err)
+        return 1
+
+
+def cmd_plane_items(a: argparse.Namespace) -> int:
+    def run(client: plane_mod.Plane) -> int:
+        group = STATUS_GROUPS[a.status] if a.status else None
+        for issue in client.list_issues():
+            state_ = issue.get("state")
+            issue_group = state_.get("group", "") if isinstance(state_, dict) else ""
+            labels = client.label_names(issue)
+            if (group and issue_group != group) or (a.label and a.label not in labels):
+                continue
+            key = (
+                f"{client.identifier}-{issue.get('sequence_id')}"
+                if client.identifier
+                else str(issue.get("sequence_id"))
+            )
+            print(f"{key}  {issue_group:<9}  {','.join(labels) or '-'}  {issue.get('name', '')}  {issue['id']}")
+        return 0
+
+    return _plane_or_fail(a, run)
+
+
+def cmd_plane_show(a: argparse.Namespace) -> int:
+    def run(client: plane_mod.Plane) -> int:
+        ref = client.resolve_ref(a.ref)
+        issue = client.get_item(ref)
+        state_ = issue.get("state")
+        info = state_ if isinstance(state_, dict) else client.states().get(state_, {})
+        key = f"{client.identifier}-{issue.get('sequence_id')}" if client.identifier else str(issue.get("sequence_id"))
+        assignees = [
+            str(x.get("display_name") or x.get("id")) if isinstance(x, dict) else str(x)
+            for x in issue.get("assignees") or []
+        ]
+        print(f"{key}  {issue.get('name', '')}")
+        print(f"id:        {ref}")
+        print(f"state:     {info.get('name', '')} ({info.get('group', '')})")
+        print(f"labels:    {', '.join(client.label_names(issue)) or '-'}")
+        print(f"assignees: {', '.join(assignees) or '-'}")
+        print(f"\n{judge.html_to_text(issue.get('description_html') or '')}")
+        comments = client.comment_texts(ref)
+        print(f"\ncomments ({len(comments)})")
+        for text in comments:
+            print(f"---\n{judge.html_to_text(text)}")
+        return 0
+
+    return _plane_or_fail(a, run)
+
+
+def cmd_plane_move(a: argparse.Namespace) -> int:
+    def run(client: plane_mod.Plane) -> int:
+        ref = client.resolve_ref(a.ref)
+        client.set_status(ref, a.status)
+        if a.add_label:
+            client.add_labels(ref, a.add_label)
+        print(f"moved    {ref}  {a.status}" + (f"  +{','.join(a.add_label)}" if a.add_label else ""))
+        return 0
+
+    return _plane_or_fail(a, run)
+
+
+def cmd_plane_comment(a: argparse.Namespace) -> int:
+    def run(client: plane_mod.Plane) -> int:
+        ref = client.resolve_ref(a.ref)
+        client.comment(ref, specs_import.markdown_to_html(_body(a)))
+        print(f"commented  {ref}")
+        return 0
+
+    return _plane_or_fail(a, run)
 
 
 def plane_tracker(job: state.Job) -> plane_mod.Plane | None:
@@ -572,6 +667,10 @@ def build_parser() -> argparse.ArgumentParser:
         ("create-project", cmd_plane_create_project),
         ("setup-project", cmd_plane_setup_project),
         ("add-item", cmd_plane_add_item),
+        ("items", cmd_plane_items),
+        ("show", cmd_plane_show),
+        ("move", cmd_plane_move),
+        ("comment", cmd_plane_comment),
     )
     for name, fn in commands:
         s = pl.add_parser(name)
@@ -599,6 +698,21 @@ def build_parser() -> argparse.ArgumentParser:
             s.add_argument("--status", default="backlog", choices=list(STATUS_GROUPS))
             s.add_argument("--external-id", help="dedupe key (default: slug of the title)")
             s.add_argument("--assign-me", action="store_true", help="assign the card to the owner (plane_assignee)")
+            s.add_argument("--label", action="append", help="standard label (fractory, humano, design); repeatable")
+            s.add_argument("--depends-on", help="refs for a final 'Depends on:' line, e.g. CORT-3,CORT-4")
+        elif name == "items":
+            s.add_argument("--project", required=True, help="project UUID or identifier")
+            s.add_argument("--status", choices=list(STATUS_GROUPS))
+            s.add_argument("--label")
+        elif name in ("show", "move", "comment"):
+            s.add_argument("--project", required=True, help="project UUID or identifier")
+            s.add_argument("--ref", required=True, help="card id or key like CUIDADO-12")
+            if name == "move":
+                s.add_argument("--status", required=True, choices=list(STATUS_GROUPS))
+                s.add_argument("--add-label", action="append")
+            if name == "comment":
+                s.add_argument("--body", help="Markdown")
+                s.add_argument("--body-file", help="Markdown file")
 
     s = sub.add_parser("launch", help="open a job, its worktree and its worker in one command")
     s.add_argument("--repo", required=True)
