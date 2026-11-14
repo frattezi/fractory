@@ -6,11 +6,14 @@ The model only judges. `parse_verdict` and `build_prompt` are pure; `ask_model` 
 
 from __future__ import annotations
 
+import contextlib
 import fnmatch
 import json
 import re
+import shutil
 import subprocess
-from collections.abc import Callable
+import tempfile
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass, replace
 from html import escape
 from html.parser import HTMLParser
@@ -33,7 +36,8 @@ GENERATED_NAMES = (
 GENERATED_DIRS = ("dist", "build", "coverage")
 BIG_SVG_LINES = 200
 
-Runner = Callable[[list[str], str], str]  # (argv, stdin) -> stdout
+Runner = Callable[..., str]  # (argv, stdin, cwd=None) -> stdout
+READ_ONLY_TOOLS = "Read,Grep,Glob"
 
 
 class JudgeError(RuntimeError):
@@ -129,6 +133,7 @@ def build_prompt(
     brief: str | None = None,
     checks: Checks | None = None,
     dropped: list[str] | None = None,
+    repo_access: bool = False,
 ) -> str:
     dropped_section = (
         "GENERATED FILES NOT SHOWN\nChanged in the PR, left out of the diff as generated:\n"
@@ -150,6 +155,13 @@ def build_prompt(
         if checks
         else ""
     )
+    access_section = (
+        "REPOSITORY ACCESS\nYour working directory is a checkout of the PR head, with read-only tools (Read, Grep, "
+        "Glob). The diff shows only what changed: before rejecting for something missing, read the files outside the "
+        "diff (imports, shared styles, helpers, config) to confirm the requirement is not already met there.\n\n"
+        if repo_access
+        else ""
+    )
     return (
         "You are a strict code reviewer. Judge the diff against the issue using this rubric.\n\n"
         f"RUBRIC\n{RUBRIC}\n\n"
@@ -157,6 +169,7 @@ def build_prompt(
         f"{brief_section}"
         f"{ci_section}"
         f"{dropped_section}"
+        f"{access_section}"
         f"DIFF\n{diff}\n\n"
         "Reply with ONLY a JSON object, no prose, in exactly this shape:\n"
         '{"decision": "approved" | "rejected", "spec_match": true | false, '
@@ -220,21 +233,25 @@ def parse_verdict(text: str, checks: Checks | None = None) -> Verdict:
     )
 
 
-def run_claude(argv: list[str], stdin: str) -> str:
+def run_claude(argv: list[str], stdin: str, cwd: str | None = None) -> str:
     try:
         return subprocess.run(
-            argv, input=stdin, capture_output=True, text=True, check=True, timeout=CLAUDE_TIMEOUT_S
+            argv, input=stdin, capture_output=True, text=True, check=True, timeout=CLAUDE_TIMEOUT_S, cwd=cwd
         ).stdout
     except (OSError, subprocess.SubprocessError) as err:
         raise JudgeError(f"claude failed: {err}") from None
 
 
-def ask_model(prompt: str, runner: Runner | None = None) -> str:
-    return ask_model_with_cost(prompt, runner)[0]
+def ask_model(prompt: str, runner: Runner | None = None, cwd: str | None = None) -> str:
+    return ask_model_with_cost(prompt, runner, cwd)[0]
 
 
-def ask_model_with_cost(prompt: str, runner: Runner | None = None) -> tuple[str, float]:
-    out = (runner or run_claude)(["claude", "-p", "--model", "opus", "--output-format", "json"], prompt)
+def ask_model_with_cost(prompt: str, runner: Runner | None = None, cwd: str | None = None) -> tuple[str, float]:
+    """Run `claude -p`. With a `cwd` (a checkout of the PR head) the model gets read-only tools there."""
+    argv = ["claude", "-p", "--model", "opus", "--output-format", "json"]
+    if cwd:
+        argv += ["--allowedTools", READ_ONLY_TOOLS]
+    out = (runner or run_claude)(argv, prompt, cwd=cwd) if cwd else (runner or run_claude)(argv, prompt)
     try:
         data = json.loads(out)
         result = data["result"]
@@ -293,6 +310,7 @@ def judge_diff(
     brief: str | None = None,
     checks: Checks | None = None,
     generated: list[str] | None = None,
+    checkout: str | None = None,
 ) -> Verdict:
     """Trim generated files, size checks, prompt, model, parse.
 
@@ -301,11 +319,35 @@ def judge_diff(
     diff, dropped = trim_diff(diff, generated or ())
     check_diff_size(diff)
     check_brief_size(brief)
-    prompt = build_prompt(issue_title, html_to_text(issue_html), diff, brief, checks, dropped)
-    text, cost = ask_model_with_cost(prompt, runner)
+    prompt = build_prompt(
+        issue_title, html_to_text(issue_html), diff, brief, checks, dropped, repo_access=bool(checkout)
+    )
+    text, cost = ask_model_with_cost(prompt, runner, checkout)
     try:
         verdict = parse_verdict(text, checks)
     except JudgeError as err:
         err.cost_usd = cost  # the call was paid for even though the verdict is unusable
         raise
     return replace(verdict, cost_usd=cost)
+
+
+@contextlib.contextmanager
+def pr_checkout(repo: str, pr: str) -> Iterator[str]:
+    """A temporary detached git worktree of the PR head, removed on exit.
+
+    Always the PR head from GitHub, so it works when the worker's own worktree is gone or holds unpushed commits.
+    """
+    tmp = tempfile.mkdtemp(prefix="fractory-judge-")
+    path = str(Path(tmp) / "pr")
+    try:
+        for args in (
+            ["fetch", "--quiet", "origin", f"pull/{pr}/head"],
+            ["worktree", "add", "--quiet", "--detach", path, "FETCH_HEAD"],
+        ):
+            subprocess.run(["git", "-C", repo, *args], capture_output=True, text=True, check=True, timeout=120)
+        yield path
+    except (OSError, subprocess.SubprocessError) as err:
+        raise JudgeError(f"cannot check out PR {pr}: {err}") from None
+    finally:
+        subprocess.run(["git", "-C", repo, "worktree", "remove", "--force", path], check=False, capture_output=True)
+        shutil.rmtree(tmp, ignore_errors=True)

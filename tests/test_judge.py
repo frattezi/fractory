@@ -198,6 +198,13 @@ class JudgeCli(unittest.TestCase):
             self.addCleanup(fake.stop)
             setattr(self, "gh" if target is sync else "claude", fake.start())
 
+        self.checkout = str(self.tmp / "pr-checkout")
+        checkout = mock.patch.object(
+            judge, "pr_checkout", side_effect=lambda repo, pr: contextlib.nullcontext(self.checkout)
+        )
+        checkout.start()
+        self.addCleanup(checkout.stop)
+
         orch = mock.patch.object(rework, "run_cmd", return_value=(0, ""))
         orch.start()
         self.addCleanup(orch.stop)
@@ -220,8 +227,10 @@ class JudgeCli(unittest.TestCase):
             return ""
         return json.dumps({"state": "OPEN", "isDraft": False, "statusCheckRollup": []})
 
-    def fake_claude(self, argv: list[str], stdin: str) -> str:
+    def fake_claude(self, argv: list[str], stdin: str, cwd: str | None = None) -> str:
         self.prompt = stdin
+        self.argv = argv
+        self.cwd = cwd
         return json.dumps({"result": self.model_reply, **self.model_extra})
 
     def run_cli(self, *argv: str) -> tuple[int, str]:
@@ -313,6 +322,18 @@ class JudgeCli(unittest.TestCase):
         path = self.tmp / "factory" / "jobs" / "cortadas-0001" / "brief.md"
         path.write_text(text)
 
+    def test_model_runs_in_the_pr_checkout_with_read_only_tools(self) -> None:
+        self.run_cli("judge", "cortadas-0001")
+        self.assertEqual(self.cwd, self.checkout)
+        self.assertEqual(self.argv[self.argv.index("--allowedTools") + 1], "Read,Grep,Glob")
+        self.assertIn("REPOSITORY ACCESS", self.prompt)
+        self.assertIn("files outside the diff", self.prompt)
+        for tool in ("Write", "Edit", "Bash"):
+            self.assertNotIn(tool, self.argv)
+
+    def test_rubric_requires_file_and_line(self) -> None:
+        self.assertIn("name a file and line", judge.RUBRIC)
+
     def test_brief_reaches_the_prompt(self) -> None:
         self.write_brief("Also add the helper.")
         self.run_cli("judge", "cortadas-0001")
@@ -364,3 +385,27 @@ class JudgeCli(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PrCheckout(unittest.TestCase):
+    def test_checks_out_the_pr_head_and_removes_it(self) -> None:
+        import subprocess
+
+        tmp = Path(tempfile.mkdtemp())
+        git = lambda *a, cwd=tmp: subprocess.run(["git", *a], cwd=cwd, check=True, capture_output=True, text=True)
+        origin, repo = tmp / "origin", tmp / "repo"
+        origin.mkdir()
+        git("init", "-q", "-b", "main", cwd=origin)
+        git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "base", cwd=origin)
+        (origin / "styles.css").write_text(".botao { font: inherit }")
+        git("add", ".", cwd=origin)
+        git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "pr", cwd=origin)
+        git("update-ref", "refs/pull/7/head", "HEAD", cwd=origin)
+        git("clone", "-q", str(origin), str(repo))
+        with judge.pr_checkout(str(repo), "7") as path:
+            self.assertEqual((Path(path) / "styles.css").read_text(), ".botao { font: inherit }")
+        self.assertFalse(Path(path).exists())
+
+    def test_failure_is_a_judge_error(self) -> None:
+        with self.assertRaises(judge.JudgeError), judge.pr_checkout(tempfile.mkdtemp(), "7"):
+            pass

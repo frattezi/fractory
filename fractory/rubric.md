@@ -7,3 +7,4 @@ Judge the pull request diff against the issue it was built for. When a BRIEF is 
 5. No secrets in the diff.
 6. README/AGENTS are updated when behaviour changes.
 7. A finding about lint, format or tests must be backed by the CI RESULTS or by a line in the diff. Never reject on something you say you could not verify (for example "could not confirm ruff passes"): list it in `unverified` instead of treating it as a defect.
+8. A rejection must name a file and line you checked (`path:line`), read in the repository checkout, not only in the diff. A requirement the diff does not show can be met by code outside it (an imported stylesheet, a shared helper): read that code before saying it is missing. A reason without a file and line you read goes in `unverified`.
