@@ -89,6 +89,7 @@ A job's life today, with the manual steps v1 will automate marked *(manual)*.
 5. Optional, for internal repos: `echo 'auto_merge = true' >> ~/.factory/config.toml`. Then `watch` merges
    the PR of every approved internal job once its CI is green. Able jobs never auto-merge.
    Only low-risk diffs merge; a sensitive path or a big diff (>400 lines, >12 files) opens the gate `merge_review`. Tune in a `[risk]` table; `no_merge_review = ["~/path/to/repo"]` lets a dev-only repo merge at any risk (still recorded).
+   A repo can add its own rules in `fractory.toml` at its root (read from the local checkout, so a PR cannot loosen its own limits before merging): `[risk]` `sensitive = ["billing/", "seed"]` extends the defaults (`auth`, `secret`, `migrat`, `schema`, `infra/`, `.github/`, ...), never replaces them; `max_lines` / `max_files` override the limits. No file, no change.
 
 **Per task**, from the repo's main chat in Orca (ask Claude in plain words, e.g. *"start a fractory
 job for the Plane issue X"*; these are the commands it runs):

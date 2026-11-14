@@ -440,7 +440,9 @@ def _merge_if_low_risk(job: state.Job) -> None:
     """Assess the PR diff: low merges, medium/high opens gate `merge_review` instead. Caller holds the lock."""
     pr_number = job.links["pr"]
     if not _approved_merge_review(job):
-        verdict = risk.assess(sync.pr_files(job.repo, pr_number), store.config().get("risk"))
+        verdict = risk.assess(
+            sync.pr_files(job.repo, pr_number), store.config().get("risk"), risk.repo_config(job.repo)
+        )
         job.history.append(
             {
                 "at": state.now_iso(),
