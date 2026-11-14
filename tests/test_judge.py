@@ -129,6 +129,41 @@ class ParseVerdict(unittest.TestCase):
             judge.ask_model("p", lambda *_: "garbage")
 
 
+def file_diff(path: str, added: int = 2) -> str:
+    body = "".join(f"+line {i}\n" for i in range(added))
+    return f"diff --git a/{path} b/{path}\nindex 1..2 100644\n--- a/{path}\n+++ b/{path}\n@@ -0,0 +1,{added} @@\n{body}"
+
+
+class TrimDiff(unittest.TestCase):
+    def test_lockfile_dropped_with_stub_and_normal_file_kept_byte_for_byte(self) -> None:
+        normal = file_diff("src/app.py")
+        trimmed, dropped = judge.trim_diff(normal + file_diff("pnpm-lock.yaml", 50))
+        self.assertEqual(dropped, ["pnpm-lock.yaml"])
+        self.assertEqual(trimmed, normal + "# pnpm-lock.yaml: generated file, 50 lines changed, not shown\n")
+
+    def test_no_generated_file_returns_diff_unchanged(self) -> None:
+        diff = file_diff("a.py") + file_diff("b/c.ts")
+        self.assertEqual(judge.trim_diff(diff), (diff, []))
+
+    def test_default_generated_names_and_dirs(self) -> None:
+        paths = ["web/package-lock.json", "uv.lock", "go.sum", "a/x.min.js", "x.snap", "dist/a.js", "pkg/build/b.js"]
+        _, dropped = judge.trim_diff("".join(file_diff(p) for p in paths))
+        self.assertEqual(dropped, paths)
+
+    def test_svg_only_dropped_over_200_lines(self) -> None:
+        _, dropped = judge.trim_diff(file_diff("small.svg", 200) + file_diff("big.svg", 201))
+        self.assertEqual(dropped, ["big.svg"])
+
+    def test_config_patterns_add_to_defaults(self) -> None:
+        diff = file_diff("api/schema.generated.ts") + file_diff("src/app.py")
+        self.assertEqual(judge.trim_diff(diff)[1], [])
+        self.assertEqual(judge.trim_diff(diff, ["*.generated.ts"])[1], ["api/schema.generated.ts"])
+
+    def test_prompt_lists_dropped_paths(self) -> None:
+        self.assertIn("- pnpm-lock.yaml", judge.build_prompt("T", "B", "+x", dropped=["pnpm-lock.yaml"]))
+        self.assertNotIn("GENERATED FILES", judge.build_prompt("T", "B", "+x"))
+
+
 class JudgeCli(unittest.TestCase):
     def setUp(self) -> None:
         reset_fake()
@@ -231,6 +266,14 @@ class JudgeCli(unittest.TestCase):
         job = self.job()
         self.assertEqual((job["stage"], job["gate"]["reason"]), ("review", "judge_error"))
         self.assertEqual((self.pr_comments, FakePlane.comments), ([], []))
+
+    def test_huge_lockfile_does_not_open_judge_error(self) -> None:
+        self.diff = file_diff("src/feature.py") + file_diff("pnpm-lock.yaml", judge.MAX_DIFF_CHARS)
+        self.run_cli("judge", "cortadas-0001")
+        self.assertEqual(self.job()["stage"], "ship")
+        self.assertIn("+line 0", self.prompt)
+        self.assertIn("- pnpm-lock.yaml", self.prompt)
+        self.assertNotIn("+line 5000", self.prompt)
 
     def test_oversized_diff_gates_without_calling_the_model(self) -> None:
         self.diff = "x" * (judge.MAX_DIFF_CHARS + 1)
