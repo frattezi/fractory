@@ -6,6 +6,7 @@ import contextlib
 import io
 import json
 import os
+import re
 import tempfile
 import threading
 import unittest
@@ -302,3 +303,19 @@ class WatchIntake(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class WatchLog(unittest.TestCase):
+    def test_every_line_has_a_timestamp_and_the_cycle_duration(self) -> None:
+        home = Path(tempfile.mkdtemp())
+        out = io.StringIO()
+        with (
+            mock.patch.dict(os.environ, {"FACTORY_HOME": str(home)}),
+            mock.patch.object(cli, "cmd_sync", side_effect=lambda a: print("job sync error: x") or 0),
+            contextlib.redirect_stdout(out),
+        ):
+            self.assertEqual(cli.main(["watch", "--rounds", "2", "--every", "0"]), 0)
+        lines = out.getvalue().splitlines()
+        stamp = re.compile(r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ ")
+        self.assertTrue(lines and all(stamp.match(line) for line in lines), lines)
+        self.assertEqual(sum(bool(re.search(r"watch: cycle took \d+\.\ds$", line)) for line in lines), 2)

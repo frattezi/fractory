@@ -40,6 +40,7 @@ import os
 import subprocess
 import sys
 import time
+from datetime import UTC, datetime
 from pathlib import Path
 
 from . import cleanup, gates, intake, judge, launch, launchd, reload, rework, risk, specs_import, state, store, sync
@@ -504,6 +505,25 @@ def cmd_sync(a: argparse.Namespace) -> int:
     return 1 if failed else 0
 
 
+class _Stamped:
+    """Wrap a text stream so every line it writes starts with an ISO UTC timestamp."""
+
+    def __init__(self, out) -> None:
+        self._out = out
+        self._at_line_start = True
+
+    def write(self, text: str) -> int:
+        for part in text.splitlines(keepends=True):
+            if self._at_line_start:
+                self._out.write(datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ "))
+            self._out.write(part)
+            self._at_line_start = part.endswith("\n")
+        return len(text)
+
+    def __getattr__(self, name: str):
+        return getattr(self._out, name)
+
+
 def cmd_watch(a: argparse.Namespace) -> int:
     """Run sync every `--every` seconds. `--rounds 0` runs until interrupted (launchd, a terminal)."""
     if a.uninstall:
@@ -514,11 +534,21 @@ def cmd_watch(a: argparse.Namespace) -> int:
         print(f"watch agent installed: {launchd.install('watch', ['--every', str(a.every)], log)}\nlog: {log}")
         return 0
     a.ids = []
+    real_stdout = sys.stdout
+    sys.stdout = _Stamped(real_stdout)
+    try:
+        return _watch_loop(a)
+    finally:
+        sys.stdout = real_stdout
+
+
+def _watch_loop(a: argparse.Namespace) -> int:
     done = 0
     try:
         while a.rounds == 0 or done < a.rounds:
             if done:
                 time.sleep(a.every)
+            started = time.monotonic()
             plane_mod.begin_cycle()
             cmd_sync(a)
             try:
@@ -530,6 +560,7 @@ def cmd_watch(a: argparse.Namespace) -> int:
                     intake.run_intake(store.config(), ORCH)
                 except (OSError, ValueError, RuntimeError) as err:  # never stop the watch loop
                     print(f"intake error: {err}")
+            print(f"watch: cycle took {time.monotonic() - started:.1f}s")
             sys.stdout.flush()
             done += 1
             if a.reload and a.rounds == 0 and (sha := reload.pull_if_moved(REPO_ROOT)):
