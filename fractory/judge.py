@@ -18,6 +18,7 @@ from typing import ClassVar
 
 RUBRIC = (Path(__file__).parent / "rubric.md").read_text().strip()
 MAX_DIFF_CHARS = 60_000
+MAX_BRIEF_CHARS = 20_000
 CLAUDE_TIMEOUT_S = 900
 KEYS = {"decision", "spec_match", "scope_creep", "reasons"}
 
@@ -57,11 +58,18 @@ class Verdict:
         )
 
 
-def build_prompt(issue_title: str, issue_text: str, diff: str) -> str:
+def build_prompt(issue_title: str, issue_text: str, diff: str, brief: str | None = None) -> str:
+    brief_section = (
+        "BRIEF\nThe detailed scope the worker was given. The issue is the goal; the brief says how far to go. "
+        f"Scope creep means beyond both.\n{brief.strip()}\n\n"
+        if brief and brief.strip()
+        else ""
+    )
     return (
         "You are a strict code reviewer. Judge the diff against the issue using this rubric.\n\n"
         f"RUBRIC\n{RUBRIC}\n\n"
         f"ISSUE: {issue_title}\n{issue_text}\n\n"
+        f"{brief_section}"
         f"DIFF\n{diff}\n\n"
         "Reply with ONLY a JSON object, no prose, in exactly this shape:\n"
         '{"decision": "approved" | "rejected", "spec_match": true | false, '
@@ -124,6 +132,11 @@ def check_diff_size(diff: str) -> None:
         raise JudgeError("diff too large")
 
 
+def check_brief_size(brief: str | None) -> None:
+    if brief is not None and len(brief) > MAX_BRIEF_CHARS:
+        raise JudgeError("brief too large")
+
+
 class _Text(HTMLParser):
     BLOCKS: ClassVar[set[str]] = {"p", "div", "br", "h1", "h2", "h3", "h4", "h5", "h6", "ul", "ol", "pre", "tr"}
 
@@ -152,7 +165,10 @@ def html_to_text(html: str) -> str:
     return re.sub(r"\n{3,}", "\n\n", "".join(parser.parts)).strip()
 
 
-def judge_diff(issue_title: str, issue_html: str, diff: str, runner: Runner | None = None) -> Verdict:
-    """Size check, prompt, model, parse. Raises JudgeError before any model call if the diff is too big."""
+def judge_diff(
+    issue_title: str, issue_html: str, diff: str, runner: Runner | None = None, brief: str | None = None
+) -> Verdict:
+    """Size checks, prompt, model, parse. Raises JudgeError before any model call if the diff or brief is too big."""
     check_diff_size(diff)
-    return parse_verdict(ask_model(build_prompt(issue_title, html_to_text(issue_html), diff), runner))
+    check_brief_size(brief)
+    return parse_verdict(ask_model(build_prompt(issue_title, html_to_text(issue_html), diff, brief), runner))

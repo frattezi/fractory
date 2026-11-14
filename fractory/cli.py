@@ -254,7 +254,9 @@ def judge_job(job_id: str) -> int:
     try:
         issue = tracker.get_item(job.tracker["ref"])
         diff = sync.pr_diff(job.repo, pr)
-        verdict = judge.judge_diff(issue.get("name", job.title), issue.get("description_html") or "", diff)
+        verdict = judge.judge_diff(
+            issue.get("name", job.title), issue.get("description_html") or "", diff, brief=store.brief(job_id)
+        )
     except judge.JudgeError as err:
         detail = str(err)
         return _mutate(job_id, lambda j: (state.open_gate(j, "judge_error", detail), ["gate:judge_error"]))

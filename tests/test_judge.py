@@ -63,6 +63,14 @@ class ParseVerdict(unittest.TestCase):
         for part in (judge.RUBRIC, "Title", "Body", "+line", "ONLY a JSON object"):
             self.assertIn(part, prompt)
 
+    def test_prompt_includes_brief_only_when_present(self) -> None:
+        with_brief = judge.build_prompt("T", "B", "+x", brief="Touch only a.py")
+        self.assertIn("BRIEF", with_brief)
+        self.assertIn("Touch only a.py", with_brief)
+        self.assertIn("beyond both", with_brief)
+        for brief in (None, "", "  \n"):
+            self.assertNotIn("BRIEF", judge.build_prompt("T", "B", "+x", brief=brief))
+
     def test_html_to_text(self) -> None:
         text = judge.html_to_text("<h2>Goal</h2><p>Do <code>x</code> &amp; y</p><ul><li>one</li><li>two</li></ul>")
         self.assertEqual(text, "Goal\n\nDo x & y\n\n\n- one\n- two".replace("\n\n\n", "\n\n"))
@@ -179,6 +187,35 @@ class JudgeCli(unittest.TestCase):
         self.run_cli("judge", "cortadas-0001")
         self.assertEqual(self.job()["gate"]["detail"], "diff too large")
         self.claude.assert_not_called()
+
+    def write_brief(self, text: str) -> None:
+        path = self.tmp / "factory" / "jobs" / "cortadas-0001" / "brief.md"
+        path.write_text(text)
+
+    def test_brief_reaches_the_prompt(self) -> None:
+        self.write_brief("Also add the helper.")
+        self.run_cli("judge", "cortadas-0001")
+        self.assertIn("BRIEF", self.prompt)
+        self.assertIn("Also add the helper.", self.prompt)
+
+    def test_no_brief_file_means_no_brief_section(self) -> None:
+        self.run_cli("judge", "cortadas-0001")
+        self.assertNotIn("BRIEF", self.prompt)
+
+    def test_oversized_brief_gates_without_calling_the_model(self) -> None:
+        self.write_brief("x" * (judge.MAX_BRIEF_CHARS + 1))
+        self.run_cli("judge", "cortadas-0001")
+        self.assertEqual(self.job()["gate"]["detail"], "brief too large")
+        self.claude.assert_not_called()
+
+    def test_approval_beyond_card_but_within_brief_is_not_downgraded_by_code(self) -> None:
+        self.write_brief("Also add the helper the card does not mention.")
+        self.diff = "+def feature(): ...\n+def helper(): ...\n"
+        self.model_reply = verdict_json(scope_creep=False, reasons=("helper is in the brief",))
+        self.run_cli("judge", "cortadas-0001")
+        job = self.job()
+        self.assertEqual(job["stage"], "ship")
+        self.assertEqual(job["history"][-1]["note"], "helper is in the brief")
 
     def test_second_rejection_opens_judge_rounds_gate(self) -> None:
         self.model_reply = verdict_json("rejected")

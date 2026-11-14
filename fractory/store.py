@@ -28,6 +28,12 @@ def job_dir(job_id: str) -> Path:
     return jobs_dir() / job_id
 
 
+def brief(job_id: str) -> str | None:
+    """The worker's brief (`jobs/<id>/brief.md`), or None when the job has none."""
+    path = job_dir(job_id) / "brief.md"
+    return path.read_text() if path.is_file() else None
+
+
 def repo_kind(repo: Path) -> str:
     """Able repos (work) stop at a draft PR; everything else is internal."""
     able = Path(os.environ.get("FRACTORY_ABLE_ROOT", Path.home() / "Factory" / "Able")).resolve()
