@@ -110,6 +110,7 @@ class LaunchCli(unittest.TestCase):
             job["links"],
             {
                 "worktree": "launch-job-worktree-and-worker",
+                "worktree_id": "repo::/wt/launch",
                 "terminal": "term_abc",
                 "profile": "strong",
                 "dispatch": "d1",

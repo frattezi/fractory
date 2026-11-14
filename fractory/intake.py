@@ -7,6 +7,8 @@ built from the card. One failing launch never stops the others.
 from __future__ import annotations
 
 import re
+import subprocess
+import sys
 import tempfile
 from collections.abc import Callable, Iterable
 from pathlib import Path
@@ -112,6 +114,76 @@ def candidates(
             continue
         found.append(i)
     return found
+
+
+DEFAULT_PROFILE = "strong"
+NON_TAG_LABELS = {"fractory", "humano", "design"}
+_WORKER_RE = re.compile(r"^\s*worker\s*:\s*([\w.-]+)\s*$", re.IGNORECASE)
+_TAGS_RE = re.compile(r"^\s*tags\s*:\s*(.*)$", re.IGNORECASE)
+_ROUTED_RE = re.compile(r"^profile (\S+?):")
+
+
+def card_line_profile(issue: dict) -> str | None:
+    """The profile of the first `Worker: <profile>` line of the card text (bold allowed)."""
+    for line in card_text(issue).splitlines():
+        m = _WORKER_RE.match(line.replace("*", ""))
+        if m:
+            return m.group(1)
+    return None
+
+
+def card_tags(issue: dict, label_names: list[str], intake_label: str = DEFAULT_LABEL) -> list[str]:
+    """Routing tags: the card's labels other than the standard who-labels, plus a `Tags: a, b` line."""
+    skip = NON_TAG_LABELS | {intake_label.lower()}
+    tags = [n for n in label_names if n.lower() not in skip]
+    for line in card_text(issue).splitlines():
+        m = _TAGS_RE.match(line.replace("*", ""))
+        if m:
+            tags += [t.strip() for t in m.group(1).split(",") if t.strip()]
+            break
+    return list(dict.fromkeys(tags))
+
+
+def _run_orch(argv: list[str]) -> tuple[int, str]:
+    proc = subprocess.run(argv, check=False, capture_output=True, text=True)
+    return proc.returncode, proc.stdout + proc.stderr
+
+
+def route_spec(title: str, tags: list[str]) -> str:
+    front = f"---\ntags: [{', '.join(tags)}]\n---\n" if tags else ""
+    return f"{front}# {title}\n"
+
+
+def choose_profile(
+    issue: dict, repo: Path, config: dict, orch: Path, label_names: list[str], runner=None
+) -> tuple[str, str]:
+    """(profile, why). Order: `Worker:` line, config per repo, config default, `orch.py route`, then strong.
+    Route runs without --ignore-quota, so a provider that is signed out or over quota falls to the next candidate."""
+    runner = runner or _run_orch
+    line = card_line_profile(issue)
+    if line:
+        return line, "Worker: line in the card"
+    intake_cfg = config.get("intake") or {}
+    per_repo = next(
+        (v for k, v in (intake_cfg.get("profiles") or {}).items() if Path(k).expanduser() == Path(repo).expanduser()),
+        None,
+    )
+    if per_repo:
+        return str(per_repo), "config [intake.profiles] for the repo"
+    if intake_cfg.get("default_profile"):
+        return str(intake_cfg["default_profile"]), "config [intake] default_profile"
+    tags = card_tags(issue, label_names, str(config.get("intake_label") or DEFAULT_LABEL))
+    with tempfile.TemporaryDirectory() as tmp:
+        spec = Path(tmp) / "route.md"
+        spec.write_text(route_spec(str(issue.get("name") or ""), tags))
+        try:
+            code, out = runner([sys.executable, str(orch), "route", "--spec", str(spec), "--repo", str(repo)])
+        except OSError as err:
+            return DEFAULT_PROFILE, f"route failed ({err}), fallback"
+    m = _ROUTED_RE.match(out.strip().splitlines()[0]) if code == 0 and out.strip() else None
+    if not m:
+        return DEFAULT_PROFILE, f"route gave nothing (exit {code}), fallback"
+    return m.group(1), "orch.py route: " + out.strip().splitlines()[0]
 
 
 def build_brief(issue: dict) -> str:
@@ -228,8 +300,20 @@ def run_intake(config: dict, orch: Path, dry_run: bool = False, launcher: Launch
                 with tempfile.TemporaryDirectory() as tmp:
                     brief = Path(tmp) / "brief.md"
                     brief.write_text(build_brief(issue))
+                    card_labels = [
+                        names.get(lb["id"] if isinstance(lb, dict) else lb, "") for lb in issue.get("labels") or []
+                    ]
+                    profile, why = choose_profile(issue, Path(repo).expanduser(), config, orch, card_labels)
+                    print(f"intake: {title!r}: profile {profile} ({why})")
                     args = launch.Args(
-                        Path(repo).expanduser(), issue["id"], project, brief, plane_url=plane_url, force=True
+                        Path(repo).expanduser(),
+                        issue["id"],
+                        project,
+                        brief,
+                        profile=profile,
+                        plane_url=plane_url,
+                        force=True,
+                        profile_why=why,
                     )
                     code = launcher(args, plane)
                 if code != 0:

@@ -106,6 +106,7 @@ class Args:
     dry_run: bool = False
     plane_url: str | None = None
     force: bool = False
+    profile_why: str = ""
 
 
 def _fail(job_id: str | None, step: str, detail: str, done: list[str]) -> int:
@@ -216,6 +217,8 @@ def launch(a: Args, plane, orch: Path) -> int:
 
         step = "6 job link"
         print(f"6. job link {job_id} --worktree {name} --terminal {term} --profile {a.profile}")
+        if a.profile_why:
+            print(f"   profile {a.profile}: {a.profile_why}")
         if not a.dry_run:
             with store.locked(job_id):
                 job = store.load(job_id)
@@ -223,7 +226,16 @@ def launch(a: Args, plane, orch: Path) -> int:
                     job.history.append(
                         {"at": state.now_iso(), "event": "brief_beyond_card", "stage": job.stage, "extra": extra}
                     )
-                job.links.update(worktree=name, terminal=term, profile=a.profile)
+                job.history.append(
+                    {
+                        "at": state.now_iso(),
+                        "event": "profile_chosen",
+                        "stage": job.stage,
+                        "profile": a.profile,
+                        "why": a.profile_why or "launch --profile",
+                    }
+                )
+                job.links.update(worktree=name, worktree_id=wt, terminal=term, profile=a.profile)
                 if dispatch and dispatch != "None":
                     job.links["dispatch"] = dispatch
                 store.save(job)
