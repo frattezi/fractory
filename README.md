@@ -101,7 +101,7 @@ job for the Plane issue X"*; these are the commands it runs):
 | 5. Open the PR and link it | `gh pr create`, then `fractory job link <id> --worktree … --pr <n>` and `fractory job advance <id> built` | worker / main |
 | 6. Checks | nothing: `fractory watch` sees CI; red goes back to build, green moves on to review | watch |
 | 6b. Rework | nothing: when a job goes back to `build` (CI red, Judge rejected) the reasons are typed into the worker's terminal (`links.terminal`) through `orch.py nudge`, and the history logs `rework_sent`; with no terminal or a failed nudge a `rework_needed` gate opens. A rejection that opens `judge_rounds` waits for you | watch / judge |
-| 7. Review and verdict | `fractory judge <id>` (Opus vs the Plane issue, fixed rubric; also reads `$FACTORY_HOME/jobs/<id>/brief.md` when present, default `~/.factory`, and a brief over 20,000 chars opens a `judge_error` gate); the PR's CI results go into the prompt, and a rejection whose every reason the model also lists as `unverified` becomes `approved` only when all CI checks are green (the guesses stay as notes in the comment), otherwise it stays rejected; with `auto_judge = true` in `config.toml`, `watch` runs it for every job in review. By hand: `fractory job advance <id> reviewed`, then `approved` or `rejected` | judge / you |
+| 7. Review and verdict | `fractory judge <id>` (Opus vs the Plane issue, fixed rubric; generated files are replaced by a one-line stub before the 60,000-char size limit and listed in the prompt, see [Generated files](#generated-files-in-the-judge); also reads `$FACTORY_HOME/jobs/<id>/brief.md` when present, default `~/.factory`, and a brief over 20,000 chars opens a `judge_error` gate); the PR's CI results go into the prompt, and a rejection whose every reason the model also lists as `unverified` becomes `approved` only when all CI checks are green (the guesses stay as notes in the comment), otherwise it stays rejected; with `auto_judge = true` in `config.toml`, `watch` runs it for every job in review. By hand: `fractory job advance <id> reviewed`, then `approved` or `rejected` | judge / you |
 | 8. Merge | internal with `auto_merge`: nothing, `watch` merges on green CI; otherwise merge on GitHub (Able: open the draft PR) | watch / you |
 | 9. Done | nothing: `fractory watch` sees the merge, finishes the job and moves the Plane issue to Done, then cleans up once: stops or releases the worker's dispatch, closes the job worktree's terminals, removes the worktree (only if clean and merged; otherwise keeps it and records `cleanup_skipped`) and deletes the local branch | watch |
 
@@ -242,6 +242,20 @@ Until then the card waits; a ref that matches no card keeps it waiting and print
 
 `fractory intake --dry-run` lists what would launch (which cards wait, with `waits for <refs>`, and which labelled
 Backlog cards are `parked (backlog)`) and changes nothing.
+
+## Generated files in the Judge
+
+Before the size limit, `fractory judge` replaces the diff of generated files with a stub line
+(`# <path>: generated file, N lines changed, not shown`) and lists the dropped paths in the prompt. Default list:
+`pnpm-lock.yaml`, `package-lock.json`, `yarn.lock`, `poetry.lock`, `uv.lock`, `Cargo.lock`, `go.sum`, `*.min.js`,
+`*.min.css`, `*.snap`, `*.svg` over 200 changed lines, and anything under a `dist/`, `build/` or `coverage/`
+directory at any depth (so a source directory named `build/` is hidden too). Add patterns (matched against the file
+name or full path) in `config.toml`:
+
+```toml
+[judge]
+generated = ["*.generated.ts", "api/openapi.json"]
+```
 
 ## Next (v1)
 
