@@ -88,6 +88,11 @@ def terminal_handle(output: str) -> str:
     return m.group(1)
 
 
+def dispatch_id(output: str) -> str | None:
+    m = re.search(r"launched dispatch (\S+) in terminal", output)
+    return m.group(1) if m else None
+
+
 @dataclass
 class Args:
     repo: Path
@@ -195,11 +200,13 @@ def launch(a: Args, plane, orch: Path) -> int:
         cmd += ["--repo", str(repo), "--trust"]
         print("5. " + shlex.join(cmd))
         term = "<terminal>"
+        dispatch = None
         if not a.dry_run:
             code, out = run_cmd(cmd)
             if code != 0:
                 raise LaunchError(f"exit {code}: {out.strip()[:300]}")
             term = terminal_handle(out)
+            dispatch = dispatch_id(out)
         done.append(f"5 worker in {term}")
 
         step = "6 job link"
@@ -212,6 +219,8 @@ def launch(a: Args, plane, orch: Path) -> int:
                         {"at": state.now_iso(), "event": "brief_beyond_card", "stage": job.stage, "extra": extra}
                     )
                 job.links.update(worktree=name, terminal=term, profile=a.profile)
+                if dispatch and dispatch != "None":
+                    job.links["dispatch"] = dispatch
                 store.save(job)
         done.append("6 job link")
     except (LaunchError, OSError, ValueError, RuntimeError) as err:
