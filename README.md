@@ -89,6 +89,7 @@ A job's life today, with the manual steps v1 will automate marked *(manual)*.
 5. Optional, for internal repos: `echo 'auto_merge = true' >> ~/.factory/config.toml`. Then `watch` merges
    the PR of every approved internal job once its CI is green. Able jobs never auto-merge.
    Only low-risk diffs merge; a sensitive path or a big diff (>400 lines, >12 files) opens the gate `merge_review`. Tune in a `[risk]` table; `no_merge_review = ["~/path/to/repo"]` lets a dev-only repo merge at any risk (still recorded).
+   A repo can add its own rules in `fractory.toml` at its root (read from the local checkout, so a PR cannot loosen its own limits before merging): `[risk]` `sensitive = ["billing/", "seed"]` extends the defaults (`auth`, `secret`, `migrat`, `schema`, `infra/`, `.github/`, ...), never replaces them; `max_lines` / `max_files` override the limits. No file, no change.
 
 **Per task**, from the repo's main chat in Orca (ask Claude in plain words, e.g. *"start a fractory
 job for the Plane issue X"*; these are the commands it runs):
@@ -185,6 +186,15 @@ events across all jobs, newest first, plus the last 40 lines of `$FACTORY_HOME/w
 panel. It refreshes on every `jobs` event and every 30 s. Data comes from `GET /api/activity?limit=50` (limit
 clamped to 1..200).
 
+Factory health and the intake queue come from two snapshots the watch leaves in `$FACTORY_HOME`, so the
+board never calls Plane: `heartbeat.json` (written atomically at the end of every watch cycle: cycle start,
+end and duration, cycle count, pid, start time, code sha, error counts, Plane rate-limit backoffs, last 10
+error lines) and `queue.json` (written by every intake run: per project, each labelled card with its
+decision: `launched`, `waits_for` (unmet dependencies), `max_parallel`, `parked`, `has_job` or
+`launch_failed` with the error). `GET /api/health` serves the heartbeat plus `alive` (the last cycle ended
+less than 3× `--every` ago) and `GET /api/queue` serves the queue; both answer 200 `{"missing": true}` until
+the file exists.
+
 ## Plane
 
 API key: `$PLANE_API_KEY`, or the Keychain item `fractory-plane`
@@ -223,9 +233,25 @@ manual step (Project settings → Features → Views).
 | `humano` | `#e3a35f` | needs a person: decision, access, account or review |
 | `design` | `#a83b5a` | comes from a design decision |
 
-Saved views cannot be created with an API key (Plane's views endpoints are session-only), so the main session
-creates these per project through the browser: **🤖 Fábrica** (label `fractory`), **👤 Humano** (label `humano`
-+ open states). `setup-project` never deletes labels, so an existing `automação` stays until removed by hand.
+Saved views cannot be created with an API key (Plane's views endpoints accept only a browser session), so
+`create-project` and `setup-project` end by printing the command for that step:
+
+```sh
+fractory plane views-script --project <id or key>    # prints a JavaScript snippet
+```
+
+Run the snippet in a logged-in Plane tab (paste it in the console, or send it through a browser tool). It reads
+the CSRF token from `/auth/get-csrf-token/` and, for the project, creates the three standard views, or updates
+them in place when one with the same name exists, and returns a JSON summary (`created`/`updated` per view).
+The label ids are resolved by the CLI and baked into the snippet.
+
+| View | Filter | Layout |
+|---|---|---|
+| 👤 Precisa de você | label `humano` and state group `unstarted`/`started` | list |
+| 🤖 Fábrica | label `fractory` | kanban |
+| 🧭 Planejamento | state group `backlog` | list |
+
+`setup-project` never deletes labels, so an existing `automação` stays until removed by hand.
 
 Only open specs (`draft`, `blocked`, `ready`, `in-progress`, `in-review`) are imported; done ones stay in
 the repo as frozen history. Each issue carries `external_id` = the spec id, so a second run reports

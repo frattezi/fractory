@@ -20,6 +20,7 @@
     fractory plane import-specs --repo DIR --project ID [--identifier KEY] [--apply]
     fractory plane create-project --name N --identifier KEY
     fractory plane setup-project --project ID | --all   standard labels + Views feature
+    fractory plane views-script --project ID_OR_KEY     JS that creates the 3 standard views in a logged-in tab
     fractory plane add-item --project ID --title T [--body MD | --body-file F] [--status S] [--assign-me]
                             [--label NAME ...] [--depends-on REFS]
     fractory plane items --project ID [--status backlog|ready|in_progress|done|cancelled] [--label NAME]
@@ -40,9 +41,25 @@ import os
 import subprocess
 import sys
 import time
+from datetime import UTC, datetime
 from pathlib import Path
 
-from . import cleanup, gates, intake, judge, launch, launchd, reload, rework, risk, specs_import, state, store, sync
+from . import (
+    cleanup,
+    gates,
+    health,
+    intake,
+    judge,
+    launch,
+    launchd,
+    reload,
+    rework,
+    risk,
+    specs_import,
+    state,
+    store,
+    sync,
+)
 from .trackers import plane as plane_mod
 from .trackers.base import STATUS_GROUPS
 
@@ -257,6 +274,17 @@ def setup_project(project_id: str, identifier: str, a: argparse.Namespace) -> in
     print(f"labels   {identifier or project_id}  {', '.join(plane_mod.STANDARD_LABELS)}")
     if not client.enable_views():
         print(f"manual   {identifier or project_id}  Project settings → Features → turn on Views")
+    print(
+        f"views    {identifier or project_id}  run in a logged-in Plane tab (browser tool): "
+        f"fractory plane views-script --project {identifier or project_id}"
+    )
+    return 0
+
+
+def cmd_plane_views_script(a: argparse.Namespace) -> int:
+    client = _plane(a)
+    ids = client.ensure_labels()
+    print(plane_mod.views_script(a.workspace, client.project_id, ids), end="")
     return 0
 
 
@@ -384,6 +412,10 @@ def plane_tracker(job: state.Job) -> plane_mod.Plane | None:
     return plane_mod.Plane(t["project"], plane_mod.api_key_from_env(), t.get("url") or plane_mod.DEFAULT_URL)
 
 
+def _judge_cost(job: state.Job, usd: float) -> tuple[state.Job, list[str]]:
+    return state.add_cost(job, usd, source="judge") if usd > 0 else (job, [])
+
+
 def judge_job(job_id: str) -> int:
     """Judge a job in review: verdict from the model, then reviewed + approved/rejected, comments posted."""
     job = store.load(job_id)
@@ -406,14 +438,24 @@ def judge_job(job_id: str) -> int:
                 checkout=checkout,
             )
     except judge.JudgeError as err:
-        detail = str(err)
-        return _mutate(job_id, lambda j: (state.open_gate(j, "judge_error", detail), ["gate:judge_error"]))
+        detail, spent = str(err), err.cost_usd
+
+        def gate(j: state.Job):
+            j, actions = _judge_cost(j, spent)
+            if j.gate is None:
+                j = state.open_gate(j, "judge_error", detail)
+                actions = [*actions, "gate:judge_error"]
+            return j, actions
+
+        return _mutate(job_id, gate)
 
     def apply(j: state.Job):
         if j.stage != "review" or j.gate:
             raise state.TransitionError(f"{j.id} changed while judging (stage {j.stage}); verdict dropped")
         j, _ = state.apply_event(j, "reviewed", note="judge")
-        return state.apply_event(j, verdict.decision, note=verdict.note())
+        j, actions = state.apply_event(j, verdict.decision, note=verdict.note())
+        j, cost_actions = _judge_cost(j, verdict.cost_usd)
+        return j, [*actions, *cost_actions]
 
     code = _mutate(job_id, apply)
     sync.pr_comment(job.repo, pr, verdict.comment_markdown())
@@ -441,7 +483,9 @@ def _merge_if_low_risk(job: state.Job) -> None:
     """Assess the PR diff: low merges, medium/high opens gate `merge_review` instead. Caller holds the lock."""
     pr_number = job.links["pr"]
     if not _approved_merge_review(job):
-        verdict = risk.assess(sync.pr_files(job.repo, pr_number), store.config().get("risk"))
+        verdict = risk.assess(
+            sync.pr_files(job.repo, pr_number), store.config().get("risk"), risk.repo_config(job.repo)
+        )
         job.history.append(
             {
                 "at": state.now_iso(),
@@ -506,6 +550,25 @@ def cmd_sync(a: argparse.Namespace) -> int:
     return 1 if failed else 0
 
 
+class _Stamped:
+    """Wrap a text stream so every line it writes starts with an ISO UTC timestamp."""
+
+    def __init__(self, out) -> None:
+        self._out = out
+        self._at_line_start = True
+
+    def write(self, text: str) -> int:
+        for part in text.splitlines(keepends=True):
+            if self._at_line_start:
+                self._out.write(datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ "))
+            self._out.write(part)
+            self._at_line_start = part.endswith("\n")
+        return len(text)
+
+    def __getattr__(self, name: str):
+        return getattr(self._out, name)
+
+
 def cmd_watch(a: argparse.Namespace) -> int:
     """Run sync every `--every` seconds. `--rounds 0` runs until interrupted (launchd, a terminal)."""
     if a.uninstall:
@@ -516,11 +579,23 @@ def cmd_watch(a: argparse.Namespace) -> int:
         print(f"watch agent installed: {launchd.install('watch', ['--every', str(a.every)], log)}\nlog: {log}")
         return 0
     a.ids = []
+    real_stdout = sys.stdout
+    beat = health.Heartbeat(_Stamped(real_stdout), a.every, REPO_ROOT)
+    sys.stdout = beat
+    try:
+        return _watch_loop(a, beat)
+    finally:
+        sys.stdout = real_stdout
+
+
+def _watch_loop(a: argparse.Namespace, beat: health.Heartbeat | None = None) -> int:
     done = 0
     try:
         while a.rounds == 0 or done < a.rounds:
             if done:
                 time.sleep(a.every)
+            started = time.monotonic()
+            plane_mod.begin_cycle()
             cmd_sync(a)
             try:
                 cleanup.run_cleanup(store.all_jobs())
@@ -531,13 +606,18 @@ def cmd_watch(a: argparse.Namespace) -> int:
                     intake.run_intake(store.config(), ORCH)
                 except (OSError, ValueError, RuntimeError) as err:  # never stop the watch loop
                     print(f"intake error: {err}")
+            print(f"watch: cycle took {time.monotonic() - started:.1f}s")
             sys.stdout.flush()
+            if beat:
+                beat.end_cycle()
             done += 1
             if a.reload and a.rounds == 0 and (sha := reload.pull_if_moved(REPO_ROOT)):
                 print(f"watch: main moved to {sha}, restarting", flush=True)
                 return 0
     except KeyboardInterrupt:
         print("watch stopped")
+    finally:
+        plane_mod.end_cycle()
     return 0
 
 
@@ -668,6 +748,7 @@ def build_parser() -> argparse.ArgumentParser:
         ("import-specs", cmd_plane_import),
         ("create-project", cmd_plane_create_project),
         ("setup-project", cmd_plane_setup_project),
+        ("views-script", cmd_plane_views_script),
         ("add-item", cmd_plane_add_item),
         ("items", cmd_plane_items),
         ("show", cmd_plane_show),
@@ -692,6 +773,8 @@ def build_parser() -> argparse.ArgumentParser:
             g = s.add_mutually_exclusive_group(required=True)
             g.add_argument("--project", help="Plane project id")
             g.add_argument("--all", action="store_true", help="every project of the workspace")
+        elif name == "views-script":
+            s.add_argument("--project", required=True, help="project UUID or identifier")
         elif name == "add-item":
             s.add_argument("--project", required=True)
             s.add_argument("--title", required=True)

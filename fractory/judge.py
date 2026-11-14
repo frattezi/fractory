@@ -14,7 +14,7 @@ import shutil
 import subprocess
 import tempfile
 from collections.abc import Callable, Iterator
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from html import escape
 from html.parser import HTMLParser
 from pathlib import Path
@@ -41,7 +41,7 @@ READ_ONLY_TOOLS = "Read,Grep,Glob"
 
 
 class JudgeError(RuntimeError):
-    pass
+    cost_usd: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -51,6 +51,7 @@ class Verdict:
     scope_creep: bool
     reasons: tuple[str, ...]
     unverified: tuple[str, ...] = ()  # findings the model is unsure of; notes when they do not block
+    cost_usd: float = 0.0  # what the model call cost, from claude's total_cost_usd
 
     @property
     def approved(self) -> bool:
@@ -242,6 +243,10 @@ def run_claude(argv: list[str], stdin: str, cwd: str | None = None) -> str:
 
 
 def ask_model(prompt: str, runner: Runner | None = None, cwd: str | None = None) -> str:
+    return ask_model_with_cost(prompt, runner, cwd)[0]
+
+
+def ask_model_with_cost(prompt: str, runner: Runner | None = None, cwd: str | None = None) -> tuple[str, float]:
     """Run `claude -p`. With a `cwd` (a checkout of the PR head) the model gets read-only tools there."""
     argv = ["claude", "-p", "--model", "opus", "--output-format", "json"]
     if cwd:
@@ -254,7 +259,9 @@ def ask_model(prompt: str, runner: Runner | None = None, cwd: str | None = None)
         raise JudgeError("claude output has no JSON 'result' field") from None
     if data.get("is_error") or not isinstance(result, str):
         raise JudgeError(f"claude reported an error: {str(result)[:200]}")
-    return result
+    cost = data.get("total_cost_usd")
+    usable = isinstance(cost, (int, float)) and not isinstance(cost, bool) and cost > 0
+    return result, float(cost) if usable else 0.0
 
 
 def check_diff_size(diff: str) -> None:
@@ -315,7 +322,13 @@ def judge_diff(
     prompt = build_prompt(
         issue_title, html_to_text(issue_html), diff, brief, checks, dropped, repo_access=bool(checkout)
     )
-    return parse_verdict(ask_model(prompt, runner, checkout), checks)
+    text, cost = ask_model_with_cost(prompt, runner, checkout)
+    try:
+        verdict = parse_verdict(text, checks)
+    except JudgeError as err:
+        err.cost_usd = cost  # the call was paid for even though the verdict is unusable
+        raise
+    return replace(verdict, cost_usd=cost)
 
 
 @contextlib.contextmanager

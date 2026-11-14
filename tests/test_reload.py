@@ -82,8 +82,16 @@ class MainMoved(unittest.TestCase):
 
     def test_other_branch_or_dirty_tree_never_reloads(self) -> None:
         for git in (FakeGit(branch="feature"), FakeGit(dirty=" M fractory/cli.py")):
-            self.assertFalse(reload.main_moved(self.root, git))
+            with contextlib.redirect_stdout(io.StringIO()):
+                self.assertFalse(reload.main_moved(self.root, git))
             self.assertNotIn(FETCH, git.calls)
+
+    def test_skip_prints_why(self) -> None:
+        for git, why in ((FakeGit(branch="feature"), "on feature"), (FakeGit(dirty=" M a.py"), "uncommitted")):
+            with contextlib.redirect_stdout(io.StringIO()) as out:
+                reload.main_moved(self.root, git)
+            self.assertIn("reload: skipped", out.getvalue())
+            self.assertIn(why, out.getvalue())
 
     def test_git_error_is_false_and_fast_forward_is_a_noop(self) -> None:
         with contextlib.redirect_stdout(io.StringIO()) as out:

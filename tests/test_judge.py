@@ -189,6 +189,7 @@ class JudgeCli(unittest.TestCase):
 
         self.diff = "+def feature(): ...\n"
         self.model_reply = verdict_json()
+        self.model_extra: dict = {}
         self.pr_comments: list[str] = []
         for target, fake in (
             (sync, mock.patch.object(sync, "run_gh", side_effect=self.fake_gh)),
@@ -230,7 +231,7 @@ class JudgeCli(unittest.TestCase):
         self.prompt = stdin
         self.argv = argv
         self.cwd = cwd
-        return json.dumps({"result": self.model_reply})
+        return json.dumps({"result": self.model_reply, **self.model_extra})
 
     def run_cli(self, *argv: str) -> tuple[int, str]:
         out = io.StringIO()
@@ -267,6 +268,33 @@ class JudgeCli(unittest.TestCase):
         self.model_reply = verdict_json(scope_creep=True)
         self.run_cli("judge", "cortadas-0001")
         self.assertEqual(self.job()["stage"], "build")
+
+    def cost_events(self) -> list[dict]:
+        return [e for e in self.job()["history"] if e["event"] == "cost"]
+
+    def test_judge_call_cost_is_added_and_logged(self) -> None:
+        self.model_extra = {"total_cost_usd": 0.4321}
+        self.run_cli("judge", "cortadas-0001")
+        self.assertEqual(self.job()["cost_usd"], 0.4321)
+        (event,) = self.cost_events()
+        self.assertEqual((event["source"], event["usd"]), ("judge", 0.4321))
+
+    def test_missing_cost_field_changes_nothing(self) -> None:
+        self.run_cli("judge", "cortadas-0001")
+        self.assertEqual(self.job()["cost_usd"], 0.0)
+        self.assertEqual(self.cost_events(), [])
+
+    def test_unparseable_verdict_still_records_the_paid_call(self) -> None:
+        self.model_reply = "I think it looks fine"
+        self.model_extra = {"total_cost_usd": 0.2}
+        self.run_cli("judge", "cortadas-0001")
+        self.assertEqual(self.job()["cost_usd"], 0.2)
+        self.assertEqual(self.job()["gate"]["reason"], "judge_error")
+
+    def test_judge_cost_over_budget_opens_cost_gate(self) -> None:
+        self.model_extra = {"total_cost_usd": 999}
+        self.run_cli("judge", "cortadas-0001")
+        self.assertEqual(self.job()["gate"]["reason"], "cost")
 
     def test_malformed_output_opens_judge_error_gate_and_stays_in_review(self) -> None:
         self.model_reply = "I think it looks fine"
