@@ -31,6 +31,68 @@ STANDARD_LABELS: dict[str, tuple[str, str]] = {
     "design": ("#a83b5a", "Vem de uma decisão de design."),
 }
 
+# The saved views every project gets: (name, label it filters by, layout).
+# Plane's views endpoints take only a browser session, so `views_script` renders these as a snippet.
+STANDARD_VIEWS = (
+    ("👤 Precisa de você", "humano", "list"),
+    ("🤖 Fábrica", "fractory", "kanban"),
+    ("🧭 Planejamento", None, "list"),
+)
+
+
+def standard_view_specs(label_ids: dict[str, str]) -> list[dict]:
+    def rich(label: str | None) -> dict:
+        if label == "humano":
+            return {"and": [{"label_id__in": label_ids["humano"]}, {"state_group__in": "unstarted,started"}]}
+        if label == "fractory":
+            return {"label_id__in": label_ids["fractory"]}
+        return {"state_group__in": "backlog"}
+
+    return [
+        {"name": name, "rich_filters": rich(label), "display_filters": {"layout": layout}}
+        for name, label, layout in STANDARD_VIEWS
+    ]
+
+
+_VIEWS_JS = """(async () => {
+  const views = %(views)s;
+  const base = "/api/workspaces/%(workspace)s/projects/%(project)s/views/";
+  const csrf = (await (await fetch("/auth/get-csrf-token/", { credentials: "include" })).json()).csrf_token;
+  const send = async (method, url, body) => {
+    const res = await fetch(url, {
+      method, credentials: "include", body: JSON.stringify(body),
+      headers: { "Content-Type": "application/json", "X-CSRFToken": csrf },
+    });
+    if (!res.ok) throw new Error(method + " " + url + " -> " + res.status + " " + (await res.text()).slice(0, 200));
+    return res.json();
+  };
+  const listed = await (await fetch(base, { credentials: "include" })).json();
+  const existing = Array.isArray(listed) ? listed : (listed.results || []);
+  const summary = [];
+  for (const view of views) {
+    const found = existing.find((v) => v.name === view.name);
+    if (found) {
+      await send("PATCH", base + found.id + "/", view);
+      summary.push({ name: view.name, outcome: "updated" });
+    } else {
+      await send("POST", base, view);
+      summary.push({ name: view.name, outcome: "created" });
+    }
+  }
+  return JSON.stringify(summary);
+})()
+"""
+
+
+def views_script(workspace: str, project_id: str, label_ids: dict[str, str]) -> str:
+    """Self-contained JS for a logged-in Plane tab: create the standard views, or update them by name."""
+    return _VIEWS_JS % {
+        "views": json.dumps(standard_view_specs(label_ids), ensure_ascii=False),
+        "workspace": workspace,
+        "project": project_id,
+    }
+
+
 RATE_LIMIT_RETRIES = 3
 RATE_LIMIT_BASE_WAIT = 2.0
 sleep = time.sleep  # swapped in tests

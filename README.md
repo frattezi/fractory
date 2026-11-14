@@ -233,9 +233,25 @@ manual step (Project settings → Features → Views).
 | `humano` | `#e3a35f` | needs a person: decision, access, account or review |
 | `design` | `#a83b5a` | comes from a design decision |
 
-Saved views cannot be created with an API key (Plane's views endpoints are session-only), so the main session
-creates these per project through the browser: **🤖 Fábrica** (label `fractory`), **👤 Humano** (label `humano`
-+ open states). `setup-project` never deletes labels, so an existing `automação` stays until removed by hand.
+Saved views cannot be created with an API key (Plane's views endpoints accept only a browser session), so
+`create-project` and `setup-project` end by printing the command for that step:
+
+```sh
+fractory plane views-script --project <id or key>    # prints a JavaScript snippet
+```
+
+Run the snippet in a logged-in Plane tab (paste it in the console, or send it through a browser tool). It reads
+the CSRF token from `/auth/get-csrf-token/` and, for the project, creates the three standard views, or updates
+them in place when one with the same name exists, and returns a JSON summary (`created`/`updated` per view).
+The label ids are resolved by the CLI and baked into the snippet.
+
+| View | Filter | Layout |
+|---|---|---|
+| 👤 Precisa de você | label `humano` and state group `unstarted`/`started` | list |
+| 🤖 Fábrica | label `fractory` | kanban |
+| 🧭 Planejamento | state group `backlog` | list |
+
+`setup-project` never deletes labels, so an existing `automação` stays until removed by hand.
 
 Only open specs (`draft`, `blocked`, `ready`, `in-progress`, `in-review`) are imported; done ones stay in
 the repo as frozen history. Each issue carries `external_id` = the spec id, so a second run reports

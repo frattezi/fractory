@@ -266,6 +266,30 @@ class SyncCli(unittest.TestCase):
         self.assertEqual(FakePlane.posts, [])
         self.assertEqual(len(FakePlane.labels), 3)
 
+    def test_setup_project_output_points_to_views_script(self) -> None:
+        _, out = self.run_cli("plane", "setup-project", "--project", PROJECT, "--url", self.url)
+        self.assertIn("fractory plane views-script --project CORT", out)
+
+    def test_views_script_bakes_label_ids_csrf_and_update_by_name(self) -> None:
+        code, out = self.run_cli("plane", "views-script", "--project", "CORT", "--url", self.url)
+        self.assertEqual(code, 0, out)
+        ids = {lb["name"]: lb["id"] for lb in FakePlane.labels}
+        self.assertIn("/auth/get-csrf-token/", out)
+        self.assertIn("X-CSRFToken", out)
+        self.assertIn(f"/api/workspaces/cortadas/projects/{PROJECT}/views/", out)
+        self.assertIn("v.name === view.name", out)
+        self.assertIn('"PATCH"', out)
+        self.assertIn('"POST"', out)
+        views = json.loads(out[out.index("const views = ") + 14 : out.index(";\n  const base")])
+        self.assertEqual([v["name"] for v in views], ["👤 Precisa de você", "🤖 Fábrica", "🧭 Planejamento"])
+        self.assertEqual(
+            views[0]["rich_filters"],
+            {"and": [{"label_id__in": ids["humano"]}, {"state_group__in": "unstarted,started"}]},
+        )
+        self.assertEqual(views[1]["rich_filters"], {"label_id__in": ids["fractory"]})
+        self.assertEqual(views[2]["rich_filters"], {"state_group__in": "backlog"})
+        self.assertEqual([v["display_filters"]["layout"] for v in views], ["list", "kanban", "list"])
+
     def test_setup_project_all_and_unknown_project(self) -> None:
         code, _ = self.run_cli("plane", "setup-project", "--all", "--url", self.url)
         self.assertEqual(code, 0)
