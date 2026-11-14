@@ -158,6 +158,11 @@ jobs, open gates and total cost, with a live indicator. Cards that change column
 follows `state.json` changes through Server-Sent Events (`/api/events`), reads `/api/jobs`, and is
 read-only. One self-contained HTML file, no build step.
 
+Clicking a card opens a side panel (close with Esc, ×, or a click outside) with the job's links (worktree,
+terminal, branch, PR, Plane), the Judge verdicts with their reasons, a cost-over-time sparkline and the full
+history as a timeline. The URL hash `#job=<id>` opens it directly and survives a reload; the panel refreshes
+when the job changes. Data comes from `GET /api/jobs/<id>` (404 for an unknown or malformed id).
+
 ## Plane
 
 API key: `$PLANE_API_KEY`, or the Keychain item `fractory-plane`
