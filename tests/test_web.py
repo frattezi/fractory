@@ -9,10 +9,11 @@ import tempfile
 import threading
 import time
 import unittest
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from unittest import mock
 
-from fractory import state, store, web
+from fractory import health, state, store, web
 
 
 class UrlHelpers(unittest.TestCase):
@@ -163,6 +164,30 @@ class Activity(ServerCase):
         log = json.loads(self.get("/api/activity")[2])["log"]
         self.assertEqual(len(log), 40)
         self.assertEqual((log[0], log[-1]), ("line 60", "line 99"))
+
+
+class Health(ServerCase):
+    def beat(self, ended: datetime, every: float = 60) -> dict:
+        return {"cycle_ended_at": ended.strftime("%Y-%m-%dT%H:%M:%SZ"), "every": every, "cycles": 4}
+
+    def test_missing_files(self) -> None:
+        for path in ("/api/health", "/api/queue"):
+            status, _, body = self.get(path)
+            self.assertEqual((status, json.loads(body)), (200, {"missing": True}))
+
+    def test_alive_while_the_last_cycle_is_recent(self) -> None:
+        health.write_json("heartbeat.json", self.beat(datetime.now(UTC) - timedelta(seconds=100)))
+        data = json.loads(self.get("/api/health")[2])
+        self.assertTrue(data["alive"])
+        self.assertEqual(data["cycles"], 4)
+
+    def test_not_alive_when_the_heartbeat_is_old(self) -> None:
+        health.write_json("heartbeat.json", self.beat(datetime.now(UTC) - timedelta(seconds=181)))
+        self.assertFalse(json.loads(self.get("/api/health")[2])["alive"])
+
+    def test_queue_is_served_as_written(self) -> None:
+        health.write_json("queue.json", {"at": "t", "projects": {"P": {"cards": []}}})
+        self.assertEqual(json.loads(self.get("/api/queue")[2]), {"at": "t", "projects": {"P": {"cards": []}}})
 
 
 class Events(ServerCase):

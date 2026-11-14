@@ -276,6 +276,41 @@ class IntakeCli(unittest.TestCase):
         _, out = self.run_cli("intake")
         self.assertIn("no intake_repos", out)
 
+    def queue(self) -> dict[str, dict]:
+        data = json.loads((self.home / "queue.json").read_text())
+        return {c["title"]: c for c in data["projects"][PROJECT]["cards"]}
+
+    def test_queue_json_records_the_decision_per_card(self) -> None:
+        self.write_config("max_parallel_jobs = 2")
+        dep = card(1, "s-doing")
+        FakePlane.issues = [
+            dep,
+            with_deps(2, "Depends on: Card 1"),
+            card(3, "s-backlog"),
+            card(4),
+            card(5),
+            card(6),
+            card(7, labels=()),
+        ]
+        store.save(job_for("issue-1"))
+        self.fail_worktree = {"card-4"}
+        self.run_cli("intake")
+        q = self.queue()
+        self.assertEqual(q["Card 1"]["decision"], "has_job")
+        self.assertEqual((q["Card 2"]["decision"], q["Card 2"]["waits_for"]), ("waits_for", ["Card 1"]))
+        self.assertEqual(q["Card 3"]["decision"], "parked")
+        self.assertEqual(q["Card 4"]["decision"], "launch_failed")
+        self.assertIn("error", q["Card 4"])
+        self.assertEqual(q["Card 5"]["decision"], "launched")
+        self.assertEqual(q["Card 6"]["decision"], "max_parallel")
+        self.assertNotIn("Card 7", q)
+        self.assertEqual(set(q["Card 5"]), {"key", "title", "state", "labels", "decision"})
+
+    def test_dry_run_leaves_no_queue(self) -> None:
+        FakePlane.issues = [card(1)]
+        self.run_cli("intake", "--dry-run")
+        self.assertFalse((self.home / "queue.json").exists())
+
 
 class WatchIntake(unittest.TestCase):
     def setUp(self) -> None:
@@ -319,3 +354,29 @@ class WatchLog(unittest.TestCase):
         stamp = re.compile(r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ ")
         self.assertTrue(lines and all(stamp.match(line) for line in lines), lines)
         self.assertEqual(sum(bool(re.search(r"watch: cycle took \d+\.\ds$", line)) for line in lines), 2)
+
+
+class WatchHeartbeat(unittest.TestCase):
+    def test_every_round_writes_heartbeat_json(self) -> None:
+        home = Path(tempfile.mkdtemp())
+
+        def sync(_a) -> int:
+            print("j1  sync error: boom")
+            print("plane: rate limited, backing off 1s")
+            return 1
+
+        with (
+            mock.patch.dict(os.environ, {"FACTORY_HOME": str(home)}),
+            mock.patch.object(cli, "cmd_sync", side_effect=sync),
+            mock.patch.object(cli.cleanup, "run_cleanup", side_effect=OSError("disk")),
+            contextlib.redirect_stdout(io.StringIO()),
+        ):
+            self.assertEqual(cli.main(["watch", "--rounds", "2", "--every", "0"]), 0)
+        beat = json.loads((home / "heartbeat.json").read_text())
+        self.assertEqual(beat["cycles"], 2)
+        self.assertEqual(beat["pid"], os.getpid())
+        self.assertEqual(beat["errors"], {"sync_error": 1, "intake_error": 0, "cleanup_error": 1, "launch_failed": 0})
+        self.assertEqual(beat["rate_limit_backoffs"], 1)  # counted per cycle, not cumulative
+        self.assertEqual(len(beat["last_errors"]), 2)
+        for key in ("cycle_started_at", "cycle_ended_at", "duration_seconds", "started_at", "code_sha", "every"):
+            self.assertIn(key, beat)

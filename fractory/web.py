@@ -4,6 +4,7 @@ GET /            the page (fractory/web/index.html)
 GET /api/jobs    dash_data() plus tracker_url and pr_url per job
 GET /api/jobs/<id>  one job: Job.to_dict() plus pr_url, tracker_url and the judge verdicts (404 if unknown)
 GET /api/activity?limit=50  latest events across all jobs (newest first) plus the tail of $FACTORY_HOME/watch.log
+GET /api/health  the watch heartbeat plus `alive`; GET /api/queue  the intake snapshot ({"missing": true} before the first)
 GET /api/events  Server-Sent Events: `event: jobs` whenever a state.json changes, `: ping` every 15 s
 """
 
@@ -20,7 +21,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
-from . import cli, reload, store
+from . import cli, health, reload, store
 from .trackers.plane import DEFAULT_URL, DEFAULT_WORKSPACE
 
 INDEX = Path(__file__).parent / "web" / "index.html"
@@ -146,6 +147,9 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _json(self, data: dict) -> None:
+        self._send(HTTPStatus.OK, json.dumps(data, ensure_ascii=False).encode(), "application/json; charset=utf-8")
+
     def do_GET(self) -> None:
         url = urlsplit(self.path)
         path = url.path
@@ -166,6 +170,10 @@ class Handler(BaseHTTPRequestHandler):
             limit = clamp_limit(parse_qs(url.query).get("limit", [None])[0])
             body = json.dumps(activity_payload(limit), ensure_ascii=False).encode()
             self._send(HTTPStatus.OK, body, "application/json; charset=utf-8")
+        elif path == "/api/health":
+            self._json(health.with_alive(health.read_json("heartbeat.json")))
+        elif path == "/api/queue":
+            self._json(health.read_json("queue.json"))
         elif path == "/api/events":
             self._events()
         else:
