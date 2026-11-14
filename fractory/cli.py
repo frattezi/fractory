@@ -395,14 +395,16 @@ def judge_job(job_id: str) -> int:
     try:
         issue = tracker.get_item(job.tracker["ref"])
         diff = sync.pr_diff(job.repo, pr)
-        verdict = judge.judge_diff(
-            issue.get("name", job.title),
-            issue.get("description_html") or "",
-            diff,
-            brief=store.brief(job_id),
-            checks=sync.pr_checks(job.repo, pr),
-            generated=list(store.config().get("judge", {}).get("generated", [])),
-        )
+        with judge.pr_checkout(job.repo, pr) as checkout:
+            verdict = judge.judge_diff(
+                issue.get("name", job.title),
+                issue.get("description_html") or "",
+                diff,
+                brief=store.brief(job_id),
+                checks=sync.pr_checks(job.repo, pr),
+                generated=list(store.config().get("judge", {}).get("generated", [])),
+                checkout=checkout,
+            )
     except judge.JudgeError as err:
         detail = str(err)
         return _mutate(job_id, lambda j: (state.open_gate(j, "judge_error", detail), ["gate:judge_error"]))

@@ -75,8 +75,13 @@ class ReworkCli(unittest.TestCase):
             (sync, "run_gh", self.fake_gh),
             (judge, "run_claude", self.fake_claude),
             (rework, "run_cmd", self.fake_orch),
+            (judge, "pr_checkout", mock.MagicMock(return_value=contextlib.nullcontext("/pr"))),
         ):
-            patcher = mock.patch.object(target, name, side_effect=fake)
+            patcher = (
+                mock.patch.object(target, name, new=fake)
+                if isinstance(fake, mock.MagicMock)
+                else mock.patch.object(target, name, side_effect=fake)
+            )
             patcher.start()
             self.addCleanup(patcher.stop)
         FakePlane.issues.append(
@@ -87,7 +92,7 @@ class ReworkCli(unittest.TestCase):
     def fake_gh(self, args: list[str], cwd: str) -> str:
         return "" if args[:2] in (["pr", "comment"], ["pr", "diff"]) else self.pr
 
-    def fake_claude(self, argv: list[str], stdin: str) -> str:
+    def fake_claude(self, argv: list[str], stdin: str, cwd: str | None = None) -> str:
         return json.dumps({"result": self.model_reply})
 
     def fake_orch(self, argv: list[str]) -> tuple[int, str]:

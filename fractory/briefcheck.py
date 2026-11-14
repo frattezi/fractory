@@ -64,7 +64,7 @@ def parse_verdict(text: str) -> Verdict:
 
 def _sonnet(runner: judge.Runner | None) -> judge.Runner:
     run = runner or judge.run_claude
-    return lambda argv, stdin: run([MODEL if part == "opus" else part for part in argv], stdin)
+    return lambda argv, stdin, **kw: run([MODEL if part == "opus" else part for part in argv], stdin, **kw)
 
 
 def check(card_title: str, card_text: str, brief: str, runner: judge.Runner | None = None) -> Verdict:
