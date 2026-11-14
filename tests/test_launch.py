@@ -128,10 +128,6 @@ class LaunchCli(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertEqual(self.calls[1][self.calls[1].index("--run") + 1], "run_cfg")
 
-
-if __name__ == "__main__":
-    unittest.main()
-
     def test_brief_beyond_card_stops_before_creating_anything(self) -> None:
         self.verdict = briefcheck.Verdict(False, ["adds a --force flag"])
         code, out = self.run_cli()
@@ -168,3 +164,7 @@ if __name__ == "__main__":
         self.assertEqual(code, 0, out)
         self.assertIn("warning: brief check failed", out)
         self.assertEqual(len(self.calls), 2)
+
+
+if __name__ == "__main__":
+    unittest.main()
