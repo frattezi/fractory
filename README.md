@@ -231,7 +231,13 @@ auto_intake = true               # `fractory watch` runs intake once per round, 
 plane_assignee = "<plane user id>"   # owner added to cards by launch and `add-item --assign-me`; default: the API key's owner (Plane /users/me/)
 ```
 
-`fractory intake --dry-run` lists what would launch and changes nothing. A job that reaches done sets the card's target date to today if empty.
+A card whose text has a line `Depends on: <refs>` (case-insensitive, bold allowed; `none` or empty means no
+dependency) launches only when every ref is a card in a completed state. A ref is a Plane key
+(`CUIDADO-12`) or a title prefix (`07` matches `07 ...` or `07 · ...` in the same project), comma-separated.
+Until then the card waits; a ref that matches no card keeps it waiting and prints
+`intake: <title>: unknown dependency <ref>` once per run. Cards without the line behave as before.
+
+`fractory intake --dry-run` lists what would launch (and which cards wait, with `waits for <refs>`) and changes nothing. A job that reaches done sets the card's target date to today if empty.
 
 ## Next (v1)
 
