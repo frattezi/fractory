@@ -34,7 +34,7 @@ import sys
 import time
 from pathlib import Path
 
-from . import judge, launch, launchd, specs_import, state, store, sync
+from . import judge, launch, launchd, reload, specs_import, state, store, sync
 from .trackers import plane as plane_mod
 from .trackers.base import STATUS_GROUPS
 
@@ -189,6 +189,9 @@ def cmd_dash(a: argparse.Namespace) -> int:
     return 0
 
 
+REPO_ROOT = Path(__file__).resolve().parent.parent
+
+
 def cmd_serve(a: argparse.Namespace) -> int:
     from . import web
 
@@ -201,7 +204,7 @@ def cmd_serve(a: argparse.Namespace) -> int:
         print(f"serve agent installed: {launchd.install('serve', ['--port', str(port)], log)}\nlog: {log}")
         print(f"board: http://127.0.0.1:{port}")
         return 0
-    return web.serve(port)
+    return web.serve(port, reload_root=REPO_ROOT)
 
 
 def cmd_plane_projects(a: argparse.Namespace) -> int:
@@ -341,6 +344,9 @@ def cmd_watch(a: argparse.Namespace) -> int:
             cmd_sync(a)
             sys.stdout.flush()
             done += 1
+            if a.reload and a.rounds == 0 and (sha := reload.pull_if_moved(REPO_ROOT)):
+                print(f"watch: main moved to {sha}, restarting", flush=True)
+                return 0
     except KeyboardInterrupt:
         print("watch stopped")
     return 0
@@ -440,6 +446,7 @@ def build_parser() -> argparse.ArgumentParser:
     s = sub.add_parser("watch", help="run sync in a loop (what the supervisor does every minute)")
     s.add_argument("--every", type=float, default=60.0, help="seconds between rounds")
     s.add_argument("--rounds", type=int, default=0, help="stop after N rounds (0: forever)")
+    s.add_argument("--no-reload", dest="reload", action="store_false", help="do not restart when main moves")
     s.add_argument("--install", action="store_true", help="run watch as a LaunchAgent (survives reboots)")
     s.add_argument("--uninstall", action="store_true", help="remove the LaunchAgent")
     s.set_defaults(fn=cmd_watch)
