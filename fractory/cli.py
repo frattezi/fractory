@@ -192,7 +192,16 @@ def cmd_dash(a: argparse.Namespace) -> int:
 def cmd_serve(a: argparse.Namespace) -> int:
     from . import web
 
-    return web.serve(a.port or web.DEFAULT_PORT)
+    port = a.port or web.DEFAULT_PORT
+    if a.uninstall:
+        print("serve agent removed" if launchd.uninstall("serve") else "serve agent was not installed")
+        return 0
+    if a.install:
+        log = store.factory_home() / "serve.log"
+        print(f"serve agent installed: {launchd.install('serve', ['--port', str(port)], log)}\nlog: {log}")
+        print(f"board: http://127.0.0.1:{port}")
+        return 0
+    return web.serve(port)
 
 
 def cmd_plane_projects(a: argparse.Namespace) -> int:
@@ -315,11 +324,11 @@ def cmd_sync(a: argparse.Namespace) -> int:
 def cmd_watch(a: argparse.Namespace) -> int:
     """Run sync every `--every` seconds. `--rounds 0` runs until interrupted (launchd, a terminal)."""
     if a.uninstall:
-        print("watch agent removed" if launchd.uninstall() else "watch agent was not installed")
+        print("watch agent removed" if launchd.uninstall("watch") else "watch agent was not installed")
         return 0
     if a.install:
         log = store.factory_home() / "watch.log"
-        print(f"watch agent installed: {launchd.install(log, a.every)}\nlog: {log}")
+        print(f"watch agent installed: {launchd.install('watch', ['--every', str(a.every)], log)}\nlog: {log}")
         return 0
     a.ids = []
     done = 0
@@ -412,6 +421,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     s = sub.add_parser("serve", help="web view: a live board of every job")
     s.add_argument("--port", type=int, help="default 8777")
+    s.add_argument("--install", action="store_true", help="run serve as a LaunchAgent (board always up)")
+    s.add_argument("--uninstall", action="store_true", help="remove the LaunchAgent")
     s.set_defaults(fn=cmd_serve)
 
     s = sub.add_parser("watch", help="run sync in a loop (what the supervisor does every minute)")

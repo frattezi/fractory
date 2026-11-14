@@ -1,4 +1,4 @@
-"""Keep `fractory watch` running as a macOS LaunchAgent, across reboots and closed sessions."""
+"""Keep `fractory watch` and `fractory serve` running as macOS LaunchAgents, across reboots and closed sessions."""
 
 from __future__ import annotations
 
@@ -13,15 +13,19 @@ LABEL = "com.fractory.watch"
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
-def agent_path() -> Path:
-    return Path.home() / "Library" / "LaunchAgents" / f"{LABEL}.plist"
+def label(name: str) -> str:
+    return f"com.fractory.{name}"
 
 
-def plist_bytes(python: str, repo_root: Path, log: Path, path_env: str, every: float) -> bytes:
+def agent_path(name: str = "watch") -> Path:
+    return Path.home() / "Library" / "LaunchAgents" / f"{label(name)}.plist"
+
+
+def plist_bytes(name: str, python: str, repo_root: Path, log: Path, path_env: str, args: list[str]) -> bytes:
     return plistlib.dumps(
         {
-            "Label": LABEL,
-            "ProgramArguments": [python, "-m", "fractory", "watch", "--every", str(every)],
+            "Label": label(name),
+            "ProgramArguments": [python, "-m", "fractory", name, *args],
             "WorkingDirectory": str(repo_root),
             "EnvironmentVariables": {"PATH": path_env, "PYTHONPATH": str(repo_root), "PYTHONUNBUFFERED": "1"},
             "RunAtLoad": True,
@@ -46,18 +50,18 @@ def path_env(which=None, python: str | None = None) -> str:
     return ":".join(dict.fromkeys(dirs))
 
 
-def install(log: Path, every: float = 60.0) -> Path:
-    path = agent_path()
+def install(name: str, args: list[str], log: Path) -> Path:
+    path = agent_path(name)
     path.parent.mkdir(parents=True, exist_ok=True)
     log.parent.mkdir(parents=True, exist_ok=True)
-    uninstall()
-    path.write_bytes(plist_bytes(sys.executable, REPO_ROOT, log, path_env(), every))
+    uninstall(name)
+    path.write_bytes(plist_bytes(name, sys.executable, REPO_ROOT, log, path_env(), args))
     subprocess.run(["launchctl", "bootstrap", f"gui/{os.getuid()}", str(path)], check=True)
     return path
 
 
-def uninstall() -> bool:
-    path = agent_path()
+def uninstall(name: str) -> bool:
+    path = agent_path(name)
     if not path.exists():
         return False
     subprocess.run(["launchctl", "bootout", f"gui/{os.getuid()}", str(path)], check=False, capture_output=True)
