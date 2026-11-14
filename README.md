@@ -83,8 +83,12 @@ A job's life today, with the manual steps v1 will automate marked *(manual)*.
    `~/.factory/watch.log`). It moves jobs on CI and merge events and keeps the Plane issues in step.
 4. `fractory serve --install`: a LaunchAgent keeps the board up at http://127.0.0.1:8777 (log:
    `~/.factory/serve.log`; `--port N` to change it).
+   Run both installs from an Orca terminal: they copy `ORCA_USER_DATA_PATH` and `ORCA_CLI_COMMAND` into the
+   agent, without which `orca` answers `runtime_unavailable` under launchd and the rework hook cannot reach
+   workers (the install warns when it is unset).
 5. Optional, for internal repos: `echo 'auto_merge = true' >> ~/.factory/config.toml`. Then `watch` merges
    the PR of every approved internal job once its CI is green. Able jobs never auto-merge.
+   Only low-risk diffs merge; a sensitive path or a big diff (>400 lines, >12 files) opens the gate `merge_review`. Tune in a `[risk]` table.
 
 **Per task**, from the repo's main chat in Orca (ask Claude in plain words, e.g. *"start a fractory
 job for the Plane issue X"*; these are the commands it runs):
@@ -96,7 +100,7 @@ job for the Plane issue X"*; these are the commands it runs):
 | 5. Open the PR and link it | `gh pr create`, then `fractory job link <id> --worktree … --pr <n>` and `fractory job advance <id> built` | worker / main |
 | 6. Checks | nothing: `fractory watch` sees CI; red goes back to build, green moves on to review | watch |
 | 6b. Rework | nothing: when a job goes back to `build` (CI red, Judge rejected) the reasons are typed into the worker's terminal (`links.terminal`) through `orch.py nudge`, and the history logs `rework_sent`; with no terminal or a failed nudge a `rework_needed` gate opens. A rejection that opens `judge_rounds` waits for you | watch / judge |
-| 7. Review and verdict | `fractory judge <id>` (Opus vs the Plane issue, fixed rubric; also reads `$FACTORY_HOME/jobs/<id>/brief.md` when present, default `~/.factory`, and a brief over 20,000 chars opens a `judge_error` gate); with `auto_judge = true` in `config.toml`, `watch` runs it for every job in review. By hand: `fractory job advance <id> reviewed`, then `approved` or `rejected` | judge / you |
+| 7. Review and verdict | `fractory judge <id>` (Opus vs the Plane issue, fixed rubric; also reads `$FACTORY_HOME/jobs/<id>/brief.md` when present, default `~/.factory`, and a brief over 20,000 chars opens a `judge_error` gate); the PR's CI results go into the prompt, and a rejection whose every reason the model also lists as `unverified` becomes `approved` only when all CI checks are green (the guesses stay as notes in the comment), otherwise it stays rejected; with `auto_judge = true` in `config.toml`, `watch` runs it for every job in review. By hand: `fractory job advance <id> reviewed`, then `approved` or `rejected` | judge / you |
 | 8. Merge | internal with `auto_merge`: nothing, `watch` merges on green CI; otherwise merge on GitHub (Able: open the draft PR) | watch / you |
 | 9. Done | nothing: `fractory watch` sees the merge, finishes the job and moves the Plane issue to Done | watch |
 
