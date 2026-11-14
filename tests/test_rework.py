@@ -143,6 +143,13 @@ class ReworkCli(unittest.TestCase):
         self.assertEqual(gate["reason"], "rework_needed")
         self.assertIn("no tests", gate["detail"])
 
+    def test_red_ci_without_a_terminal_opens_rework_needed(self) -> None:
+        self.new_job("build", terminal=None)
+        self.run_cli("job", "advance", JOB, "built")
+        self.run_cli("sync")
+        self.assertEqual(self.nudges, [])
+        self.assertEqual(self.job()["gate"]["reason"], "rework_needed")
+
     def test_failed_nudge_opens_rework_needed(self) -> None:
         self.new_job("review")
         self.nudge_code = 1

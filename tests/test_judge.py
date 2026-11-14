@@ -114,14 +114,13 @@ class JudgeCli(unittest.TestCase):
         for target, fake in (
             (sync, mock.patch.object(sync, "run_gh", side_effect=self.fake_gh)),
             (judge, mock.patch.object(judge, "run_claude", side_effect=self.fake_claude)),
-            (rework, mock.patch.object(rework, "run_cmd", return_value=(0, ""))),
         ):
             self.addCleanup(fake.stop)
-            started = fake.start()
-            if target is sync:
-                self.gh = started
-            elif target is judge:
-                self.claude = started
+            setattr(self, "gh" if target is sync else "claude", fake.start())
+
+        orch = mock.patch.object(rework, "run_cmd", return_value=(0, ""))
+        orch.start()
+        self.addCleanup(orch.stop)
 
         FakePlane.issues.append(
             {"id": "issue-1", "name": "Add feature", "description_html": "<p>Add the feature.</p>", "external_id": "x",
@@ -171,8 +170,9 @@ class JudgeCli(unittest.TestCase):
         self.assertEqual(code, 0, out)
         job = self.job()
         self.assertEqual(job["stage"], "build")
-        rejection = next(h for h in reversed(job["history"]) if h["event"] == "rejected")
-        self.assertEqual(rejection["note"], "no tests; skipped a test")
+        self.assertEqual(job["history"][-2]["event"], "rejected")
+        self.assertEqual(job["history"][-2]["note"], "no tests; skipped a test")
+        self.assertEqual(job["history"][-1]["event"], "rework_sent")
         self.assertEqual(len(FakePlane.comments), 1)
 
     def test_approved_with_scope_creep_is_rejected(self) -> None:
