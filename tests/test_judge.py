@@ -13,7 +13,7 @@ from http.server import ThreadingHTTPServer
 from pathlib import Path
 from unittest import mock
 
-from fractory import cli, judge, sync
+from fractory import cli, judge, rework, sync
 from tests.test_plane_import import KEY, PROJECT, FakePlane, reset_fake
 
 
@@ -114,9 +114,14 @@ class JudgeCli(unittest.TestCase):
         for target, fake in (
             (sync, mock.patch.object(sync, "run_gh", side_effect=self.fake_gh)),
             (judge, mock.patch.object(judge, "run_claude", side_effect=self.fake_claude)),
+            (rework, mock.patch.object(rework, "run_cmd", return_value=(0, ""))),
         ):
             self.addCleanup(fake.stop)
-            setattr(self, "gh" if target is sync else "claude", fake.start())
+            started = fake.start()
+            if target is sync:
+                self.gh = started
+            elif target is judge:
+                self.claude = started
 
         FakePlane.issues.append(
             {"id": "issue-1", "name": "Add feature", "description_html": "<p>Add the feature.</p>", "external_id": "x",
@@ -126,7 +131,7 @@ class JudgeCli(unittest.TestCase):
             "job", "new", "--repo", str(self.repo), "--title", "x", "--stage", "review",
             "--tracker", "plane", "--project", PROJECT, "--ref", "issue-1", "--plane-url", self.url,
         )  # fmt: skip
-        self.run_cli("job", "link", "cortadas-0001", "--pr", "42")
+        self.run_cli("job", "link", "cortadas-0001", "--pr", "42", "--terminal", "term_1")
 
     def fake_gh(self, args: list[str], cwd: str) -> str:
         if args[:2] == ["pr", "diff"]:
@@ -166,7 +171,8 @@ class JudgeCli(unittest.TestCase):
         self.assertEqual(code, 0, out)
         job = self.job()
         self.assertEqual(job["stage"], "build")
-        self.assertEqual(job["history"][-1]["note"], "no tests; skipped a test")
+        rejection = next(h for h in reversed(job["history"]) if h["event"] == "rejected")
+        self.assertEqual(rejection["note"], "no tests; skipped a test")
         self.assertEqual(len(FakePlane.comments), 1)
 
     def test_approved_with_scope_creep_is_rejected(self) -> None:

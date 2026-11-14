@@ -13,7 +13,7 @@ from http.server import ThreadingHTTPServer
 from pathlib import Path
 from unittest import mock
 
-from fractory import cli, sync
+from fractory import cli, rework, sync
 from tests.test_plane_import import KEY, PROJECT, FakePlane, reset_fake
 
 
@@ -76,6 +76,9 @@ class SyncCli(unittest.TestCase):
         gh = mock.patch.object(sync, "run_gh", side_effect=self.fake_gh)
         self.gh = gh.start()
         self.addCleanup(gh.stop)
+        orch = mock.patch.object(rework, "run_cmd", return_value=(0, ""))
+        orch.start()
+        self.addCleanup(orch.stop)
 
     def fake_gh(self, args: list[str], cwd: str) -> str:
         if args[:2] == ["pr", "merge"]:
@@ -93,12 +96,14 @@ class SyncCli(unittest.TestCase):
     def stage(self, job_id: str = "cortadas-0001") -> str:
         return json.loads((self.tmp / "factory" / "jobs" / job_id / "state.json").read_text())["stage"]
 
-    def new_job(self, stage: str = "build") -> None:
+    def new_job(self, stage: str = "build", terminal: str | None = "term_1") -> None:
         self.run_cli(
             "job", "new", "--repo", str(self.repo), "--title", "x", "--stage", stage,
             "--tracker", "plane", "--project", PROJECT, "--ref", "issue-1", "--plane-url", self.url,
         )  # fmt: skip
         self.run_cli("job", "link", "cortadas-0001", "--pr", "42")
+        if terminal:
+            self.run_cli("job", "link", "cortadas-0001", "--terminal", terminal)
 
     def test_green_ci_moves_checks_to_review(self) -> None:
         self.new_job()
@@ -117,6 +122,14 @@ class SyncCli(unittest.TestCase):
             _, out = self.run_cli("sync")
             self.assertEqual(self.stage(), "build")
             self.assertEqual("escalate_model" in out, expect_escalation, out)
+
+    def test_red_ci_without_a_terminal_opens_rework_needed(self) -> None:
+        self.new_job(terminal=None)
+        self.pr = pr_json(checks=[check_run("lint", conclusion="FAILURE")])
+        self.run_cli("job", "advance", "cortadas-0001", "built")
+        self.run_cli("sync")
+        job = json.loads((self.tmp / "factory" / "jobs" / "cortadas-0001" / "state.json").read_text())
+        self.assertEqual(job["gate"]["reason"], "rework_needed")
 
     def test_pending_ci_and_unlinked_jobs_do_nothing(self) -> None:
         self.new_job()
