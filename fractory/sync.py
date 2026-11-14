@@ -109,6 +109,14 @@ def should_merge(job: Job, pr: Pr) -> bool:
     )
 
 
+def pr_files(repo: str, pr: str, gh: Gh | None = None) -> list[tuple[str, int, int]]:
+    """`gh pr view --json files` -> [(path, additions, deletions)]."""
+    out = (gh or run_gh)(["pr", "view", pr, "--json", "files"], repo)
+    return [
+        (f["path"], int(f.get("additions", 0)), int(f.get("deletions", 0))) for f in json.loads(out).get("files", [])
+    ]
+
+
 def merge_pr(repo: str, pr: str, gh: Gh | None = None) -> None:
     (gh or run_gh)(["pr", "merge", pr, "--squash", "--delete-branch"], repo)
 
