@@ -53,3 +53,36 @@ def notify(job_id: str, event: str, detail: str, orch: Path, runner=None) -> Non
         else:
             job = state.open_gate(job, "rework_needed", message)
         store.save(job)
+
+
+def conflict_message(job: state.Job) -> str:
+    return (
+        f"[fractory] Rework on {job.id}: PR #{job.links.get('pr')} conflicts with main. "
+        f"Merge origin/main into your branch, resolve the conflicts, run the checks and push."
+    )
+
+
+def notify_conflict(job_id: str, orch: Path, runner=None) -> None:
+    """Send the worker the conflict rework once; with no reachable worker, open `merge_conflict`.
+    Later syncs stay silent until another event is logged (the worker pushes, the job moves)."""
+    runner = runner or run_cmd
+    with store.locked(job_id):
+        job = store.load(job_id)
+        if job.gate or (job.history and job.history[-1]["event"] == "conflict_sent"):
+            return
+        message = conflict_message(job)
+        terminal = job.links.get("terminal")
+        sent = False
+        if terminal:
+            try:
+                code, _ = runner([sys.executable, str(orch), "nudge", terminal, "--text", message])
+                sent = code == 0
+            except OSError:
+                sent = False
+        if sent:
+            job.history.append(
+                {"at": state.now_iso(), "event": "conflict_sent", "stage": job.stage, "terminal": terminal}
+            )
+        else:
+            job = state.open_gate(job, "merge_conflict", message)
+        store.save(job)
