@@ -169,6 +169,12 @@ terminal, branch, PR, Plane), the Judge verdicts with their reasons, a cost-over
 history as a timeline. The URL hash `#job=<id>` opens it directly and survives a reload; the panel refreshes
 when the job changes. Data comes from `GET /api/jobs/<id>` (404 for an unknown or malformed id).
 
+A collapsible activity panel (open state remembered in localStorage; a bottom sheet on phones) lists the latest
+events across all jobs, newest first, plus the last 40 lines of `$FACTORY_HOME/watch.log`. `red`, `rejected`,
+`gate_opened`, `rework_sent`, `merged` and `created` are highlighted; clicking an entry opens that job's detail
+panel. It refreshes on every `jobs` event and every 30 s. Data comes from `GET /api/activity?limit=50` (limit
+clamped to 1..200).
+
 ## Plane
 
 API key: `$PLANE_API_KEY`, or the Keychain item `fractory-plane`

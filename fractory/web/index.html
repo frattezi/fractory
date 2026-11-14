@@ -75,6 +75,29 @@ a:hover { text-decoration: underline; }
 .spark { width: 100%; height: 48px; display: block; }
 .spark polyline { fill: none; stroke: var(--warm); stroke-width: 2; vector-effect: non-scaling-stroke; }
 .costs { font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; margin: 4px 0 0; padding: 0; list-style: none; }
+
+/* --- activity feed --- */
+body.feed-open main { margin-right: 340px; }
+.feed { position: fixed; top: 0; right: 0; bottom: 0; width: 340px; background: var(--panel); border-left: 1px solid var(--line); z-index: 4; display: flex; flex-direction: column; }
+.feed[hidden] { display: none; }
+.feed-head { display: flex; justify-content: space-between; align-items: center; padding: 12px 14px; border-bottom: 1px solid var(--line); font-weight: 650; }
+.feed-body { overflow-y: auto; padding: 8px 10px 20px; flex: 1; }
+.feed-toggle { position: fixed; right: 12px; bottom: 12px; z-index: 4; background: var(--card); color: var(--text); border: 1px solid var(--line); border-radius: 99px; padding: 6px 14px; cursor: pointer; font: inherit; box-shadow: var(--shadow); }
+body.feed-open .feed-toggle { display: none; }
+.ev { display: block; width: 100%; text-align: left; font: inherit; color: var(--text); background: var(--card); border: 1px solid var(--line); border-left: 4px solid var(--line); border-radius: 6px; padding: 6px 9px; margin-bottom: 6px; cursor: pointer; }
+.ev:hover { border-color: var(--accent); }
+.ev.hl { border-left-color: var(--accent); }
+.ev.hl.bad { border-left-color: var(--gate); }
+.ev.hl.good { border-left-color: var(--live); }
+.ev.hl.warn { border-left-color: var(--warm); }
+.ev b { font-size: 13px; } .ev small { color: var(--muted); display: block; font-size: 11px; }
+.ev .note { color: var(--muted); font-size: 12px; overflow-wrap: anywhere; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+.feed-body h3 { margin: 14px 0 6px; font-size: 12px; text-transform: uppercase; letter-spacing: .7px; color: var(--muted); }
+.feed-log { margin: 0; font: 11px/1.4 ui-monospace, Menlo, monospace; color: var(--muted); white-space: pre-wrap; overflow-wrap: anywhere; }
+@media (max-width: 900px) { body.feed-open main { margin-right: 0; } }
+@media (max-width: 640px) {
+  .feed { top: auto; left: 0; width: auto; height: 55vh; border-left: 0; border-top: 1px solid var(--line); border-radius: 12px 12px 0 0; box-shadow: 0 -4px 16px rgba(0, 0, 0, .15); }
+}
 @media (max-width: 640px) { header { padding: 12px; } main { padding: 12px; } .controls { margin-left: 0; } }
 </style>
 </head>
@@ -93,6 +116,8 @@ a:hover { text-decoration: underline; }
   </div>
 </header>
 <main id="board"></main>
+<aside class="feed" id="feed" aria-label="Activity"><div class="feed-head"><span>Activity</span><button class="close" id="feed-close" aria-label="Hide activity">×</button></div><div class="feed-body" id="feed-body"></div></aside>
+<button class="feed-toggle" id="feed-toggle">Activity</button>
 <div class="scrim" id="scrim" hidden></div>
 <aside class="panel" id="panel" role="dialog" aria-label="Job detail" hidden></aside>
 <script>
@@ -246,10 +271,44 @@ document.addEventListener("keydown", (e) => { if (e.key === "Escape" && openId) 
 window.addEventListener("hashchange", syncPanel);
 syncPanel();
 
+// --- activity feed ---
+const TONE = { red: "bad", rejected: "bad", gate_opened: "bad", rework_sent: "warn", merged: "good", created: "" };
+function setFeedOpen(open) {
+  $("feed").hidden = !open;
+  document.body.classList.toggle("feed-open", open);
+  try { localStorage.setItem("fractory.feed", open ? "1" : "0"); } catch (_) { /* storage blocked */ }
+  if (open) loadActivity();
+}
+async function loadActivity() {
+  if ($("feed").hidden) return;
+  try {
+    const r = await fetch("/api/activity?limit=50");
+    if (!r.ok) return;
+    const a = await r.json();
+    const items = a.events.map((e) => `<button class="ev${e.highlight ? " hl " + (TONE[e.event] ?? "") : ""}" data-id="${esc(e.job)}">
+      <b>${esc(e.event)}</b> · ${esc(e.job)}${e.stage ? " · " + esc(e.stage) : ""}<small>${esc(e.title)} · ${esc(when(e.at))}</small>
+      ${e.note ? `<div class="note">${esc(e.note)}</div>` : ""}</button>`).join("") || '<div class="empty">no activity yet</div>';
+    const log = a.log.length ? `<h3>watch.log</h3><pre class="feed-log">${esc(a.log.join("\n"))}</pre>` : "";
+    const keep = $("feed-body").scrollTop;
+    $("feed-body").innerHTML = items + log;
+    $("feed-body").scrollTop = keep;
+  } catch (_) { /* offline: keep what is shown */ }
+}
+$("feed-toggle").addEventListener("click", () => setFeedOpen(true));
+$("feed-close").addEventListener("click", () => setFeedOpen(false));
+$("feed-body").addEventListener("click", (e) => {
+  const b = e.target.closest(".ev");
+  if (b) location.hash = "job=" + b.dataset.id;
+});
+let feedPref = null;
+try { feedPref = localStorage.getItem("fractory.feed"); } catch (_) { /* storage blocked */ }
+setFeedOpen(feedPref !== "0" && !(feedPref === null && matchMedia("(max-width: 640px)").matches));
+setInterval(loadActivity, 30000);
+
 const source = new EventSource("/api/events");
 source.onopen = () => setLive(true);
 source.onerror = () => setLive(false);
-source.addEventListener("jobs", (e) => { setLive(true); update(JSON.parse(e.data)); });
+source.addEventListener("jobs", (e) => { setLive(true); update(JSON.parse(e.data)); loadActivity(); });
 </script>
 </body>
 </html>

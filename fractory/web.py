@@ -3,6 +3,7 @@
 GET /            the page (fractory/web/index.html)
 GET /api/jobs    dash_data() plus tracker_url and pr_url per job
 GET /api/jobs/<id>  one job: Job.to_dict() plus pr_url, tracker_url and the judge verdicts (404 if unknown)
+GET /api/activity?limit=50  latest events across all jobs (newest first) plus the tail of $FACTORY_HOME/watch.log
 GET /api/events  Server-Sent Events: `event: jobs` whenever a state.json changes, `: ping` every 15 s
 """
 
@@ -17,6 +18,7 @@ from functools import lru_cache
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from urllib.parse import parse_qs, urlsplit
 
 from . import cli, reload, store
 from .trackers.plane import DEFAULT_URL, DEFAULT_WORKSPACE
@@ -88,6 +90,40 @@ def job_payload(job_id: str) -> dict | None:
     return data
 
 
+HIGHLIGHT = frozenset({"red", "rejected", "gate_opened", "rework_sent", "merged", "created"})
+DEFAULT_LIMIT, MAX_LIMIT, LOG_TAIL = 50, 200, 40
+
+
+def clamp_limit(raw: str | None) -> int:
+    try:
+        return max(1, min(MAX_LIMIT, int(raw))) if raw is not None else DEFAULT_LIMIT
+    except ValueError:
+        return DEFAULT_LIMIT
+
+
+def activity_payload(limit: int = DEFAULT_LIMIT) -> dict:
+    """Newest events across all jobs, plus the last lines of watch.log (empty when it does not exist)."""
+    events = [
+        {
+            "job": job.id,
+            "title": job.title,
+            "event": e["event"],
+            "stage": e.get("stage"),
+            "note": e.get("note") or e.get("check") or e.get("reason") or "",
+            "at": e["at"],
+            "highlight": e["event"] in HIGHLIGHT,
+        }
+        for job in store.all_jobs()
+        for e in job.history
+    ]
+    events.sort(key=lambda e: e["at"], reverse=True)
+    try:
+        lines = (store.factory_home() / "watch.log").read_text(errors="replace").splitlines()[-LOG_TAIL:]
+    except OSError:
+        lines = []
+    return {"events": events[: max(1, min(MAX_LIMIT, limit))], "log": lines}
+
+
 def _mtimes() -> dict[str, float]:
     out = {}
     for p in store.jobs_dir().glob("*/state.json"):
@@ -111,7 +147,8 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def do_GET(self) -> None:
-        path = self.path.split("?", 1)[0]
+        url = urlsplit(self.path)
+        path = url.path
         if path == "/":
             self._send(HTTPStatus.OK, INDEX.read_bytes(), "text/html; charset=utf-8")
         elif path == "/api/jobs":
@@ -125,6 +162,10 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(
                     HTTPStatus.OK, json.dumps(data, ensure_ascii=False).encode(), "application/json; charset=utf-8"
                 )
+        elif path == "/api/activity":
+            limit = clamp_limit(parse_qs(url.query).get("limit", [None])[0])
+            body = json.dumps(activity_payload(limit), ensure_ascii=False).encode()
+            self._send(HTTPStatus.OK, body, "application/json; charset=utf-8")
         elif path == "/api/events":
             self._events()
         else:
