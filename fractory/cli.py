@@ -363,7 +363,17 @@ def cmd_orch(a: argparse.Namespace) -> int:
 def cmd_launch(a: argparse.Namespace) -> int:
     plane = plane_mod.Plane(a.project, plane_mod.api_key_from_env(), a.plane_url)
     args = launch.Args(
-        Path(a.repo), a.issue, a.project, Path(a.brief), a.title, a.profile, a.name, a.run, a.dry_run, a.plane_url
+        Path(a.repo),
+        a.issue,
+        a.project,
+        Path(a.brief),
+        a.title,
+        a.profile,
+        a.name,
+        a.run,
+        a.dry_run,
+        a.plane_url,
+        a.force,
     )
     return launch.launch(args, plane, ORCH)
 
@@ -487,6 +497,7 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--run", help="Orca run id (default: orca_run in config.toml)")
     s.add_argument("--plane-url", default=plane_mod.DEFAULT_URL)
     s.add_argument("--dry-run", action="store_true", help="print the commands, create nothing")
+    s.add_argument("--force", action="store_true", help="launch even if the brief goes beyond its card")
     s.set_defaults(fn=cmd_launch)
 
     s = sub.add_parser("orch", help="passthrough to orch.py", add_help=False)
