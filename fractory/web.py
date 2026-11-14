@@ -1,7 +1,7 @@
 """`fractory serve`: the factory board in a browser. Read-only, stdlib only.
 
 GET /            the page (fractory/web/index.html)
-GET /api/jobs    dash_data() plus tracker_url and pr_url per job
+GET /api/jobs    dash_data() plus tracker_url, pr_url, stuck, terminal and gate fields per job, and wip {open, max}
 GET /api/jobs/<id>  one job: Job.to_dict() plus pr_url, tracker_url and the judge verdicts (404 if unknown)
 GET /api/activity?limit=50  latest events across all jobs (newest first) plus the tail of $FACTORY_HOME/watch.log
 GET /api/metrics?window=7|30  stage time, stuck work, flow, quality and cost (fractory/metrics.py)
@@ -23,7 +23,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
-from . import cli, health, metrics, reload, store
+from . import cli, health, intake, metrics, reload, store
 from .trackers.plane import DEFAULT_URL, DEFAULT_WORKSPACE
 
 INDEX = Path(__file__).parent / "web" / "index.html"
@@ -73,6 +73,13 @@ def jobs_payload() -> dict:
         item["tracker_url"] = plane_issue_url(job.tracker)
         item["gate_detail"] = job.gate.detail if job.gate else None
         item["stuck"] = metrics.stuck_item(job, now, limits)
+        item["terminal"] = job.links.get("terminal")
+        item["gate_opened_at"] = job.gate.opened_at if job.gate else None
+        item["gate_card_url"] = (job.gate.card_url or None) if job.gate else None
+    data["wip"] = {
+        "open": intake.open_jobs(list(by_id.values())),
+        "max": int(store.config().get("max_parallel_jobs") or intake.DEFAULT_MAX_PARALLEL),
+    }
     return data
 
 
