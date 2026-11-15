@@ -131,6 +131,8 @@ def apply_event(job: Job, event: str, check: str | None = None, note: str = "") 
         return job, []
     if job.stage in TERMINAL:
         raise TransitionError(f"{job.id} is {job.stage}")
+    if event == "built" and job.stage == "build" and job.gate is not None and job.gate.reason == "rework_needed":
+        job = resolve_gate(job, "continue", "worker advanced built: the rework is done")
     if job.gate is not None:
         raise TransitionError(f"{job.id} is waiting on gate {job.gate.reason!r}: resolve it first")
     allowed = TRANSITIONS[job.stage]

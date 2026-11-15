@@ -11,6 +11,7 @@ import threading
 import unittest
 from http.server import ThreadingHTTPServer
 from pathlib import Path
+from typing import ClassVar
 from unittest import mock
 
 from fractory import cli, judge, launch, rework, state, sync
@@ -46,7 +47,7 @@ class ReworkMessage(unittest.TestCase):
         self.assertIn("check lint", rework.rework_message(job, "red", "lint"))
 
 
-class ReworkCli(unittest.TestCase):
+class ReworkBase(unittest.TestCase):
     def setUp(self) -> None:
         reset_fake()
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), FakePlane)
@@ -96,6 +97,8 @@ class ReworkCli(unittest.TestCase):
         return json.dumps({"result": self.model_reply})
 
     def fake_orch(self, argv: list[str]) -> tuple[int, str]:
+        if argv[1:3] == ["terminal", "list"]:  # liveness probe: a failed list proves nothing, nothing is relaunched
+            return 1, ""
         self.nudges.append(argv)
         return self.nudge_code, ""
 
@@ -120,6 +123,8 @@ class ReworkCli(unittest.TestCase):
     def events(self) -> list[str]:
         return [h["event"] for h in self.job()["history"]]
 
+
+class ReworkCli(ReworkBase):
     def test_rejection_nudges_the_terminal_and_logs_rework_sent(self) -> None:
         self.new_job("review")
         self.run_cli("judge", JOB)
@@ -184,6 +189,8 @@ class ResumeAndNudge(ReworkCli):
     idle = True
 
     def fake_orch(self, argv: list[str]) -> tuple[int, str]:
+        if argv[1:3] == ["terminal", "list"]:  # liveness probe: a failed list proves nothing, nothing is relaunched
+            return 1, ""
         self.nudges.append(argv)
         if "stalls" in argv:
             return 1, f"{argv[-1]}: {'idle' if self.idle else 'busy'} | >\n"
@@ -249,6 +256,8 @@ class EscalateOnRejection(ReworkCli):
     route_reply: tuple[int, str] = (0, "profile strong: --agent claude --model sonnet  (step up from backend)\n")
 
     def fake_orch(self, argv: list[str]) -> tuple[int, str]:
+        if argv[1:3] == ["terminal", "list"]:  # liveness probe: a failed list proves nothing, nothing is relaunched
+            return 1, ""
         self.nudges.append(argv)
         if "route" in argv:
             return self.route_reply
@@ -306,6 +315,90 @@ class EscalateOnRejection(ReworkCli):
         self.run_cli("job", "advance", JOB, "green")
         self.run_cli("judge", JOB)
         self.assertEqual(sum("route" in a for a in self.nudges), 1)
+
+
+class RelaunchDeadWorker(ReworkBase):
+    """A job whose terminal is gone from Orca gets a new worker in its worktree, at most once an hour."""
+
+    live: ClassVar[list[str]] = []
+
+    def fake_orch(self, argv: list[str]) -> tuple[int, str]:
+        self.calls.append(argv)
+        if argv[1:3] == ["terminal", "list"]:
+            return 0, json.dumps({"result": {"terminals": [{"handle": h} for h in self.live]}})
+        if "launch" in argv:
+            self.specs.append(Path(argv[argv.index("--spec-file") + 1]).read_text())
+            return 0, f"launched dispatch d{len(self.launches())} in terminal term_new{len(self.launches())} (x)\n"
+        return self.nudge_code, ""
+
+    def setUp(self) -> None:
+        self.calls: list[list[str]] = []
+        self.specs: list[str] = []
+        super().setUp()
+        for name, kwargs in (("run_cmd", {"side_effect": lambda argv: (1, "")}), ("run_id", {"return_value": "run_1"})):
+            patcher = mock.patch.object(launch, name, **kwargs)  # no coordinator, fixed run id
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def launches(self) -> list[list[str]]:
+        return [c for c in self.calls if "launch" in c]
+
+    def linked_job(self, stage: str = "build") -> None:
+        self.new_job(stage, terminal="term_dead")
+        self.run_cli("job", "link", JOB, "--profile", "strong")
+        path = self.tmp / "factory" / "jobs" / JOB / "state.json"
+        data = json.loads(path.read_text())
+        data["links"]["worktree_id"] = "wt_1"
+        path.write_text(json.dumps(data))
+        (self.tmp / "factory" / "jobs" / JOB / "brief.md").write_text("# the brief\n")
+
+    def watch_once(self) -> None:
+        self.run_cli("sync")
+
+    def test_dead_terminal_is_relaunched_once_per_hour(self) -> None:
+        self.linked_job()
+        self.pr = json.dumps({"state": "OPEN", "isDraft": False, "statusCheckRollup": []})
+        self.watch_once()
+        self.watch_once()
+        (cmd,) = self.launches()
+        self.assertEqual(cmd[cmd.index("--worktree") + 1], "id:wt_1")
+        self.assertEqual(cmd[cmd.index("--profile") + 1], "strong")
+        self.assertIn("# the brief", self.specs[0])
+        self.assertIn("resumed after the previous terminal died", self.specs[0])
+        self.assertEqual(self.job()["links"]["terminal"], "term_new1")
+        self.assertEqual(self.events().count("relaunched"), 1)
+        self.assertIsNone(self.job()["gate"])
+
+    def test_live_terminal_is_left_alone(self) -> None:
+        self.live = ["term_dead"]
+        self.linked_job()
+        self.watch_once()
+        self.assertEqual(self.launches(), [])
+
+    def test_dead_terminal_rework_is_relaunched_instead_of_gated(self) -> None:
+        self.nudge_code = 1
+        self.linked_job("build")
+        self.run_cli("job", "advance", JOB, "built")
+        self.run_cli("sync")
+        self.assertIsNone(self.job()["gate"])
+        self.assertEqual(len(self.launches()), 1)
+        self.assertEqual(self.events()[-1], "rework_sent")
+        self.assertEqual(self.job()["links"]["terminal"], "term_new1")
+
+
+class AdvanceBuiltClosesReworkGate(unittest.TestCase):
+    def test_built_closes_rework_needed_and_advances(self) -> None:
+        job = state.new_job("cortadas-0001", "/r", "x", "internal", stage="build")
+        job = state.open_gate(job, "rework_needed", "CI is red")
+        job, _ = state.apply_event(job, "built")
+        self.assertIsNone(job.gate)
+        self.assertEqual(job.stage, "checks")
+        self.assertIn("gate_resolved", [h["event"] for h in job.history])
+
+    def test_other_gates_still_block_built(self) -> None:
+        job = state.open_gate(state.new_job("cortadas-0001", "/r", "x", "internal", stage="build"), "cost", "x")
+        with self.assertRaises(state.TransitionError):
+            state.apply_event(job, "built")
 
 
 if __name__ == "__main__":
