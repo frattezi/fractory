@@ -15,6 +15,7 @@ from pathlib import Path
 from unittest import mock
 
 from fractory import briefcheck, cli, intake, launch, state, store
+from fractory.trackers import plane as plane_mod
 from tests.test_plane_import import KEY, PROJECT, FakePlane, reset_fake
 
 LABEL = "label-fractory"
@@ -116,6 +117,11 @@ class IntakeCli(unittest.TestCase):
         self.addCleanup(env.stop)
         self.write_config()
         self.routes: list[list[str]] = []
+        self.quotas: list[list[str]] = []
+        self.escalations: list[list[str]] = []
+        self.quota_fails = False
+        self.quota_reply = "ok   claude  session 7%  [profiles: ui,strong]\n"
+        self.escalate_reply: tuple[int, str] = (0, "profile strong: --agent claude --model sonnet  (step up)\n")
         self.route_reply: tuple[int, str] = (0, "profile default: --agent pi --model m  (no tag matched)\n")
         patch = mock.patch.object(intake, "_run_orch", side_effect=self.fake_route)
         patch.start()
@@ -134,6 +140,14 @@ class IntakeCli(unittest.TestCase):
         )
 
     def fake_route(self, argv: list[str]) -> tuple[int, str]:
+        if "quota" in argv:
+            self.quotas.append(argv)
+            if self.quota_fails:
+                return 1, "boom"
+            return 0, self.quota_reply
+        if "--escalate-from" in argv:
+            self.escalations.append(argv)
+            return self.escalate_reply
         self.routes.append(argv)
         self.spec_seen = Path(argv[argv.index("--spec") + 1]).read_text()
         return self.route_reply
@@ -349,6 +363,44 @@ class ProfileChoice(IntakeCli):
         self.assertEqual(self.launched_profile(), "ui")
         self.assertEqual(self.routes, [])
         self.assertIn("Worker: line", self.chosen_event()["why"])
+
+    OFF = "off  opencodeGo  key rejected  [profiles: backend,testes-ci]\n"
+
+    def test_available_worker_profile_is_kept(self) -> None:
+        FakePlane.issues = [card(1, html="<p>Do it</p><p>Worker: ui</p>")]
+        self.run_cli("intake")
+        self.assertEqual(self.launched_profile(), "ui")
+        self.assertEqual(self.escalations, [])
+        self.assertEqual(FakePlane.comments, [])
+
+    def test_unavailable_worker_profile_falls_back_and_comments_once(self) -> None:
+        self.quota_reply += self.OFF
+        FakePlane.issues = [card(1, html="<p>Do it</p><p>Worker: testes-ci</p>")]
+        self.run_cli("intake")
+        self.assertEqual(self.launched_profile(), "strong")
+        self.assertIn("--escalate-from", self.escalations[0])
+        self.assertIn("testes-ci", self.escalations[0])
+        self.assertIn("Worker: testes-ci unavailable: opencodeGo off", self.chosen_event()["why"])
+        self.assertEqual(len(FakePlane.comments), 1)
+        self.assertIn("opencodeGo off", FakePlane.comments[0][1]["comment_html"])
+        intake._comment_fallback_once(
+            plane_mod.Plane(PROJECT, KEY, self.url), FakePlane.issues[0]["id"], "strong", self.chosen_event()["why"]
+        )
+        self.assertEqual(len(FakePlane.comments), 1)
+
+    def test_unavailable_worker_profile_with_empty_escalation_uses_strong(self) -> None:
+        self.quota_reply += self.OFF
+        self.escalate_reply = (1, "")
+        FakePlane.issues = [card(1, html="<p>Do it</p><p>Worker: backend</p>")]
+        self.run_cli("intake")
+        self.assertEqual(self.launched_profile(), "strong")
+
+    def test_quota_failure_keeps_the_worker_profile(self) -> None:
+        self.quota_fails = True
+        FakePlane.issues = [card(1, html="<p>Do it</p><p>Worker: testes-ci</p>")]
+        self.run_cli("intake")
+        self.assertEqual(self.launched_profile(), "testes-ci")
+        self.assertEqual(FakePlane.comments, [])
 
     def test_per_repo_config_beats_default_and_route(self) -> None:
         self.write_config(f'[intake]\ndefault_profile = "backend"\n[intake.profiles]\n"{self.repo}" = "infra"\n')

@@ -121,6 +121,8 @@ NON_TAG_LABELS = {"fractory", "humano", "design"}
 _WORKER_RE = re.compile(r"^\s*worker\s*:\s*([\w.-]+)\s*$", re.IGNORECASE)
 _TAGS_RE = re.compile(r"^\s*tags\s*:\s*(.*)$", re.IGNORECASE)
 _ROUTED_RE = re.compile(r"^profile (\S+?):")
+_QUOTA_RE = re.compile(r"^(ok|off)\s+(\S+)\s.*\[profiles:\s*([^\]]*)\]\s*$")
+FALLBACK_MARK = "unavailable:"
 
 
 def card_line_profile(issue: dict) -> str | None:
@@ -149,6 +151,34 @@ def _run_orch(argv: list[str]) -> tuple[int, str]:
     return proc.returncode, proc.stdout + proc.stderr
 
 
+def unavailable_reason(profile: str, orch: Path, repo: Path, runner) -> str | None:
+    """`<provider> off` when `orch.py quota` lists the profile under a provider that is off, else None.
+    A failing quota command (or an unlisted profile) counts as available: the card's choice stands."""
+    try:
+        code, out = runner([sys.executable, str(orch), "quota", "--repo", str(repo)])
+    except OSError:
+        return None
+    if code != 0:
+        return None
+    for line in out.splitlines():
+        m = _QUOTA_RE.match(line.strip())
+        if m and m.group(1) == "off" and profile in [p.strip() for p in m.group(3).split(",")]:
+            return f"{m.group(2)} off"
+    return None
+
+
+def _escalated(profile: str, orch: Path, repo: Path, runner) -> str:
+    try:
+        code, out = runner([sys.executable, str(orch), "route", "--escalate-from", profile, "--repo", str(repo)])
+    except OSError:
+        return DEFAULT_PROFILE
+    for line in out.splitlines() if code == 0 else []:
+        m = _ROUTED_RE.match(line)
+        if m:
+            return m.group(1)
+    return DEFAULT_PROFILE
+
+
 def route_spec(title: str, tags: list[str]) -> str:
     front = f"---\ntags: [{', '.join(tags)}]\n---\n" if tags else ""
     return f"{front}# {title}\n"
@@ -162,7 +192,10 @@ def choose_profile(
     runner = runner or _run_orch
     line = card_line_profile(issue)
     if line:
-        return line, "Worker: line in the card"
+        reason = unavailable_reason(line, orch, repo, runner)
+        if reason is None:
+            return line, "Worker: line in the card"
+        return _escalated(line, orch, repo, runner), f"Worker: {line} {FALLBACK_MARK} {reason}"
     intake_cfg = config.get("intake") or {}
     per_repo = next(
         (v for k, v in (intake_cfg.get("profiles") or {}).items() if Path(k).expanduser() == Path(repo).expanduser()),
@@ -312,6 +345,8 @@ def run_intake(config: dict, orch: Path, dry_run: bool = False, launcher: Launch
                     ]
                     profile, why = choose_profile(issue, Path(repo).expanduser(), config, orch, card_labels)
                     print(f"intake: {title!r}: profile {profile} ({why})")
+                    if FALLBACK_MARK in why:
+                        _comment_fallback_once(plane, issue["id"], profile, why)
                     args = launch.Args(
                         Path(repo).expanduser(),
                         issue["id"],
@@ -342,6 +377,17 @@ def run_intake(config: dict, orch: Path, dry_run: bool = False, launcher: Launch
             },
         )
     return launched
+
+
+def _comment_fallback_once(plane, ref: str, profile: str, why: str) -> None:
+    """A failed launch is retried next run; the card gets the fallback note only once."""
+    text = f"Fractory: profile {profile} ({why})"
+    try:
+        if any(text in c for c in plane.comment_texts(ref)):
+            return
+        plane.comment(ref, f"<p>{text}</p>")
+    except plane_mod.PlaneError as err:
+        print(f"intake: could not comment the fallback on {ref}: {err}")
 
 
 def _failed(project_queue: dict, issue: dict, error: str) -> None:
