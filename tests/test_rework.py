@@ -9,9 +9,9 @@ import os
 import tempfile
 import threading
 import unittest
-from typing import ClassVar
 from http.server import ThreadingHTTPServer
 from pathlib import Path
+from typing import ClassVar
 from unittest import mock
 
 from fractory import cli, judge, launch, rework, state, sync
