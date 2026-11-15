@@ -376,6 +376,13 @@ class ProfileChoice(IntakeCli):
         self.assertNotIn("fractory", self.spec_seen)
         self.assertIn("orch.py route", self.chosen_event()["why"])
 
+    def test_route_skips_lines_before_the_profile_line(self) -> None:
+        self.route_reply = (0, "skip default: provider quota exceeded\nprofile strong: --agent pi --model m\n")
+        FakePlane.issues = [card(1)]
+        self.run_cli("intake")
+        self.assertEqual(self.launched_profile(), "strong")
+        self.assertIn("profile strong:", self.chosen_event()["why"])
+
     def test_route_failure_falls_back_to_strong_and_logs_it(self) -> None:
         for reply in ((1, "no profile has quota under 90%: escalate to the main session\n"), (0, "")):
             with self.subTest(reply=reply):
