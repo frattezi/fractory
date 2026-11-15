@@ -9,7 +9,7 @@ import tempfile
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from . import state, store
+from . import guard, state, store
 
 MAX_ROUNDS = state.MAX_JUDGE_ROUNDS
 
@@ -44,6 +44,10 @@ def start_worker(job: state.Job, profile: str, note: str, orch: Path, runner) ->
     Returns the new terminal, or None when `orch.py launch` fails."""
     from . import launch  # late: launch pulls in briefcheck/judge
 
+    try:
+        guard.install(guard.worktree_path(str(job.links["worktree_id"])))
+    except guard.GuardError as err:
+        raise launch.LaunchError(str(err)) from err
     brief = store.job_dir(job.id) / "brief.md"
     with tempfile.TemporaryDirectory() as tmp:
         spec = Path(tmp) / "rework.md"
