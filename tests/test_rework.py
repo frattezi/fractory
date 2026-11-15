@@ -317,7 +317,6 @@ class EscalateOnRejection(ReworkCli):
         self.assertEqual(sum("route" in a for a in self.nudges), 1)
 
 
-
 class RelaunchDeadWorker(ReworkBase):
     """A job whose terminal is gone from Orca gets a new worker in its worktree, at most once an hour."""
 
