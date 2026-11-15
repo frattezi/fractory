@@ -317,9 +317,6 @@ class EscalateOnRejection(ReworkCli):
         self.assertEqual(sum("route" in a for a in self.nudges), 1)
 
 
-if __name__ == "__main__":
-    unittest.main()
-
 
 class RelaunchDeadWorker(ReworkBase):
     """A job whose terminal is gone from Orca gets a new worker in its worktree, at most once an hour."""
@@ -403,3 +400,7 @@ class AdvanceBuiltClosesReworkGate(unittest.TestCase):
         job = state.open_gate(state.new_job("cortadas-0001", "/r", "x", "internal", stage="build"), "cost", "x")
         with self.assertRaises(state.TransitionError):
             state.apply_event(job, "built")
+
+
+if __name__ == "__main__":
+    unittest.main()
