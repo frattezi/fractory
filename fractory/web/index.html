@@ -50,6 +50,30 @@ a { color: var(--accent); }
 .raw { font-size: 12px; color: var(--muted); margin: 2px 0 4px; }
 .raw summary { cursor: pointer; }
 .empty { color: var(--muted); padding: 8px 2px; }
+
+.stages { display: flex; gap: 2px; margin: 6px 0 2px; }
+.stg { flex: 1 1 0; min-width: 0; background: var(--bg); border: 1px solid var(--line); border-radius: 4px; padding: 3px 5px; font-size: 11px; color: var(--muted); overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.stg b { display: block; font-weight: 500; font-variant-numeric: tabular-nums; }
+.stg.now { background: var(--accent); border-color: var(--accent); color: #fff; }
+.stg.idle { opacity: .55; }
+.mark { display: inline-block; font-size: 11px; border: 1px solid var(--warn); color: var(--warn); border-radius: 10px; padding: 0 6px; margin-left: 4px; }
+.repo-h { margin: 12px 0 6px; font-size: 13px; font-weight: 650; }
+.job { cursor: pointer; border-left-color: var(--accent); }
+.job:hover, .job:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.q { display: flex; justify-content: space-between; gap: 10px; padding: 6px 2px; border-bottom: 1px solid var(--line); }
+.q .why { color: var(--muted); text-align: right; overflow-wrap: anywhere; }
+.q .why.bad { color: var(--bad); }
+details.done > summary { cursor: pointer; }
+.done-row { display: flex; justify-content: space-between; gap: 10px; padding: 6px 2px; border-bottom: 1px solid var(--line); cursor: pointer; }
+#drawer { position: fixed; inset: 0 0 0 auto; width: min(520px, 100%); background: var(--card); border-left: 1px solid var(--line); box-shadow: -4px 0 16px rgba(0,0,0,.2); padding: 14px 16px; overflow-y: auto; transform: translateX(105%); transition: transform .15s; z-index: 5; }
+#drawer.open { transform: none; }
+#drawer h3 { margin: 0 28px 4px 0; font-size: 16px; overflow-wrap: anywhere; }
+#drawer .close { position: absolute; top: 10px; right: 12px; border: 0; background: none; color: var(--text); font-size: 22px; cursor: pointer; }
+.ev { display: grid; grid-template-columns: 78px 1fr; gap: 2px 8px; padding: 5px 0; border-bottom: 1px solid var(--line); font-size: 12px; }
+.ev time { color: var(--muted); font-variant-numeric: tabular-nums; }
+.ev .note { grid-column: 2; color: var(--muted); overflow-wrap: anywhere; }
+.verdict { border-left: 3px solid var(--bad); padding: 2px 8px; margin: 6px 0; font-size: 13px; }
+.verdict.approved { border-left-color: var(--ok); }
 .seg { display: inline-flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; margin-left: auto; }
 .seg button { font: inherit; font-size: 12px; background: var(--card); color: var(--text); border: 0; padding: 4px 12px; cursor: pointer; }
 .seg button + button { border-left: 1px solid var(--line); }
@@ -81,8 +105,11 @@ table.t th { color: var(--muted); font-weight: 500; font-size: 12px; }
 </header>
 <div class="strip" id="strip" aria-label="Saúde da fábrica"></div>
 <main>
+  <section id="flow" aria-labelledby="flow-h"><h2 id="flow-h">Em andamento <b id="flow-n">–</b></h2><div id="flow-list"></div></section>
+  <section id="queue" aria-labelledby="queue-h"><h2 id="queue-h">Fila <b id="queue-n">–</b></h2><div id="queue-list"></div></section>
   <section id="needs" aria-labelledby="needs-h"><h2 id="needs-h">Precisa de você <b id="needs-n">–</b></h2><div id="needs-list"></div></section>
   <section id="stuck" aria-labelledby="stuck-h"><h2 id="stuck-h">Parado <b id="stuck-n">–</b></h2><div id="stuck-list"></div></section>
+  <section id="done" aria-labelledby="done-h"><details class="done"><summary><h2 id="done-h" style="display:inline-flex">Concluídos <b id="done-n">–</b></h2></summary><div id="done-list"></div></details></section>
   <section id="work" aria-labelledby="work-h">
     <h2 id="work-h">Como estamos trabalhando
       <span class="seg" role="group" aria-label="Janela de tempo">
@@ -102,6 +129,7 @@ table.t th { color: var(--muted); font-weight: 500; font-size: 12px; }
     <div class="panel" id="w-cost"></div>
   </section>
 </main>
+<aside id="drawer" aria-label="Histórico do job" aria-hidden="true"></aside>
 <script>
 const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
@@ -110,6 +138,9 @@ const link = (url, text) => (url ? `<a href="${esc(url)}" target="_blank" rel="n
 let jobs = { jobs: [], wip: { open: 0, max: 0 } };
 let health = { missing: true };
 let stuck = [];
+let metrics = { stage_minutes: {} };
+let queue = { missing: true };
+let openJob = null;
 
 function ago(seconds) {
   const s = Math.max(0, Math.round(seconds));
@@ -182,7 +213,80 @@ function renderStuck() {
   }).join("") || '<div class="empty">Nada parado.</div>';
 }
 
-function render() { renderStrip(); renderNeeds(); renderStuck(); }
+const FLOW_STAGES = ["build", "checks", "review", "judge", "ship"];
+const minutes = (m) => (m < 90 ? `${Math.round(m)} min` : ago(m * 60));
+
+function timeline(j) {
+  const spent = metrics.stage_minutes[j.id] || {};
+  const stages = [...new Set([...FLOW_STAGES, ...Object.keys(spent).filter((s) => spent[s] > 0 && !FLOW_STAGES.includes(s))])];
+  if (!stages.includes(j.stage)) stages.push(j.stage);
+  return `<div class="stages">${stages.map((s) => {
+    const now = s === j.stage;
+    const t = now ? `${minutes(j.stage_age_min)} aqui` : spent[s] ? minutes(spent[s]) : "–";
+    return `<div class="stg ${now ? "now" : spent[s] ? "" : "idle"}" title="${esc(STAGE_PT[s] || s)}: ${esc(t)}">${esc(STAGE_PT[s] || s)}<b>${esc(t)}</b></div>`;
+  }).join("")}</div>`;
+}
+
+function renderFlow() {
+  const open = jobs.jobs.filter((j) => !["done", "cancelled"].includes(j.stage));
+  $("flow-n").textContent = open.length;
+  const byRepo = Map.groupBy(open, (j) => j.repo);
+  $("flow-list").innerHTML = [...byRepo].sort(([a], [b]) => a.localeCompare(b)).map(([repo, list]) => `<div class="repo-h">${esc(repo)} <span class="age">${list.length} aberto${list.length > 1 ? "s" : ""}</span></div>${list.map((j) => `<article class="item job" tabindex="0" role="button" data-id="${esc(j.id)}">
+    <div class="top"><span class="title">${esc(j.title)}</span><span class="age">${esc(j.id)}${j.gate ? ' <span class="mark">⚠ gate</span>' : ""}${j.judge_rounds ? ` <span class="mark" title="rodadas de retrabalho do Judge">↺ ${j.judge_rounds}</span>` : ""}${j.conflicts ? ` <span class="mark" title="conflitos com a main">⚡ ${j.conflicts}</span>` : ""}</span></div>
+    ${timeline(j)}
+  </article>`).join("")}`).join("") || '<div class="empty">Nenhum job em andamento.</div>';
+}
+
+function renderQueue() {
+  const rows = Object.entries(queue.projects || {}).flatMap(([project, p]) =>
+    p.error ? [`<div class="q"><span>${esc(p.identifier || project)}</span><span class="why bad">erro: ${esc(p.error)}</span></div>`]
+      : (p.cards || []).map((c) => `<div class="q"><span><code>${esc(c.key)}</code> ${esc(c.title)}</span><span class="why ${c.decision === "launch_failed" ? "bad" : ""}">${esc(c.decision_text)}</span></div>`));
+  $("queue-n").textContent = rows.length;
+  $("queue-list").innerHTML = rows.join("") || `<div class="empty">${queue.missing ? "Sem leitura da fila ainda." : "Fila vazia."}</div>`;
+}
+
+function renderDone() {
+  const list = jobs.jobs.filter((j) => j.merged_at).sort((a, b) => (a.merged_at < b.merged_at ? 1 : -1)).slice(0, 20);
+  $("done-n").textContent = list.length;
+  $("done-list").innerHTML = list.map((j) => `<div class="done-row job" tabindex="0" role="button" data-id="${esc(j.id)}"><span>${esc(j.repo)} · ${esc(j.title)}</span><span class="age">lead ${minutes(j.lead_min)}</span></div>`).join("") || '<div class="empty">Nada concluído ainda.</div>';
+}
+
+const eventNote = (e) => e.note || e.check || e.reason || (e.total != null ? `US$ ${e.total}` : "");
+async function showJob(id) {
+  openJob = id;
+  const d = $("drawer");
+  d.classList.add("open");
+  d.setAttribute("aria-hidden", "false");
+  d.innerHTML = '<button class="close" aria-label="Fechar">×</button><div class="empty">Carregando…</div>';
+  try {
+    const j = await getJSON("/api/jobs/" + encodeURIComponent(id));
+    if (openJob !== id) return;
+    const term = j.links?.terminal;
+    d.innerHTML = `<button class="close" aria-label="Fechar">×</button>
+      <h3>${esc(j.title)}</h3>
+      <div class="repo">${esc(j.repo)} · ${esc(j.id)} · ${esc(STAGE_PT[j.stage] || j.stage)}</div>
+      <div class="links" style="margin:8px 0">${link(j.tracker_url, "Card no Plane")}${j.links?.pr ? (j.pr_url ? link(j.pr_url, `PR #${esc(j.links.pr)}`) : `PR #${esc(j.links.pr)}`) : ""}${term ? `<code>terminal ${esc(term)}</code>` : ""}</div>
+      <h2>Veredictos do Judge <b>${j.verdicts.length}</b></h2>
+      ${j.verdicts.map((v) => `<div class="verdict ${esc(v.decision)}"><b>${v.decision === "approved" ? "aprovado" : "reprovado"}</b> · ${esc(new Date(v.at).toLocaleString("pt-BR"))}<ul>${v.reasons.map((r) => `<li>${esc(r)}</li>`).join("")}</ul></div>`).join("") || '<div class="empty">Nenhum ainda.</div>'}
+      <h2 style="margin-top:14px">Histórico <b>${j.history.length}</b></h2>
+      ${[...j.history].reverse().map((e) => `<div class="ev"><time>${esc(new Date(e.at).toLocaleString("pt-BR", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" }))}</time><span>${esc(e.event)} <span class="age">→ ${esc(STAGE_PT[e.stage] || e.stage)}</span></span>${eventNote(e) ? `<span class="note">${esc(eventNote(e))}</span>` : ""}</div>`).join("")}`;
+  } catch (_) {
+    d.innerHTML = '<button class="close" aria-label="Fechar">×</button><div class="empty">Não consegui carregar o histórico.</div>';
+  }
+}
+function closeJob() { openJob = null; $("drawer").classList.remove("open"); $("drawer").setAttribute("aria-hidden", "true"); }
+document.addEventListener("click", (e) => {
+  if (e.target.closest("#drawer .close")) return closeJob();
+  if (e.target.closest("a, summary")) return;
+  const row = e.target.closest(".job");
+  if (row) showJob(row.dataset.id);
+});
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape") closeJob();
+  else if ((e.key === "Enter" || e.key === " ") && e.target.classList?.contains("job")) { e.preventDefault(); showJob(e.target.dataset.id); }
+});
+
+function render() { renderStrip(); renderFlow(); renderQueue(); renderNeeds(); renderStuck(); renderDone(); }
 
 async function getJSON(path) {
   const r = await fetch(path);
@@ -195,10 +299,14 @@ async function loadHealth() {
 }
 async function loadStuck() {
   try {
-    const m = await getJSON("/api/metrics");
-    stuck = m.stuck.filter((s) => s.kind === "stage"); // gates are already under "Precisa de você"
+    metrics = await getJSON("/api/metrics");
+    stuck = metrics.stuck.filter((s) => s.kind === "stage"); // gates are already under "Precisa de você"
   } catch (_) { /* keep what is shown */ }
   render();
+}
+async function loadQueue() {
+  try { queue = await getJSON("/api/queue"); } catch (_) { /* keep what is shown */ }
+  renderQueue();
 }
 
 // --- Como estamos trabalhando ---------------------------------------------------------------------------------
@@ -329,7 +437,9 @@ source.onopen = () => setLive(true);
 source.onerror = () => setLive(false);
 source.addEventListener("jobs", (e) => { setLive(true); jobs = JSON.parse(e.data); render(); loadStuck(); loadHealth(); });
 loadHealth();
+loadQueue();
 setInterval(loadHealth, 15000);
+setInterval(loadQueue, 30000);
 setInterval(render, 15000); // ages tick between events
 </script>
 </body>

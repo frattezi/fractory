@@ -169,7 +169,7 @@ fractory serve [--port 8777]          # binds 127.0.0.1 only
 ```
 
 The board opens on what needs attention now (the per-stage kanban, detail panel and activity feed are gone
-until DB05). Page text is Portuguese. Four parts:
+until DB05). Page text is Portuguese. Seven parts:
 
 - **Health strip:** watch alive or stopped, last cycle (`há 40 s · 12 s`: time since it ended, how long it took),
   WIP `n / max_parallel_jobs`, open gates, stuck jobs, Plane rate-limit backoffs of the last cycle and the code
@@ -178,6 +178,14 @@ until DB05). Page text is Portuguese. Four parts:
   `merge_review` → "Revisar merge: mexe em migração"), age, and links to the Plane card and the PR.
 - **Parado:** jobs stuck in a stage past the `[stuck]` limits, with reason, age, and links to the card and PR plus
   the worker terminal handle. Gate-stuck jobs are not repeated here.
+- **Em andamento:** open jobs grouped by repo, each with a horizontal build → checks → review → judge → ship
+  timeline (time per stage from `/api/metrics` `stage_minutes`; the current stage is highlighted with its age).
+  Small markers show Judge rework rounds (↺) and conflicts sent to the worker (⚡). Click a job to open the drawer.
+- **Fila:** per Plane project, the next cards with the decision in Portuguese: "vai começar", "espera MC02",
+  "limite de N jobs", "em Backlog", "falhou ao iniciar: …".
+- **Concluídos** (collapsed): the last 20 merged jobs with lead time.
+- **Job drawer:** the Judge verdicts and the full event history (time, event, stage, note) from
+  `GET /api/jobs/<id>`, with links to the card, the PR and the worker terminal.
 
 - **Como estamos trabalhando:** a 7 / 30 day toggle over `/api/metrics?window=`: merges per day (inline SVG stacked
   bars, repos filterable from the legend), lead time median and p90, median time per stage, Judge first-pass rate,
@@ -185,12 +193,11 @@ until DB05). Page text is Portuguese. Four parts:
   ("sem dados" when zero). Tap or hover a number for a one-line explanation. Charts carry `<title>`/`<desc>` and
   print their values as text; colours follow light and dark.
 
-The page reads `GET /api/health` (strip), `GET /api/metrics` (`stuck`, each with `reason` and its Portuguese `reason_pt`) and `GET /api/jobs`, and follows
+The page reads `GET /api/health` (strip), `GET /api/metrics` (`stuck`, each with `reason` and its Portuguese `reason_pt`; `stage_minutes` for the timelines), `GET /api/queue` (Fila), `GET /api/jobs/<id>` (drawer) and `GET /api/jobs`, and follows
 `state.json` changes through Server-Sent Events (`/api/events`). `/api/jobs` carries, per job, `pr_url`,
-`tracker_url`, `stuck`, `terminal`, `gate_detail` (raw, shown behind a "detalhe" toggle), `gate_text` (the Portuguese sentence from `fractory/pt.py`), `gate_opened_at` and `gate_card_url`, plus a top-level
+`tracker_url`, `stuck`, `terminal`, `gate_detail` (raw, shown behind a "detalhe" toggle), `gate_text` (the Portuguese sentence from `fractory/pt.py`), `gate_opened_at`, `gate_card_url`, `stage_age_min` (minutes in the current stage), `conflicts` (conflict_sent events), `merged_at` and `lead_min` (creation to merge; null until merged), plus a top-level
 `wip {open, max}` (`max` is `max_parallel_jobs`, default 3). Read-only, one self-contained HTML file, no
-build step. `GET /api/jobs/<id>` and `GET /api/activity?limit=50` (clamped to 1..200) still exist for the
-next board parts.
+build step. `GET /api/activity?limit=50` (clamped to 1..200) still exists for a later board part.
 
 Factory health and the intake queue come from two snapshots the watch leaves in `$FACTORY_HOME`, so the
 board never calls Plane: `heartbeat.json` (written atomically at the end of every watch cycle: cycle start,
@@ -198,7 +205,7 @@ end and duration, cycle count, pid, start time, code sha, error counts, Plane ra
 error lines) and `queue.json` (written by every intake run: per project, each labelled card with its
 decision: `launched`, `waits_for` (unmet dependencies), `max_parallel`, `parked`, `has_job` or
 `launch_failed` with the error). `GET /api/health` serves the heartbeat plus `alive` (the last cycle ended
-less than 3× `--every` ago) and `GET /api/queue` serves the queue; both answer 200 `{"missing": true}` until
+less than 3× `--every` ago) and `GET /api/queue` serves the queue with a Portuguese `decision_text` on each card (cards already `has_job` are dropped); both answer 200 `{"missing": true}` until
 the file exists.
 
 `GET /api/metrics?window=7|30` (default 7) computes, from the job histories (`fractory/metrics.py`): time per

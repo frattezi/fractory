@@ -87,3 +87,21 @@ def stuck_reason(kind: str, stage: str, span: str, gate: str | None = None, has_
     if stage == "checks":
         return f"CI rodando há {span}"
     return f"em {STAGE.get(stage, stage)} há {span}"
+
+
+def queue_text(entry: dict, max_parallel: int) -> str:
+    """Why a Plane card has not started, in Portuguese; `entry` is one card of queue.json (see intake._queue_entries)."""
+    decision = entry.get("decision")
+    if decision == "launched":
+        return "vai começar"
+    if decision == "waits_for":
+        return "espera " + ", ".join(entry.get("waits_for") or ["outro card"])
+    if decision == "max_parallel":
+        return f"limite de {max_parallel} jobs"
+    if decision == "parked":
+        return "em Backlog"
+    if decision == "launch_failed":
+        return f"falhou ao iniciar: {entry.get('error') or 'erro desconhecido'}"
+    if decision == "has_job":
+        return "já tem job"
+    return f"decisão desconhecida ({decision})"
