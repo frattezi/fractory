@@ -97,7 +97,7 @@ job for the Plane issue X"*; these are the commands it runs):
 | Step | Command | Who |
 | --- | --- | --- |
 | 1. Pick the work | an issue in Plane, or `fractory plane add-item --project <id> --title …` | you |
-| 2–4. Job, worktree, worker | `fractory launch --repo . --issue <plane issue> --project <id> --brief FILE` (title from the issue; run id from `orca_run` in `config.toml` or `--run`; `--dry-run` shows the steps; once the worker runs, it adds the owner to the card (keeping other assignees) and sets the start date if empty; first checks the brief against the card and stops if it goes beyond it, unless `--force`) | main |
+| 2–4. Job, worktree, worker | `fractory launch --repo . --issue <plane issue> --project <id> --brief FILE` (title from the issue; run id from `orca_run` in `config.toml` or `--run`; `--dry-run` shows the steps; right after the worktree is created and before the worker starts it installs a push guard in that worktree only (`guard.py`, step 4b; `watch` relaunches and profile escalations install it again): a `pre-push` hook that refuses pushes to `refs/heads/main` and `refs/heads/master`, so a worker must push its branch and open a PR; the repo's own hooks still run, and the main checkout's config is never changed; once the worker runs, it adds the owner to the card (keeping other assignees) and sets the start date if empty; first checks the brief against the card and stops if it goes beyond it, unless `--force`) | main |
 | 1b. Let the factory take it | label the card `fractory` (who) and move it to Todo (when); `fractory intake` launches only Todo cards, Backlog ones are parked | you / intake |
 | 5. Open the PR and link it | `gh pr create`, then `fractory job link <id> --worktree … --pr <n>` and `fractory job advance <id> built` | worker / main |
 | 6. Checks | nothing: `fractory watch` sees CI; red goes back to build, green moves on to review | watch |
@@ -128,6 +128,8 @@ fractory dash                # JSON for the dashboard
 
 State lives outside every repo, in `$FACTORY_HOME/jobs/<id>/` (default `~/.factory`):
 `state.json`, plus `holdout/` for acceptance scenarios the build never sees.
+
+The factory also writes `$FACTORY_HOME/hooks/`: the shared hook scripts that the push guard points each worker worktree at (via `git config --worktree core.hooksPath`). Each one runs the repo's own hook of the same name; `pre-push` first refuses `main`/`master`. They are rewritten on every launch.
 
 ```
 discovery --scoped--> spec --planned--> build --built--> checks --green--> review --reviewed--> judge
