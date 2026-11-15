@@ -14,7 +14,23 @@ from pathlib import Path
 
 from . import store
 
-HOOKS = ["applypatch-msg", "pre-applypatch", "post-applypatch", "pre-commit", "pre-merge-commit", "prepare-commit-msg", "commit-msg", "post-commit", "pre-rebase", "post-checkout", "post-merge", "pre-push", "pre-auto-gc", "post-rewrite", "post-index-change"]
+HOOKS = [
+    "applypatch-msg",
+    "pre-applypatch",
+    "post-applypatch",
+    "pre-commit",
+    "pre-merge-commit",
+    "prepare-commit-msg",
+    "commit-msg",
+    "post-commit",
+    "pre-rebase",
+    "post-checkout",
+    "post-merge",
+    "pre-push",
+    "pre-auto-gc",
+    "post-rewrite",
+    "post-index-change",
+]
 CHAIN_KEY = "fractory.chainHooksPath"
 
 SCRIPT = """#!/bin/sh
