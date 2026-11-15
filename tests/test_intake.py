@@ -14,7 +14,7 @@ from http.server import ThreadingHTTPServer
 from pathlib import Path
 from unittest import mock
 
-from fractory import briefcheck, cli, intake, launch, state, store
+from fractory import briefcheck, cli, guard, intake, launch, state, store
 from fractory.trackers import plane as plane_mod
 from tests.test_plane_import import KEY, PROJECT, FakePlane, reset_fake
 
@@ -101,6 +101,9 @@ class DependsOn(unittest.TestCase):
 class IntakeCli(unittest.TestCase):
     def setUp(self) -> None:
         reset_fake()
+        patch_guard = mock.patch.object(guard, "install")
+        patch_guard.start()
+        self.addCleanup(patch_guard.stop)
         FakePlane.labels = [{"id": "other", "name": "bug"}, {"id": LABEL, "name": "fractory"}]
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), FakePlane)
         threading.Thread(target=self.server.serve_forever, daemon=True).start()

@@ -11,7 +11,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from fractory import briefcheck, cli, launch
+from fractory import briefcheck, cli, guard, launch
 
 
 class FakePlane:
@@ -29,6 +29,9 @@ class LaunchCli(unittest.TestCase):
     def setUp(self) -> None:
         self.tmp = Path(tempfile.mkdtemp())
         self.repo = self.tmp / "cortadas"
+        patch_guard = mock.patch.object(guard, "install")
+        patch_guard.start()
+        self.addCleanup(patch_guard.stop)
         self.repo.mkdir()
         self.brief = self.tmp / "brief.md"
         self.brief.write_text("# do the thing\n")

@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import ClassVar
 from unittest import mock
 
-from fractory import cli, judge, launch, rework, state, sync
+from fractory import cli, guard, judge, launch, rework, state, sync
 from tests.test_judge import verdict_json
 from tests.test_plane_import import KEY, PROJECT, FakePlane, reset_fake
 
@@ -50,6 +50,9 @@ class ReworkMessage(unittest.TestCase):
 class ReworkBase(unittest.TestCase):
     def setUp(self) -> None:
         reset_fake()
+        patch_guard = mock.patch.object(guard, "install")
+        patch_guard.start()
+        self.addCleanup(patch_guard.stop)
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), FakePlane)
         threading.Thread(target=self.server.serve_forever, daemon=True).start()
         self.addCleanup(self.server.server_close)
@@ -348,7 +351,7 @@ class RelaunchDeadWorker(ReworkBase):
         self.run_cli("job", "link", JOB, "--profile", "strong")
         path = self.tmp / "factory" / "jobs" / JOB / "state.json"
         data = json.loads(path.read_text())
-        data["links"]["worktree_id"] = "wt_1"
+        data["links"]["worktree_id"] = "repo::/wt/1"
         path.write_text(json.dumps(data))
         (self.tmp / "factory" / "jobs" / JOB / "brief.md").write_text("# the brief\n")
 
@@ -361,7 +364,7 @@ class RelaunchDeadWorker(ReworkBase):
         self.watch_once()
         self.watch_once()
         (cmd,) = self.launches()
-        self.assertEqual(cmd[cmd.index("--worktree") + 1], "id:wt_1")
+        self.assertEqual(cmd[cmd.index("--worktree") + 1], "id:repo::/wt/1")
         self.assertEqual(cmd[cmd.index("--profile") + 1], "strong")
         self.assertIn("# the brief", self.specs[0])
         self.assertIn("resumed after the previous terminal died", self.specs[0])

@@ -16,7 +16,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import briefcheck, state, store
+from . import briefcheck, guard, state, store
 
 Runner = Callable[[list[str]], tuple[int, str]]
 NAME_MAX = 30
@@ -196,6 +196,15 @@ def launch(a: Args, plane, orch: Path) -> int:
                 raise LaunchError(f"exit {code}: {out.strip()[:300]}")
             wt = worktree_id(out)
         done.append(f"4 worktree {wt}")
+
+        step = "4b push guard"
+        print(f"4b. push guard in {wt}")
+        if not a.dry_run:
+            try:
+                guard.install(guard.worktree_path(wt))
+            except guard.GuardError as err:
+                raise LaunchError(str(err)) from err
+        done.append("4b push guard")
 
         step = "5 launch worker"
         task_title = f"{job_id} {title}"
