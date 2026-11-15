@@ -164,7 +164,10 @@ RECONCILE_GROUP = {"done": "completed", "cancelled": "cancelled"}
 
 
 def reconcile_trackers(jobs: list[state.Job]) -> bool:
-    """Move the card of every done/cancelled job that is not in a matching state. Returns True on any error."""
+    """Move the card of every done/cancelled job that is not in a matching state. Returns True on any error.
+
+    Call it inside a Plane cycle (`plane_mod.begin_cycle`): outside one, each job refetches the project's issues.
+    """
     failed = False
     for job in jobs:
         group = RECONCILE_GROUP.get(job.stage)
@@ -581,7 +584,6 @@ def cmd_sync(a: argparse.Namespace) -> int:
         except (OSError, ValueError, RuntimeError, subprocess.CalledProcessError) as err:  # keep syncing the rest
             failed = True
             print(f"{job.id}  sync error: {err}")
-    failed |= reconcile_trackers(store.all_jobs())
     return 1 if failed else 0
 
 
@@ -632,6 +634,10 @@ def _watch_loop(a: argparse.Namespace, beat: health.Heartbeat | None = None) -> 
             started = time.monotonic()
             plane_mod.begin_cycle()
             cmd_sync(a)
+            try:
+                reconcile_trackers(store.all_jobs())  # only inside a cycle: the issue listing is cached per cycle
+            except (OSError, ValueError, RuntimeError) as err:  # never stop the watch loop
+                print(f"reconcile error: {err}")
             try:
                 cleanup.run_cleanup(store.all_jobs())
             except (OSError, ValueError, RuntimeError) as err:  # never stop the watch loop

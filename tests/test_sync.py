@@ -167,18 +167,20 @@ class SyncCli(unittest.TestCase):
         before = len(FakePlane.patches)
         plane_mod.begin_cycle()
         self.addCleanup(plane_mod.end_cycle)
-        _, out = self.run_cli("sync")
+        _, out = self.run_cli("watch", "--rounds", "1", "--no-reload")
         self.assertIn("cortadas-0001  reconciled: card moved to done", out)
         self.assertEqual(FakePlane.issues[0]["state"], "s-done")
         self.assertEqual(len(FakePlane.patches), before + 1)
-        _, out = self.run_cli("sync")
-        self.assertEqual(out, "")
+        self.assertEqual(self.run_cli("sync")[1], "")  # a manual sync does not reconcile
+        self.assertEqual(len(FakePlane.patches), before + 1)
+        _, out = self.run_cli("watch", "--rounds", "1", "--no-reload")
+        self.assertNotIn("reconciled", out)
         self.assertEqual(len(FakePlane.patches), before + 1)
 
     def test_reconcile_moves_a_cancelled_job_to_cancelled(self) -> None:
         FakePlane.issues.append({"id": "issue-1", "external_id": "", "external_source": "", "state": "s-doing"})
         self.finish_outside_sync("cancel")
-        _, out = self.run_cli("sync")
+        _, out = self.run_cli("watch", "--rounds", "1", "--no-reload")
         self.assertIn("card moved to cancelled", out)
         self.assertEqual(FakePlane.issues[0]["state"], "s-cancel")
 
