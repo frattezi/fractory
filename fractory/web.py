@@ -1,11 +1,11 @@
 """`fractory serve`: the factory board in a browser. Read-only, stdlib only.
 
 GET /            the page (fractory/web/index.html)
-GET /api/jobs    dash_data() plus tracker_url, pr_url, stuck, terminal, gate_text (Portuguese) and gate fields per job, and wip {open, max}
+GET /api/jobs    dash_data() plus tracker_url, pr_url, stuck, terminal, gate_text (Portuguese), gate fields, stage_age_min, conflicts, merged_at and lead_min per job, and wip {open, max}
 GET /api/jobs/<id>  one job: Job.to_dict() plus pr_url, tracker_url and the judge verdicts (404 if unknown)
 GET /api/activity?limit=50  latest events across all jobs (newest first) plus the tail of $FACTORY_HOME/watch.log
 GET /api/metrics?window=7|30  stage time, stuck work, flow, quality and cost (fractory/metrics.py)
-GET /api/health  the watch heartbeat plus `alive`; GET /api/queue  the intake snapshot ({"missing": true} before the first)
+GET /api/health  the watch heartbeat plus `alive`; GET /api/queue  the intake snapshot with decision_text (Portuguese) per card, without cards that have a job ({"missing": true} before the first)
 GET /api/events  Server-Sent Events: `event: jobs` whenever a state.json changes, `: ping` every 15 s
 """
 
@@ -77,10 +77,26 @@ def jobs_payload() -> dict:
         item["gate_text"] = pt.gate_text(job.gate.reason, job.gate.detail) if job.gate else None
         item["gate_opened_at"] = job.gate.opened_at if job.gate else None
         item["gate_card_url"] = (job.gate.card_url or None) if job.gate else None
+        item["stage_age_min"] = round(metrics.stage_age_minutes(job, now), 1)
+        item["conflicts"] = sum(e["event"] == "conflict_sent" for e in job.history)
+        done = metrics.merged_at(job)
+        item["merged_at"] = done.isoformat() if done else None
+        item["lead_min"] = round((done - metrics.parse(job.created_at)).total_seconds() / 60, 1) if done else None
     data["wip"] = {
         "open": intake.open_jobs(list(by_id.values())),
         "max": int(store.config().get("max_parallel_jobs") or intake.DEFAULT_MAX_PARALLEL),
     }
+    return data
+
+
+def queue_payload() -> dict:
+    """queue.json plus `decision_text` (Portuguese) on every card; cards that already have a job are left out."""
+    data = health.read_json("queue.json")
+    limit = int(store.config().get("max_parallel_jobs") or intake.DEFAULT_MAX_PARALLEL)
+    for project in (data.get("projects") or {}).values():
+        project["cards"] = [
+            {**c, "decision_text": pt.queue_text(c, limit)} for c in project.get("cards", []) if c.get("decision") != "has_job"
+        ]
     return data
 
 
@@ -198,7 +214,7 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/api/health":
             self._json(health.with_alive(health.read_json("heartbeat.json")))
         elif path == "/api/queue":
-            self._json(health.read_json("queue.json"))
+            self._json(queue_payload())
         elif path == "/api/events":
             self._events()
         else:

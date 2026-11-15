@@ -82,11 +82,11 @@ class Routes(ServerCase):
 
     def test_index_has_the_sections_and_calls_the_endpoints(self) -> None:
         page = self.get("/")[2].decode()
-        for section in ('id="strip"', "Precisa de você", "Parado"):
+        for section in ('id="strip"', "Precisa de você", "Parado", "Em andamento", "Fila", "Concluídos", 'id="drawer"'):
             self.assertIn(section, page)
-        for endpoint in ("/api/health", "/api/metrics"):
+        for endpoint in ("/api/health", "/api/metrics", "/api/queue", "/api/jobs/"):
             self.assertIn(endpoint, page)
-            self.assertEqual(self.get(endpoint)[0], 200)
+            self.assertEqual(self.get(endpoint.rstrip("/") + ("/app-0001" if endpoint.endswith("/") else ""))[0], 200)
         self.assertIn("/api/events", page)  # SSE: served by Events.test_event_follows_state_change
         self.assertIn("prefers-color-scheme: dark", page)
         self.assertNotIn("http://", page.replace("http://www.w3.org", ""))  # no CDN, no external assets
@@ -121,6 +121,25 @@ class Routes(ServerCase):
         self.assertEqual(item["terminal"], "term_9")
         self.assertTrue(item["gate_opened_at"])
         self.assertEqual(data["wip"], {"open": 1, "max": 3})
+
+    def test_jobs_api_has_flow_fields(self) -> None:
+        now = datetime.now(UTC)
+        job = store.load("app-0001")
+        job.gate = None
+        job.history.append({"at": state.now_iso(), "event": "conflict_sent", "stage": job.stage})
+        self.save(job)
+        merged = state.new_job("app-0003", "/work/app", "Done", "internal", 50.0, "ship")
+        merged.created_at = merged.history[0]["at"] = (now - timedelta(hours=2)).isoformat()
+        merged, _ = state.apply_event(merged, "merged")
+        self.save(merged)
+        items = {i["id"]: i for i in json.loads(self.get("/api/jobs")[2])["jobs"]}
+        self.assertEqual(items["app-0001"]["conflicts"], 1)
+        self.assertIsNone(items["app-0001"]["merged_at"])
+        self.assertGreaterEqual(items["app-0001"]["stage_age_min"], 0)
+        self.assertTrue(items["app-0003"]["merged_at"])
+        self.assertAlmostEqual(items["app-0003"]["lead_min"], 120, delta=1)
+        stage_min = json.loads(self.get("/api/metrics")[2])["stage_minutes"]
+        self.assertIn("ship", stage_min["app-0003"])
 
     def test_jobs_api(self) -> None:
         status, _, body = self.get("/api/jobs")
@@ -265,6 +284,24 @@ class Health(ServerCase):
     def test_queue_is_served_as_written(self) -> None:
         health.write_json("queue.json", {"at": "t", "projects": {"P": {"cards": []}}})
         self.assertEqual(json.loads(self.get("/api/queue")[2]), {"at": "t", "projects": {"P": {"cards": []}}})
+
+    def test_queue_cards_get_portuguese_decisions_and_drop_jobs_already_started(self) -> None:
+        self.home.mkdir(parents=True, exist_ok=True)
+        (self.home / "config.toml").write_text("max_parallel_jobs = 5\n")
+        cards = [
+            {"key": "MC-1", "decision": "launched"},
+            {"key": "MC-2", "decision": "waits_for", "waits_for": ["MC02"]},
+            {"key": "MC-3", "decision": "max_parallel"},
+            {"key": "MC-4", "decision": "parked"},
+            {"key": "MC-5", "decision": "launch_failed", "error": "exit 2"},
+            {"key": "MC-6", "decision": "has_job"},
+        ]
+        health.write_json("queue.json", {"at": "t", "projects": {"P": {"identifier": "MC", "cards": cards}}})
+        out = json.loads(self.get("/api/queue")[2])["projects"]["P"]["cards"]
+        self.assertEqual(
+            [c["decision_text"] for c in out],
+            ["vai começar", "espera MC02", "limite de 5 jobs", "em Backlog", "falhou ao iniciar: exit 2"],
+        )
 
 
 class Events(ServerCase):
