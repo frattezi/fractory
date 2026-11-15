@@ -140,8 +140,49 @@ def cmd_job_status(a: argparse.Namespace) -> int:
     return 0
 
 
+def mirror_stage(before: str, job: state.Job) -> None:
+    """The one path from "stage changed" to the tracker: sync and `job advance` both end here."""
+    if sync.STAGE_STATUS[job.stage] == sync.STAGE_STATUS[before]:
+        return
+    tracker = plane_tracker(job)
+    if tracker:
+        tracker.set_status(job.tracker["ref"], sync.STAGE_STATUS[job.stage])
+        print(f"  tracker: {sync.STAGE_STATUS[job.stage]}")
+
+
 def cmd_job_advance(a: argparse.Namespace) -> int:
-    return _mutate(a.id, lambda j: state.apply_event(j, a.event, a.check, a.note or ""))
+    before = store.load(a.id).stage
+    code = _mutate(a.id, lambda j: state.apply_event(j, a.event, a.check, a.note or ""))
+    try:
+        mirror_stage(before, store.load(a.id))
+    except (OSError, ValueError, RuntimeError) as err:  # the stage is saved; the next watch cycle reconciles
+        print(f"  tracker error: {err}")
+    return code
+
+
+RECONCILE_GROUP = {"done": "completed", "cancelled": "cancelled"}
+
+
+def reconcile_trackers(jobs: list[state.Job]) -> bool:
+    """Move the card of every done/cancelled job that is not in a matching state. Returns True on any error.
+
+    Call it inside a Plane cycle (`plane_mod.begin_cycle`): outside one, each job refetches the project's issues.
+    """
+    failed = False
+    for job in jobs:
+        group = RECONCILE_GROUP.get(job.stage)
+        tracker = plane_tracker(job) if group else None
+        if not tracker:
+            continue
+        try:
+            ref = job.tracker["ref"]
+            if tracker.issue_groups().get(ref, group) != group:
+                tracker.set_status(ref, sync.STAGE_STATUS[job.stage])
+                print(f"{job.id}  reconciled: card moved to {sync.STAGE_STATUS[job.stage]}")
+        except (OSError, ValueError, RuntimeError) as err:
+            failed = True
+            print(f"{job.id}  reconcile error: {err}")
+    return failed
 
 
 def cmd_job_link(a: argparse.Namespace) -> int:
@@ -539,11 +580,7 @@ def cmd_sync(a: argparse.Namespace) -> int:
             _report(updated, actions)
             if event == "red":
                 rework.notify(updated.id, "red", check or "", ORCH)
-            if sync.STAGE_STATUS[updated.stage] != sync.STAGE_STATUS[current.stage]:
-                tracker = plane_tracker(updated)
-                if tracker:
-                    tracker.set_status(updated.tracker["ref"], sync.STAGE_STATUS[updated.stage])
-                    print(f"  tracker: {sync.STAGE_STATUS[updated.stage]}")
+            mirror_stage(current.stage, updated)
         except (OSError, ValueError, RuntimeError, subprocess.CalledProcessError) as err:  # keep syncing the rest
             failed = True
             print(f"{job.id}  sync error: {err}")
@@ -597,6 +634,10 @@ def _watch_loop(a: argparse.Namespace, beat: health.Heartbeat | None = None) -> 
             started = time.monotonic()
             plane_mod.begin_cycle()
             cmd_sync(a)
+            try:
+                reconcile_trackers(store.all_jobs())  # only inside a cycle: the issue listing is cached per cycle
+            except (OSError, ValueError, RuntimeError) as err:  # never stop the watch loop
+                print(f"reconcile error: {err}")
             try:
                 cleanup.run_cleanup(store.all_jobs())
             except (OSError, ValueError, RuntimeError) as err:  # never stop the watch loop

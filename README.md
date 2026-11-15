@@ -145,7 +145,7 @@ judge --approved--> ship --merged (internal) | draft_pr (Able)--> done          
 
 ```sh
 fractory job new --repo ~/Factory/Esquerdalha/cortadas --title "Chat no Plane"
-fractory job advance cortadas-0001 scoped
+fractory job advance cortadas-0001 scoped   # a stage change also moves the Plane card, like sync does
 fractory job link cortadas-0001 --worktree spec-x --terminal term_… --profile backend
 fractory job advance cortadas-0001 red --check lint
 fractory job cost cortadas-0001 3.20
@@ -153,7 +153,7 @@ fractory gate list
 fractory gate resolve cortadas-0001 continue --note "spec ajustada"
 fractory judge cortadas-0001        # verdict on the PR diff vs the Plane issue; moves the job, comments on PR and issue
 fractory sync                       # advance jobs from their PR and CI, mirror to Plane
-fractory watch                      # sync every 60 s until stopped (--every S, --rounds N)
+fractory watch                      # sync every 60 s until stopped (--every S, --rounds N); each cycle also moves the Plane card of every done job to Done (cancelled → Cancelled) when it is not there yet, one line per fix, from one cached issue listing per project
 fractory watch --install            # the same, as a LaunchAgent that survives reboots
 fractory cleanup [--job ID] [--dry-run]  # close a finished job's terminals, worktree and branch in Orca (also retries kept ones)
                                     # watch and serve exit when main moves, launchd restarts them (watch: --no-reload)
