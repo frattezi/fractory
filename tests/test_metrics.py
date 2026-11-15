@@ -121,6 +121,26 @@ class Flow(unittest.TestCase):
         self.assertEqual(f30["lead_time"]["by_repo"]["/r/b"]["median_min"], 30)
         self.assertEqual(f30["lead_time"]["overall"]["count"], 4)
 
+    def test_merged_per_day_and_stage_summary(self) -> None:
+        jobs = [
+            self.merged("a-1", "/r/a", 60, timedelta(hours=1)),
+            self.merged("a-2", "/r/a", 60, timedelta(hours=2)),
+            self.merged("b-1", "/r/b", 60, timedelta(days=2)),
+            self.merged("b-2", "/r/b", 60, timedelta(days=20)),
+        ]
+        days = metrics.flow(jobs, NOW, 7)["merged_per_day"]
+        self.assertEqual(len(days), 7)
+        self.assertEqual(days[-1], {"date": "2026-11-14", "total": 2, "by_repo": {"/r/a": 2}})
+        self.assertEqual(days[-3]["by_repo"], {"/r/b": 1})
+        self.assertEqual(sum(d["total"] for d in metrics.flow(jobs, NOW, 30)["merged_per_day"]), 4)
+        j = job(
+            stage="checks",
+            history=[e(ago(minutes=100), "created", "build"), e(ago(minutes=40), "built", "checks")],
+        )
+        got = metrics.compute([j], NOW, 7)["stage_summary"]
+        self.assertEqual(got["build"], {"count": 1, "median_min": 60.0})
+        self.assertEqual(got["checks"]["median_min"], 40.0)
+
     def test_empty(self) -> None:
         f = metrics.flow([], NOW, 7)
         self.assertEqual(f["lead_time"]["overall"], {"count": 0, "median_min": None, "p90_min": None})
