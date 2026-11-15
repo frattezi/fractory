@@ -80,6 +80,48 @@ class Routes(ServerCase):
         self.assertIn("text/html", ctype)
         self.assertIn(b"EventSource", body)
 
+    def test_index_has_the_sections_and_calls_the_endpoints(self) -> None:
+        page = self.get("/")[2].decode()
+        for section in ('id="strip"', "Precisa de você", "Parado"):
+            self.assertIn(section, page)
+        for endpoint in ("/api/health", "/api/metrics"):
+            self.assertIn(endpoint, page)
+            self.assertEqual(self.get(endpoint)[0], 200)
+        self.assertIn("/api/events", page)  # SSE: served by Events.test_event_follows_state_change
+        self.assertIn("prefers-color-scheme: dark", page)
+        self.assertNotIn("http://", page.replace("http://www.w3.org", ""))  # no CDN, no external assets
+
+    def test_jobs_api_gate_is_in_portuguese(self) -> None:
+        job = store.load("app-0001")
+        job.gate = state.Gate("merge_review", "high: sensitive path db/migrations/1.sql (matches 'migrat')")
+        self.save(job)
+        [item] = json.loads(self.get("/api/jobs")[2])["jobs"]
+        self.assertEqual(item["gate_text"], "Revisar merge: mexe em migração")
+        self.assertIn("sensitive path", item["gate_detail"])  # raw detail kept, shown behind <details>
+        self.assertIn("rawDetail(j.gate_detail)", self.get("/")[2].decode())
+
+    def test_parado_items_carry_portuguese_reason(self) -> None:
+        old = state.new_job("app-0002", "/work/app", "Old", "internal", 50.0, "build")
+        old.history[0]["at"] = (datetime.now(UTC) - timedelta(hours=3)).isoformat()
+        self.save(old)
+        items = {i["job"]: i for i in json.loads(self.get("/api/metrics")[2])["stuck"]}
+        self.assertEqual(items["app-0002"]["title"], "Old")
+        self.assertEqual(items["app-0002"]["kind"], "stage")
+        self.assertEqual(items["app-0002"]["reason_pt"], "em construção há 3h sem PR")
+        self.assertEqual(items["app-0002"]["reason"], "build for 3h with no PR")
+        self.assertEqual(items["app-0001"]["kind"], "gate")
+        self.assertIn("reason_pt", self.get("/")[2].decode())
+
+    def test_jobs_api_has_what_the_board_needs(self) -> None:
+        job = store.load("app-0001")
+        job.links = {"pr": "7", "terminal": "term_9"}
+        self.save(job)
+        data = json.loads(self.get("/api/jobs")[2])
+        [item] = data["jobs"]
+        self.assertEqual(item["terminal"], "term_9")
+        self.assertTrue(item["gate_opened_at"])
+        self.assertEqual(data["wip"], {"open": 1, "max": 3})
+
     def test_jobs_api(self) -> None:
         status, _, body = self.get("/api/jobs")
         data = json.loads(body)
