@@ -318,7 +318,10 @@ Until then the card waits; a ref that matches no card keeps it waiting and print
 
 Intake picks the worker profile (`~/.agents/workers.toml`) per card, first match wins:
 
-1. a `Worker: <profile>` line in the card text (bold allowed), e.g. `Worker: backend`;
+1. a `Worker: <profile>` line in the card text (bold allowed), e.g. `Worker: backend`. If `orch.py quota` shows
+   the profile's provider signed out (`off`), over quota (`FULL`) or without data, intake falls back to
+   `orch.py route --escalate-from <profile>` (or `strong`), logs the reason and comments it once on the card.
+   A failing quota command keeps the line as written;
 2. config: `[intake.profiles]` maps a repo path to a profile, `[intake] default_profile` is the global one;
 3. `orch.py route --spec <brief> --repo <repo>`, with the card's labels (other than `fractory`, `humano`, `design`)
    and a `Tags: a, b` line as tags. It never uses `--ignore-quota`, so a provider that is signed out or over

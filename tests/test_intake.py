@@ -388,6 +388,18 @@ class ProfileChoice(IntakeCli):
         )
         self.assertEqual(len(FakePlane.comments), 1)
 
+    def test_over_quota_worker_profile_falls_back(self) -> None:
+        self.quota_reply = "FULL claude  session 95%  [profiles: ui,strong]\n"
+        FakePlane.issues = [card(1, html="<p>Do it</p><p>Worker: ui</p>")]
+        self.run_cli("intake")
+        self.assertEqual(self.launched_profile(), "strong")
+        self.assertIn("Worker: ui unavailable: claude FULL", self.chosen_event()["why"])
+
+    def test_worker_profile_without_quota_data_falls_back(self) -> None:
+        FakePlane.issues = [card(1, html="<p>Do it</p><p>Worker: mystery</p>")]
+        self.run_cli("intake")
+        self.assertIn("Worker: mystery unavailable: no quota data", self.chosen_event()["why"])
+
     def test_unavailable_worker_profile_with_empty_escalation_uses_strong(self) -> None:
         self.quota_reply += self.OFF
         self.escalate_reply = (1, "")

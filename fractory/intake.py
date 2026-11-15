@@ -121,7 +121,7 @@ NON_TAG_LABELS = {"fractory", "humano", "design"}
 _WORKER_RE = re.compile(r"^\s*worker\s*:\s*([\w.-]+)\s*$", re.IGNORECASE)
 _TAGS_RE = re.compile(r"^\s*tags\s*:\s*(.*)$", re.IGNORECASE)
 _ROUTED_RE = re.compile(r"^profile (\S+?):")
-_QUOTA_RE = re.compile(r"^(ok|off)\s+(\S+)\s.*\[profiles:\s*([^\]]*)\]\s*$")
+_QUOTA_RE = re.compile(r"^(ok|off|FULL)\s+(\S+)\s.*\[profiles:\s*([^\]]*)\]\s*$")
 FALLBACK_MARK = "unavailable:"
 
 
@@ -152,19 +152,24 @@ def _run_orch(argv: list[str]) -> tuple[int, str]:
 
 
 def unavailable_reason(profile: str, orch: Path, repo: Path, runner) -> str | None:
-    """`<provider> off` when `orch.py quota` lists the profile under a provider that is off, else None.
-    A failing quota command (or an unlisted profile) counts as available: the card's choice stands."""
+    """Why `orch.py quota` gives the profile no room, else None: `<provider> off` (signed out), `<provider> FULL`
+    (over the limit) or `no quota data` (its provider is not listed: route does not assume room there either).
+    A failing or unparsable quota command counts as available: the card's choice stands."""
     try:
         code, out = runner([sys.executable, str(orch), "quota", "--repo", str(repo)])
     except OSError:
         return None
     if code != 0:
         return None
+    parsed = False
     for line in out.splitlines():
         m = _QUOTA_RE.match(line.strip())
-        if m and m.group(1) == "off" and profile in [p.strip() for p in m.group(3).split(",")]:
-            return f"{m.group(2)} off"
-    return None
+        if not m:
+            continue
+        parsed = True
+        if profile in [p.strip() for p in m.group(3).split(",")]:
+            return None if m.group(1) == "ok" else f"{m.group(2)} {m.group(1)}"
+    return "no quota data" if parsed else None
 
 
 def _escalated(profile: str, orch: Path, repo: Path, runner) -> str:
