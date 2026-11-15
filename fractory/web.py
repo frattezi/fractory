@@ -95,7 +95,9 @@ def queue_payload() -> dict:
     limit = int(store.config().get("max_parallel_jobs") or intake.DEFAULT_MAX_PARALLEL)
     for project in (data.get("projects") or {}).values():
         project["cards"] = [
-            {**c, "decision_text": pt.queue_text(c, limit)} for c in project.get("cards", []) if c.get("decision") != "has_job"
+            {**c, "decision_text": pt.queue_text(c, limit)}
+            for c in project.get("cards", [])
+            if c.get("decision") != "has_job"
         ]
     return data
 
