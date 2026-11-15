@@ -127,9 +127,8 @@ class Escalation(CliCase):
         code, _ = self.run_cli("gate", "resolve", "cortadas-0001", "continue", "--note", "spec ajustada")
         self.assertEqual(code, 0)
         st = self.state("cortadas-0001")
-        self.assertIsNone(st["gate"])
+        self.assertEqual(st["gate"]["reason"], "rework_needed")  # no terminal to send the rework to
         self.assertEqual(st["judge_rounds"], 0)
-        self.walk("cortadas-0001", "built")
 
     def test_spend_over_budget_opens_cost_gate_and_continue_extends_it(self) -> None:
         self.run_cli("job", "cost", "cortadas-0001", "30")

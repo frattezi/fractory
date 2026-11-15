@@ -11,7 +11,7 @@ import html
 import json
 import re
 
-from . import risk, state, store, sync
+from . import rework, risk, state, store, sync
 from .trackers.base import Duplicate
 
 LABEL = "humano"
@@ -121,6 +121,8 @@ def resolve_from_card(job_id: str, plane_factory=None) -> bool:
     if decision == "cancel":
         tracker.set_status(job.tracker["ref"], "cancelled")
     print(f"{job_id}  gate {gate.reason} {decision} (card {gate.card_key or gate.card})")
+    if gate.reason == "judge_rounds" and decision == "continue":
+        rework.resume_after_rounds(job_id, cli.ORCH)
     return True
 
 

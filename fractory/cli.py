@@ -180,6 +180,8 @@ def cmd_gate_resolve(a: argparse.Namespace) -> int:
     code = _mutate(a.id, lambda j: (state.resolve_gate(j, a.decision, a.note or ""), []))
     if code == 0 and before.gate:
         gates.close_card(before, before.gate)
+        if before.gate.reason == "judge_rounds" and a.decision == "continue":
+            rework.resume_after_rounds(a.id, ORCH)
     return code
 
 
@@ -547,6 +549,7 @@ def cmd_sync(a: argparse.Namespace) -> int:
         except (OSError, ValueError, RuntimeError, subprocess.CalledProcessError) as err:  # keep syncing the rest
             failed = True
             print(f"{job.id}  sync error: {err}")
+    rework.nudge_stuck_builds(ORCH)
     return 1 if failed else 0
 
 
