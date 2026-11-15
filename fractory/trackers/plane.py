@@ -370,6 +370,7 @@ class Plane:
         if status == "done" and not self.get_item(ref).get("target_date"):
             payload["target_date"] = date.today().isoformat()
         self._call("PATCH", f"/projects/{self.project_id}/issues/{ref}/", payload)
+        _invalidate(("groups", self.base, self.workspace, self.project_id))
 
     def start_item(self, ref: str, assignee: str) -> None:
         """Add `assignee` to the card, keeping the existing ones, and set the start date if empty."""
@@ -429,6 +430,17 @@ class Plane:
         if isinstance(state, dict):
             return str(state.get("group", ""))
         return next((str(s["group"]) for s in self._state_rows() if s["id"] == state), "")
+
+    def issue_groups(self) -> dict[str, str]:
+        """Issue id -> state group for the whole project; one fetch per watch cycle."""
+
+        def fetch() -> dict[str, str]:
+            return {
+                str(i["id"]): str(i["state"].get("group", "")) if isinstance(i.get("state"), dict) else ""
+                for i in self.list_issues()
+            }
+
+        return dict(_cached(("groups", self.base, self.workspace, self.project_id), fetch))
 
     def comment_texts(self, ref: str) -> list[str]:
         _, data = self._call("GET", f"/projects/{self.project_id}/issues/{ref}/comments/")

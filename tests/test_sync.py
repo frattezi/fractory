@@ -146,6 +146,42 @@ class SyncCli(unittest.TestCase):
         self.assertTrue(path.endswith(f"/projects/{PROJECT}/issues/issue-1/"))
         self.assertEqual(body, {"state": "s-done", "target_date": date.today().isoformat()})
 
+    def finish_outside_sync(self, event: str) -> None:
+        """A job that ended while its card stayed In Progress (the tracker mirror failed or was skipped)."""
+        self.new_job(stage="ship")
+        self.run_cli("job", "advance", "cortadas-0001", event)
+        FakePlane.issues[0]["state"] = "s-doing"
+
+    def test_job_advance_merged_moves_the_card(self) -> None:
+        FakePlane.issues.append({"id": "issue-1", "external_id": "", "external_source": "", "state": "s-doing"})
+        self.new_job(stage="judge")
+        self.run_cli("job", "advance", "cortadas-0001", "approved")
+        _, out = self.run_cli("job", "advance", "cortadas-0001", "merged")
+        self.assertEqual(self.stage(), "done")
+        self.assertIn("tracker: done", out)
+        self.assertEqual(FakePlane.issues[0]["state"], "s-done")
+
+    def test_reconcile_fixes_a_done_job_with_a_started_card_and_leaves_synced_ones(self) -> None:
+        FakePlane.issues.append({"id": "issue-1", "external_id": "", "external_source": "", "state": "s-doing"})
+        self.finish_outside_sync("merged")
+        before = len(FakePlane.patches)
+        plane_mod.begin_cycle()
+        self.addCleanup(plane_mod.end_cycle)
+        _, out = self.run_cli("sync")
+        self.assertIn("cortadas-0001  reconciled: card moved to done", out)
+        self.assertEqual(FakePlane.issues[0]["state"], "s-done")
+        self.assertEqual(len(FakePlane.patches), before + 1)
+        _, out = self.run_cli("sync")
+        self.assertEqual(out, "")
+        self.assertEqual(len(FakePlane.patches), before + 1)
+
+    def test_reconcile_moves_a_cancelled_job_to_cancelled(self) -> None:
+        FakePlane.issues.append({"id": "issue-1", "external_id": "", "external_source": "", "state": "s-doing"})
+        self.finish_outside_sync("cancel")
+        _, out = self.run_cli("sync")
+        self.assertIn("card moved to cancelled", out)
+        self.assertEqual(FakePlane.issues[0]["state"], "s-cancel")
+
     def test_gated_job_is_left_alone(self) -> None:
         self.new_job()
         self.run_cli("job", "advance", "cortadas-0001", "built")
