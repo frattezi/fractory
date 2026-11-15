@@ -6,7 +6,7 @@ import re
 import subprocess
 import sys
 import tempfile
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from . import state, store
@@ -39,6 +39,99 @@ def rework_message(job: state.Job, event: str, detail: str) -> str:
     )
 
 
+def start_worker(job: state.Job, profile: str, note: str, orch: Path, runner) -> str | None:
+    """Start a worker of `profile` in the job's existing worktree with the job's brief plus `note`.
+    Returns the new terminal, or None when `orch.py launch` fails."""
+    from . import launch  # late: launch pulls in briefcheck/judge
+
+    brief = store.job_dir(job.id) / "brief.md"
+    with tempfile.TemporaryDirectory() as tmp:
+        spec = Path(tmp) / "rework.md"
+        spec.write_text((brief.read_text() if brief.is_file() else f"# {job.title}\n") + f"\n\n---\n{note}\n")
+        run = launch.run_id(None)
+        coordinator = launch.coordinator_handle(run)
+        cmd = ["env", f"ORCA_TERMINAL_HANDLE={coordinator}"] if coordinator else []
+        cmd += [sys.executable, str(orch), "launch", "--run", run, "--worktree", f"id:{job.links['worktree_id']}"]
+        cmd += ["--title", f"{job.id} {job.title}", "--task-title", f"{job.id} {job.title}"]
+        cmd += ["--spec-file", str(spec), "--profile", profile, "--repo", job.repo, "--trust"]
+        code, out = runner(cmd)
+    return launch.terminal_handle(out) if code == 0 else None
+
+
+RELAUNCH_STAGES = ("build", "checks", "review")
+RELAUNCH_INTERVAL = timedelta(hours=1)
+RESUME_NOTE = (
+    "[fractory] You are resumed after the previous terminal died. Check the PR, CI and any pending rework, "
+    "finish what is open, push, then run: python3 -m fractory job advance {id} built --note '<what you did>'"
+)
+
+
+def terminal_is_gone(terminal: str, runner) -> bool:
+    """True only when `orca terminal list` worked and does not list `terminal`; a failed list proves nothing."""
+    from . import launch
+
+    try:
+        code, out = runner([launch.orca_exe(), "terminal", "list", "--json"])
+    except OSError:
+        return False
+    rows = (launch.json_payload(out).get("result") or {}).get("terminals")
+    if code != 0 or not isinstance(rows, list):
+        return False
+    return terminal not in {str(r.get("handle")) for r in rows if isinstance(r, dict)}
+
+
+def relaunched_recently(job: state.Job, now: datetime | None = None) -> bool:
+    from . import metrics
+
+    now = now or datetime.now(UTC)
+    return any(h["event"] == "relaunched" and now - metrics.parse(h["at"]) < RELAUNCH_INTERVAL for h in job.history)
+
+
+def relaunch(job: state.Job, orch: Path, runner, extra: str = "") -> str | None:
+    """New worker (same profile) in the job's worktree for a job whose terminal is gone. Mutates `job`
+    (history `relaunched`, links.terminal) and returns the terminal; None when it cannot or must not (hourly cap)."""
+    from . import launch
+
+    profile = job.links.get("profile")
+    if not profile or not job.links.get("worktree_id") or relaunched_recently(job):
+        return None
+    note = RESUME_NOTE.format(id=job.id) + (f" Pending: {extra}" if extra else "")
+    try:
+        term = start_worker(job, str(profile), note, orch, runner)
+    except (OSError, launch.LaunchError):
+        return None
+    if not term:
+        return None
+    job.history.append(
+        {
+            "at": state.now_iso(),
+            "event": "relaunched",
+            "stage": job.stage,
+            "from": job.links.get("terminal"),
+            "terminal": term,
+            "profile": profile,
+        }
+    )
+    job.links["terminal"] = term
+    print(f"{job.id}  relaunched: new worker in {term}")
+    return term
+
+
+def relaunch_dead_workers(orch: Path, runner=None) -> None:
+    """Watch step: a job in build/checks/review whose linked terminal is gone from Orca gets a new worker."""
+    runner = runner or run_cmd
+    for found in store.all_jobs():
+        terminal = found.links.get("terminal")
+        if found.stage not in RELAUNCH_STAGES or found.gate or not terminal or relaunched_recently(found):
+            continue
+        if not terminal_is_gone(str(terminal), runner):
+            continue
+        with store.locked(found.id):
+            job = store.load(found.id)
+            if job.stage in RELAUNCH_STAGES and not job.gate and relaunch(job, orch, runner):
+                store.save(job)
+
+
 def escalate_worker(job: state.Job, message: str, orch: Path, runner) -> str | None:
     """After a first Judge rejection on a worker whose profile has `escalate_to`, start a worker of that profile in
     the same worktree (same branch) with the rework message. Returns the new terminal, or None to nudge as usual."""
@@ -52,21 +145,10 @@ def escalate_worker(job: state.Job, message: str, orch: Path, runner) -> str | N
         m = re.match(r"profile (\S+?):", out.strip()) if code == 0 else None
         if not m:
             return None
-        brief = store.job_dir(job.id) / "brief.md"
-        with tempfile.TemporaryDirectory() as tmp:
-            spec = Path(tmp) / "rework.md"
-            spec.write_text((brief.read_text() if brief.is_file() else f"# {job.title}\n") + f"\n\n---\n{message}\n")
-            run = launch.run_id(None)
-            coordinator = launch.coordinator_handle(run)
-            cmd = ["env", f"ORCA_TERMINAL_HANDLE={coordinator}"] if coordinator else []
-            cmd += [sys.executable, str(orch), "launch", "--run", run, "--worktree", f"id:{wt}"]
-            cmd += ["--title", f"{job.id} {job.title}", "--task-title", f"{job.id} {job.title}"]
-            cmd += ["--spec-file", str(spec), "--profile", m.group(1), "--repo", job.repo, "--trust"]
-            code, out = runner(cmd)
-        if code != 0:
-            return None
-        term = launch.terminal_handle(out)
+        term = start_worker(job, m.group(1), message, orch, runner)
     except (OSError, launch.LaunchError):
+        return None
+    if not term:
         return None
     job.history.append(
         {
@@ -104,6 +186,10 @@ def notify(job_id: str, event: str, detail: str, orch: Path, runner=None) -> Non
                 sent = code == 0
             except OSError:
                 sent = False
+        if not sent and terminal and terminal_is_gone(str(terminal), runner):
+            relaunched = relaunch(job, orch, runner, message)  # the new worker's brief carries the rework
+            if relaunched:
+                terminal, sent = relaunched, True
         if sent:
             job.history.append(
                 {"at": state.now_iso(), "event": "rework_sent", "stage": job.stage, "terminal": terminal}

@@ -586,6 +586,7 @@ def cmd_sync(a: argparse.Namespace) -> int:
         except (OSError, ValueError, RuntimeError, subprocess.CalledProcessError) as err:  # keep syncing the rest
             failed = True
             print(f"{job.id}  sync error: {err}")
+    rework.relaunch_dead_workers(ORCH)
     rework.nudge_stuck_builds(ORCH)
     return 1 if failed else 0
 
