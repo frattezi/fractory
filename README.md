@@ -169,7 +169,7 @@ fractory serve [--port 8777]          # binds 127.0.0.1 only
 ```
 
 The board opens on what needs attention now (the per-stage kanban, detail panel and activity feed are gone
-until DB05). Page text is Portuguese. Six parts:
+until DB05). Page text is Portuguese. Seven parts:
 
 - **Health strip:** watch alive or stopped, last cycle (`há 40 s · 12 s`: time since it ended, how long it took),
   WIP `n / max_parallel_jobs`, open gates, stuck jobs, Plane rate-limit backoffs of the last cycle and the code
@@ -186,6 +186,12 @@ until DB05). Page text is Portuguese. Six parts:
 - **Concluídos** (collapsed): the last 20 merged jobs with lead time.
 - **Job drawer:** the Judge verdicts and the full event history (time, event, stage, note) from
   `GET /api/jobs/<id>`, with links to the card, the PR and the worker terminal.
+
+- **Como estamos trabalhando:** a 7 / 30 day toggle over `/api/metrics?window=`: merges per day (inline SVG stacked
+  bars, repos filterable from the legend), lead time median and p90, median time per stage, Judge first-pass rate,
+  mean rework rounds, CI red rate, conflicts, gates opened by reason with median time to resolve, and cost per repo
+  ("sem dados" when zero). Tap or hover a number for a one-line explanation. Charts carry `<title>`/`<desc>` and
+  print their values as text; colours follow light and dark.
 
 The page reads `GET /api/health` (strip), `GET /api/metrics` (`stuck`, each with `reason` and its Portuguese `reason_pt`; `stage_minutes` for the timelines), `GET /api/queue` (Fila), `GET /api/jobs/<id>` (drawer) and `GET /api/jobs`, and follows
 `state.json` changes through Server-Sent Events (`/api/events`). `/api/jobs` carries, per job, `pr_url`,
@@ -204,7 +210,7 @@ the file exists.
 
 `GET /api/metrics?window=7|30` (default 7) computes, from the job histories (`fractory/metrics.py`): time per
 stage and current stage age per job, `stuck` items (each with a one-line reason), flow (lead time median and
-p90 per repo and overall, throughput per day, WIP), quality (Judge first-pass rate, mean rework rounds, CI red
+p90 per repo and overall, throughput per day, `merged_per_day` rows for the chart, WIP), `stage_summary` (median minutes per stage), quality (Judge first-pass rate, mean rework rounds, CI red
 rate, conflicts sent, gates opened by reason with median time to resolve) and cost per repo. Each item of
 `/api/jobs` also carries `stuck` (`null` when the job is moving). A job is stuck when its current stage is
 older than a per-stage limit, or when it has an open gate (any age, "waiting on you"). Limits in minutes,

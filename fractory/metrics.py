@@ -163,7 +163,34 @@ def flow(jobs: list[Job], now: datetime, window_days: int) -> dict:
             "by_repo": {r: round(len(m) / window_days, 3) for r, m in sorted(leads.items())},
         },
         "wip": {"overall": sum(wip.values()), "by_repo": dict(sorted(wip.items()))},
+        "merged_per_day": merged_per_day(jobs, now, window_days),
     }
+
+
+def merged_per_day(jobs: list[Job], now: datetime, window_days: int) -> list[dict]:
+    """One row per UTC day of the window, oldest first: {date, total, by_repo} of jobs merged that day."""
+    today = now.astimezone(UTC).date()
+    days = [today - timedelta(days=n) for n in range(window_days - 1, -1, -1)]
+    rows = {d: defaultdict(int) for d in days}
+    for job in jobs:
+        done = merged_at(job)
+        if done is not None and (day := done.astimezone(UTC).date()) in rows:
+            rows[day][job.repo] += 1
+    return [
+        {"date": d.isoformat(), "total": sum(r.values()), "by_repo": dict(sorted(r.items()))} for d, r in rows.items()
+    ]
+
+
+def stage_summary(jobs: list[Job], now: datetime, window_days: int) -> dict[str, dict]:
+    """Median minutes per stage over jobs with activity in the window: where does work wait?"""
+    cutoff = now - timedelta(days=window_days)
+    per_stage: dict[str, list[float]] = defaultdict(list)
+    for job in jobs:
+        if any(_in_window(e, cutoff) for e in job.history):
+            for stage, minutes in stage_minutes(job, now).items():
+                if minutes > 0:
+                    per_stage[stage].append(minutes)
+    return {s: {"count": len(m), "median_min": median(m)} for s, m in per_stage.items()}
 
 
 # --- quality --------------------------------------------------------------------------------------------------
@@ -252,6 +279,7 @@ def compute(jobs: list[Job], now: datetime, window_days: int, config: dict | Non
         "generated_at": now.replace(microsecond=0).isoformat(),
         "stuck": stuck_items(jobs, now, limits),
         "stage_minutes": {j.id: stage_minutes(j, now) for j in jobs},
+        "stage_summary": stage_summary(jobs, now, window_days),
         "flow": flow(jobs, now, window_days),
         "quality": quality(jobs, now, window_days),
         "cost": cost(jobs, now, window_days),

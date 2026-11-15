@@ -180,10 +180,17 @@ def choose_profile(
             code, out = runner([sys.executable, str(orch), "route", "--spec", str(spec), "--repo", str(repo)])
         except OSError as err:
             return DEFAULT_PROFILE, f"route failed ({err}), fallback"
-    m = _ROUTED_RE.match(out.strip().splitlines()[0]) if code == 0 and out.strip() else None
+    lines = out.strip().splitlines() if code == 0 and out.strip() else []
+    m = None
+    matched_line = None
+    for line in lines:
+        m = _ROUTED_RE.match(line)
+        if m:
+            matched_line = line
+            break
     if not m:
         return DEFAULT_PROFILE, f"route gave nothing (exit {code}), fallback"
-    return m.group(1), "orch.py route: " + out.strip().splitlines()[0]
+    return m.group(1), "orch.py route: " + matched_line
 
 
 def build_brief(issue: dict) -> str:

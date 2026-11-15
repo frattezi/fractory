@@ -82,7 +82,18 @@ class Routes(ServerCase):
 
     def test_index_has_the_sections_and_calls_the_endpoints(self) -> None:
         page = self.get("/")[2].decode()
-        for section in ('id="strip"', "Precisa de você", "Parado", "Em andamento", "Fila", "Concluídos", 'id="drawer"'):
+        for section in (
+            'id="strip"',
+            "Precisa de você",
+            "Parado",
+            "Em andamento",
+            "Fila",
+            "Concluídos",
+            'id="drawer"',
+            "Como estamos trabalhando",
+            'data-window="7"',
+            'data-window="30"',
+        ):
             self.assertIn(section, page)
         for endpoint in ("/api/health", "/api/metrics", "/api/queue", "/api/jobs/"):
             self.assertIn(endpoint, page)
@@ -90,6 +101,29 @@ class Routes(ServerCase):
         self.assertIn("/api/events", page)  # SSE: served by Events.test_event_follows_state_change
         self.assertIn("prefers-color-scheme: dark", page)
         self.assertNotIn("http://", page.replace("http://www.w3.org", ""))  # no CDN, no external assets
+
+    def test_work_section_data_per_window(self) -> None:
+        now = datetime.now(UTC)
+        merged = state.new_job("app-0003", "/work/app", "Done", "internal", 50.0, "ship")
+        merged.created_at = merged.history[0]["at"] = (now - timedelta(days=10)).isoformat()
+        merged, _ = state.apply_event(merged, "merged")
+        self.save(merged)
+        by_window = {w: json.loads(self.get(f"/api/metrics?window={w}")[2]) for w in (7, 30)}
+        for data in by_window.values():
+            self.assertIn("stage_summary", data)
+            self.assertEqual(len(data["flow"]["merged_per_day"]), data["window_days"])
+        self.assertEqual(sum(d["total"] for d in by_window[7]["flow"]["merged_per_day"]), 1)  # merged today
+        page = self.get("/")[2].decode()
+        for needle in (
+            "merged_per_day",
+            "stage_summary",
+            "gates_opened",
+            "judge_first_pass_rate",
+            "sem dados",
+            '<title id="tp-t">',
+            "aria-pressed",
+        ):
+            self.assertIn(needle, page)
 
     def test_jobs_api_gate_is_in_portuguese(self) -> None:
         job = store.load("app-0001")

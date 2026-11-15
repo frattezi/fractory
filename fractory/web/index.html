@@ -6,12 +6,14 @@
 <title>Fractory</title>
 <style>
 :root {
+  --c1: #1f6f78; --c2: #b3541e; --c3: #6b4fa3; --c4: #8a7a00; --c5: #b02e6c; --c6: #3a7d2c;
   --bg: #f4f5f3; --card: #ffffff; --text: #1b2124; --muted: #5d6a6e; --line: #d3d9d7;
   --accent: #1f6f78; --bad: #b3261e; --warn: #8a5300; --ok: #1d7a45;
   --shadow: 0 1px 2px rgba(27, 33, 36, .08);
 }
 @media (prefers-color-scheme: dark) {
   :root {
+    --c1: #4ab3be; --c2: #f0a070; --c3: #b9a3f0; --c4: #d8c860; --c5: #f08ab8; --c6: #7fd070;
     --bg: #1b2124; --card: #2b3539; --text: #e8ecea; --muted: #a0aeb2; --line: #36434a;
     --accent: #4ab3be; --bad: #ff8a7d; --warn: #e3a35f; --ok: #5fd08f; --shadow: none;
   }
@@ -50,10 +52,10 @@ a { color: var(--accent); }
 .empty { color: var(--muted); padding: 8px 2px; }
 
 .stages { display: flex; gap: 2px; margin: 6px 0 2px; }
-.seg { flex: 1 1 0; min-width: 0; background: var(--bg); border: 1px solid var(--line); border-radius: 4px; padding: 3px 5px; font-size: 11px; color: var(--muted); overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
-.seg b { display: block; font-weight: 500; font-variant-numeric: tabular-nums; }
-.seg.now { background: var(--accent); border-color: var(--accent); color: #fff; }
-.seg.idle { opacity: .55; }
+.stg { flex: 1 1 0; min-width: 0; background: var(--bg); border: 1px solid var(--line); border-radius: 4px; padding: 3px 5px; font-size: 11px; color: var(--muted); overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.stg b { display: block; font-weight: 500; font-variant-numeric: tabular-nums; }
+.stg.now { background: var(--accent); border-color: var(--accent); color: #fff; }
+.stg.idle { opacity: .55; }
 .mark { display: inline-block; font-size: 11px; border: 1px solid var(--warn); color: var(--warn); border-radius: 10px; padding: 0 6px; margin-left: 4px; }
 .repo-h { margin: 12px 0 6px; font-size: 13px; font-weight: 650; }
 .job { cursor: pointer; border-left-color: var(--accent); }
@@ -72,6 +74,28 @@ details.done > summary { cursor: pointer; }
 .ev .note { grid-column: 2; color: var(--muted); overflow-wrap: anywhere; }
 .verdict { border-left: 3px solid var(--bad); padding: 2px 8px; margin: 6px 0; font-size: 13px; }
 .verdict.approved { border-left-color: var(--ok); }
+.seg { display: inline-flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; margin-left: auto; }
+.seg button { font: inherit; font-size: 12px; background: var(--card); color: var(--text); border: 0; padding: 4px 12px; cursor: pointer; }
+.seg button + button { border-left: 1px solid var(--line); }
+.seg button[aria-pressed="true"] { background: var(--accent); color: var(--bg); font-weight: 650; }
+h3 { margin: 16px 0 6px; font-size: 13px; font-weight: 650; }
+.grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 8px; }
+button.tile { font: inherit; color: inherit; text-align: left; cursor: help; width: 100%; }
+button.tile .hint { display: none; margin-top: 4px; font-size: 12px; font-weight: 400; color: var(--muted); }
+button.tile.show .hint { display: block; }
+.panel { background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; box-shadow: var(--shadow); overflow-x: auto; }
+.panel svg { display: block; width: 100%; height: auto; max-width: 720px; }
+.panel svg text { fill: var(--muted); font: 10px system-ui, sans-serif; }
+.panel svg text.val { fill: var(--text); }
+.panel svg .axis { stroke: var(--line); }
+.legend { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 6px; }
+.legend button { font: inherit; font-size: 12px; color: var(--text); background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 2px 10px; cursor: pointer; }
+.legend button[aria-pressed="false"] { opacity: .45; text-decoration: line-through; }
+.legend i { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 5px; }
+.sum { margin: 6px 0 0; font-size: 12px; color: var(--muted); }
+table.t { border-collapse: collapse; width: 100%; font-size: 13px; font-variant-numeric: tabular-nums; }
+table.t th, table.t td { text-align: left; padding: 4px 8px 4px 0; border-bottom: 1px solid var(--line); }
+table.t th { color: var(--muted); font-weight: 500; font-size: 12px; }
 </style>
 </head>
 <body>
@@ -86,6 +110,24 @@ details.done > summary { cursor: pointer; }
   <section id="needs" aria-labelledby="needs-h"><h2 id="needs-h">Precisa de você <b id="needs-n">–</b></h2><div id="needs-list"></div></section>
   <section id="stuck" aria-labelledby="stuck-h"><h2 id="stuck-h">Parado <b id="stuck-n">–</b></h2><div id="stuck-list"></div></section>
   <section id="done" aria-labelledby="done-h"><details class="done"><summary><h2 id="done-h" style="display:inline-flex">Concluídos <b id="done-n">–</b></h2></summary><div id="done-list"></div></details></section>
+  <section id="work" aria-labelledby="work-h">
+    <h2 id="work-h">Como estamos trabalhando
+      <span class="seg" role="group" aria-label="Janela de tempo">
+        <button type="button" data-window="7" aria-pressed="true">7 dias</button><button type="button" data-window="30" aria-pressed="false">30 dias</button>
+      </span>
+    </h2>
+    <h3>Merges por dia</h3>
+    <div class="panel"><div class="legend" id="w-legend"></div><div id="w-throughput"></div></div>
+    <h3>Tempo</h3>
+    <div class="grid" id="w-lead"></div>
+    <div class="panel" style="margin-top:8px"><div id="w-stages"></div></div>
+    <h3>Qualidade</h3>
+    <div class="grid" id="w-quality"></div>
+    <h3>Esperando por você</h3>
+    <div class="panel" id="w-gates"></div>
+    <h3>Custo por repo</h3>
+    <div class="panel" id="w-cost"></div>
+  </section>
 </main>
 <aside id="drawer" aria-label="Histórico do job" aria-hidden="true"></aside>
 <script>
@@ -172,7 +214,6 @@ function renderStuck() {
 }
 
 const FLOW_STAGES = ["build", "checks", "review", "judge", "ship"];
-const STAGE_PT = { discovery: "descoberta", spec: "especificação", build: "construção", checks: "CI", review: "revisão", judge: "Judge", ship: "entrega" };
 const minutes = (m) => (m < 90 ? `${Math.round(m)} min` : ago(m * 60));
 
 function timeline(j) {
@@ -182,7 +223,7 @@ function timeline(j) {
   return `<div class="stages">${stages.map((s) => {
     const now = s === j.stage;
     const t = now ? `${minutes(j.stage_age_min)} aqui` : spent[s] ? minutes(spent[s]) : "–";
-    return `<div class="seg ${now ? "now" : spent[s] ? "" : "idle"}" title="${esc(STAGE_PT[s] || s)}: ${esc(t)}">${esc(STAGE_PT[s] || s)}<b>${esc(t)}</b></div>`;
+    return `<div class="stg ${now ? "now" : spent[s] ? "" : "idle"}" title="${esc(STAGE_PT[s] || s)}: ${esc(t)}">${esc(STAGE_PT[s] || s)}<b>${esc(t)}</b></div>`;
   }).join("")}</div>`;
 }
 
@@ -267,6 +308,124 @@ async function loadQueue() {
   try { queue = await getJSON("/api/queue"); } catch (_) { /* keep what is shown */ }
   renderQueue();
 }
+
+// --- Como estamos trabalhando ---------------------------------------------------------------------------------
+let work = null;
+let windowDays = 7;
+const hidden = new Set(); // repos filtered out of the throughput chart
+const repoName = (r) => String(r).split("/").filter(Boolean).pop() || r;
+const dur = (m) => (m == null ? "–" : m < 60 ? `${Math.round(m)} min` : m < 2880 ? `${(m / 60).toFixed(1).replace(".0", "")} h` : `${(m / 1440).toFixed(1).replace(".0", "")} d`);
+const pct = (v) => (v == null ? "–" : `${Math.round(v * 100)}%`);
+const num = (v) => (v == null ? "–" : (Math.round(v * 10) / 10).toString());
+const usd = (v) => `US$ ${v.toFixed(2)}`;
+const STAGE_PT = { discovery: "descoberta", spec: "especificação", build: "construção", checks: "CI", review: "revisão", judge: "Judge", ship: "entrega" };
+const STAGE_ORDER = Object.keys(STAGE_PT);
+const GATE_PT = { merge_review: "Revisar merge", cost: "Orçamento estourado", judge_rounds: "Judge reprovou várias vezes", judge_error: "Judge falhou", launch_failed: "Falha ao lançar", rework_needed: "Retrabalho pendente", merge_conflict: "Conflito com a main" };
+const color = (i) => `var(--c${(i % 6) + 1})`;
+
+function infoTile(label, value, hint) {
+  return `<button type="button" class="tile" title="${esc(hint)}" aria-label="${esc(label)}: ${esc(value)}. ${esc(hint)}"><small>${esc(label)}</small><b>${esc(value)}</b><span class="hint">${esc(hint)}</span></button>`;
+}
+
+// Draw at the real pixel width so the 10px labels stay 10px on a phone (a fixed viewBox would shrink them).
+const svgWidth = (id) => Math.min(720, Math.max(280, $(id).clientWidth || 720));
+
+function throughputSvg(days, repos) {
+  const shown = repos.filter((r) => !hidden.has(r));
+  const W = svgWidth("w-throughput"), H = 170, L = 26, B = 22, T = 14, plot = H - B - T;
+  const totals = days.map((d) => shown.reduce((n, r) => n + (d.by_repo[r] || 0), 0));
+  const max = Math.max(1, ...totals);
+  const slot = (W - L) / days.length, bw = Math.max(2, slot * 0.7);
+  const every = Math.ceil(days.length / 8);
+  let bars = "";
+  days.forEach((d, i) => {
+    let y = H - B;
+    const x = L + i * slot + (slot - bw) / 2;
+    shown.forEach((r) => {
+      const n = d.by_repo[r] || 0;
+      if (!n) return;
+      const h = (n / max) * plot;
+      y -= h;
+      bars += `<rect x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${bw.toFixed(1)}" height="${h.toFixed(1)}" fill="${color(repos.indexOf(r))}"><title>${esc(d.date)} · ${esc(repoName(r))}: ${n}</title></rect>`;
+    });
+    if (totals[i]) bars += `<text class="val" x="${(x + bw / 2).toFixed(1)}" y="${(y - 3).toFixed(1)}" text-anchor="middle">${totals[i]}</text>`;
+    if (i % every === 0 || i === days.length - 1) bars += `<text x="${(x + bw / 2).toFixed(1)}" y="${H - 7}" text-anchor="middle">${esc(d.date.slice(5))}</text>`;
+  });
+  const total = totals.reduce((a, b) => a + b, 0);
+  return `<svg viewBox="0 0 ${W} ${H}" role="img" aria-labelledby="tp-t tp-d"><title id="tp-t">Merges por dia</title>
+    <desc id="tp-d">Gráfico de barras: ${total} merges em ${days.length} dias${shown.length < repos.length ? ", com filtro de repos" : ""}. Máximo de ${max} num dia.</desc>
+    <line class="axis" x1="${L}" x2="${W}" y1="${H - B}" y2="${H - B}"/><text x="${L - 4}" y="${T + 4}" text-anchor="end">${max}</text><text x="${L - 4}" y="${H - B}" text-anchor="end">0</text>${bars}</svg>
+    <p class="sum">${total} merges em ${days.length} dias${total ? "" : " (nenhum no período)"}.</p>`;
+}
+
+function stagesSvg(summary) {
+  const W = svgWidth("w-stages");
+  const rows = STAGE_ORDER.filter((s) => summary[s]).map((s) => [s, summary[s].median_min]);
+  if (!rows.length) return '<div class="empty">sem dados</div>';
+  const max = Math.max(1, ...rows.map((r) => r[1]));
+  const rowH = 22, L = 96, H = rows.length * rowH + 4;
+  const body = rows.map(([s, m], i) => {
+    const w = Math.max(2, (m / max) * Math.max(40, W - L - 70));
+    const y = i * rowH + 3;
+    return `<text x="${L - 6}" y="${y + 12}" text-anchor="end">${STAGE_PT[s]}</text><rect x="${L}" y="${y}" width="${w.toFixed(1)}" height="14" rx="2" fill="var(--c1)"><title>${STAGE_PT[s]}: mediana ${dur(m)}</title></rect><text class="val" x="${(L + w + 6).toFixed(1)}" y="${y + 12}">${dur(m)}</text>`;
+  }).join("");
+  const longest = rows.reduce((a, b) => (b[1] > a[1] ? b : a));
+  return `<svg viewBox="0 0 ${W} ${H}" role="img" aria-labelledby="st-t st-d"><title id="st-t">Mediana de tempo por etapa</title>
+    <desc id="st-d">Barras horizontais com a mediana de minutos em cada etapa. Maior espera: ${STAGE_PT[longest[0]]}, ${dur(longest[1])}.</desc>${body}</svg>
+    <p class="sum">Onde o trabalho espera: ${rows.map(([s, m]) => `${STAGE_PT[s]} ${dur(m)}`).join(" · ")}.</p>`;
+}
+
+function renderWork() {
+  if (!work) { $("w-throughput").innerHTML = '<div class="empty">carregando…</div>'; return; }
+  const f = work.flow, q = work.quality;
+  const days = f.merged_per_day;
+  const repos = [...new Set(days.flatMap((d) => Object.keys(d.by_repo)))].sort();
+  $("w-legend").innerHTML = repos.map((r) => `<button type="button" data-repo="${esc(r)}" aria-pressed="${!hidden.has(r)}"><i style="background:${color(repos.indexOf(r))}"></i>${esc(repoName(r))}</button>`).join("");
+  $("w-throughput").innerHTML = throughputSvg(days, repos);
+  const lt = f.lead_time.overall;
+  $("w-lead").innerHTML = [
+    infoTile("Lead time (mediana)", dur(lt.median_min), "Da criação do job até o merge: metade dos jobs levou menos que isto."),
+    infoTile("Lead time (p90)", dur(lt.p90_min), "9 em cada 10 jobs terminam em menos que isto: mostra os casos lentos."),
+    infoTile("Merges", lt.count, `Jobs com merge nos últimos ${work.window_days} dias.`),
+  ].join("");
+  $("w-stages").innerHTML = stagesSvg(work.stage_summary);
+  $("w-quality").innerHTML = [
+    infoTile("Judge de primeira", pct(q.judge_first_pass_rate), "Parte dos PRs que o Judge aprovou na primeira revisão, sem retrabalho."),
+    infoTile("Rodadas de retrabalho", num(q.mean_rework_rounds), "Média de reprovações do Judge por PR revisado: quanto menor, melhor."),
+    infoTile("CI vermelho", pct(q.ci_red_rate), `Parte dos jobs ativos com ao menos um CI vermelho (${q.red_events} ocorrências).`),
+    infoTile("Conflitos", q.conflicts_sent, "Quantas vezes o PR conflitou com a main e o worker foi avisado."),
+  ].join("");
+  const gates = Object.entries(q.gates_opened);
+  $("w-gates").innerHTML = gates.length
+    ? `<table class="t"><thead><tr><th>Motivo</th><th title="Gates abertos no período">Abertos</th><th title="Tempo mediano até você resolver">Mediana até resolver</th></tr></thead><tbody>${gates.map(([r, g]) => `<tr><td>${esc(GATE_PT[r] || r)}</td><td>${g.count}</td><td>${g.median_resolve_min == null ? "ainda aberto" : dur(g.median_resolve_min)}</td></tr>`).join("")}</tbody></table>
+       <p class="sum">Quanto o trabalho esperou por você: cada gate abre quando a fábrica precisa de uma decisão sua.</p>`
+    : '<div class="empty">Nenhum gate no período.</div>';
+  const c = work.cost;
+  $("w-cost").innerHTML = c.total_usd > 0
+    ? `<table class="t"><tbody>${Object.entries(c.by_repo).map(([r, v]) => `<tr><td>${esc(repoName(r))}</td><td>${v > 0 ? usd(v) : "sem dados"}</td></tr>`).join("")}</tbody><tfoot><tr><th>Total</th><th>${usd(c.total_usd)}</th></tr></tfoot></table><p class="sum">Soma dos custos registrados nos jobs, por repo.</p>`
+    : '<div class="empty">sem dados</div>';
+}
+
+async function loadWork() {
+  try { work = await getJSON(`/api/metrics?window=${windowDays}`); } catch (_) { /* keep what is shown */ }
+  renderWork();
+}
+$("work").addEventListener("click", (e) => {
+  const w = e.target.closest("[data-window]");
+  if (w) {
+    windowDays = Number(w.dataset.window);
+    document.querySelectorAll("[data-window]").forEach((b) => b.setAttribute("aria-pressed", String(b === w)));
+    loadWork();
+    return;
+  }
+  const r = e.target.closest("[data-repo]");
+  if (r) { hidden.has(r.dataset.repo) ? hidden.delete(r.dataset.repo) : hidden.add(r.dataset.repo); renderWork(); return; }
+  const t = e.target.closest("button.tile");
+  if (t) t.classList.toggle("show");
+});
+window.addEventListener("resize", renderWork);
+loadWork();
+setInterval(loadWork, 60000);
 
 function setLive(on) {
   $("live").classList.toggle("on", on);
