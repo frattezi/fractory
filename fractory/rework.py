@@ -100,22 +100,26 @@ def relaunch(job: state.Job, orch: Path, runner, extra: str = "") -> str | None:
     if not profile or not job.links.get("worktree_id") or relaunched_recently(job):
         return None
     note = RESUME_NOTE.format(id=job.id) + (f" Pending: {extra}" if extra else "")
+    # Recorded before launching: a launch can start a worker and still fail (non-zero exit, unparsable output),
+    # and an unrecorded attempt escapes the hourly cap, so every watch cycle would start another worker.
+    attempt = {
+        "at": state.now_iso(),
+        "event": "relaunched",
+        "stage": job.stage,
+        "from": job.links.get("terminal"),
+        "terminal": None,
+        "profile": profile,
+    }
+    job.history.append(attempt)
     try:
         term = start_worker(job, str(profile), note, orch, runner)
-    except (OSError, launch.LaunchError):
+    except (OSError, launch.LaunchError) as err:
+        attempt["error"] = str(err)[:200]
         return None
     if not term:
+        attempt["error"] = "launch failed"
         return None
-    job.history.append(
-        {
-            "at": state.now_iso(),
-            "event": "relaunched",
-            "stage": job.stage,
-            "from": job.links.get("terminal"),
-            "terminal": term,
-            "profile": profile,
-        }
-    )
+    attempt["terminal"] = term
     job.links["terminal"] = term
     print(f"{job.id}  relaunched: new worker in {term}")
     return term
@@ -132,8 +136,9 @@ def relaunch_dead_workers(orch: Path, runner=None) -> None:
             continue
         with store.locked(found.id):
             job = store.load(found.id)
-            if job.stage in RELAUNCH_STAGES and not job.gate and relaunch(job, orch, runner):
-                store.save(job)
+            if job.stage in RELAUNCH_STAGES and not job.gate:
+                relaunch(job, orch, runner)
+                store.save(job)  # also a failed attempt: it holds the cap
 
 
 def escalate_worker(job: state.Job, message: str, orch: Path, runner) -> str | None:
