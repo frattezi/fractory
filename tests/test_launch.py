@@ -228,7 +228,7 @@ class PersonalOnly(LaunchCli):
     def test_able_job_on_pi_profile_launches_strong(self) -> None:
         profile, history = self.launched(self.tmp / "able" / "repo", "backend")
         self.assertEqual(profile, "strong")
-        chosen = [h for h in history if h["event"] == "profile_chosen"][0]
+        chosen = next(h for h in history if h["event"] == "profile_chosen")
         self.assertEqual(chosen["why"], "pi is personal-only: backend -> strong")
 
     def test_internal_job_keeps_pi_profile(self) -> None:
