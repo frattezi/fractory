@@ -23,6 +23,10 @@ class CleanupCli(unittest.TestCase):
         env = mock.patch.dict(os.environ, {"FACTORY_HOME": str(self.tmp / "factory")})
         env.start()
         self.addCleanup(env.stop)
+        # the PR-review/worker step has its own tests (test_prcleanup); keep it off the real pr-triage DB here
+        patch = mock.patch.object(cli.prcleanup, "run", return_value=0)
+        patch.start()
+        self.addCleanup(patch.stop)
         self.calls: list[list[str]] = []
         self.status = ""  # git status --porcelain
         self.ahead = "0"

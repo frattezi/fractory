@@ -14,6 +14,7 @@
     fractory watch [--every S] [--rounds N]   sync in a loop
     fractory watch --install | --uninstall    keep watch running as a LaunchAgent
     fractory cleanup [--job ID] [--dry-run]   close finished jobs' terminals, worktree and branch in Orca
+                                              (and finished PR-review agents, settled worker terminals)
     fractory dash [--out FILE]
     fractory serve [--port 8777]   live board of jobs in the browser (127.0.0.1 only)
     fractory plane projects
@@ -52,6 +53,7 @@ from . import (
     judge,
     launch,
     launchd,
+    prcleanup,
     reload,
     rework,
     risk,
@@ -646,6 +648,7 @@ def _watch_loop(a: argparse.Namespace, beat: health.Heartbeat | None = None) -> 
                 cleanup.run_cleanup(store.all_jobs())
             except (OSError, ValueError, RuntimeError) as err:  # never stop the watch loop
                 print(f"cleanup error: {err}")
+            prcleanup.run(store.all_jobs())
             if store.config().get("auto_intake"):
                 try:
                     intake.run_intake(store.config(), ORCH)
@@ -669,7 +672,10 @@ def _watch_loop(a: argparse.Namespace, beat: health.Heartbeat | None = None) -> 
 def cmd_cleanup(a: argparse.Namespace) -> int:
     """Close finished jobs' Orca terminals and worktrees. By hand it also retries jobs whose worktree was kept."""
     jobs = [store.load(a.job)] if a.job else store.all_jobs()
-    return cleanup.run_cleanup(jobs, dry_run=a.dry_run, retry=True)
+    code = cleanup.run_cleanup(jobs, dry_run=a.dry_run, retry=True)
+    if not a.job:
+        code = prcleanup.run(jobs, dry_run=a.dry_run) or code
+    return code
 
 
 def cmd_intake(a: argparse.Namespace) -> int:
