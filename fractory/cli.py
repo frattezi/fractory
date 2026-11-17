@@ -165,13 +165,28 @@ def cmd_job_advance(a: argparse.Namespace) -> int:
 RECONCILE_GROUP = {"done": "completed", "cancelled": "cancelled"}
 
 
+def superseded(jobs: list[state.Job]) -> set[str]:
+    """Ids of jobs whose card has a newer job: only the newest job of a card speaks for it.
+    Without this, a cancelled job and the job that replaced it move the same card back and forth every cycle."""
+    newest: dict[str, state.Job] = {}
+    for job in jobs:
+        ref = (job.tracker or {}).get("ref")
+        if ref and (ref not in newest or job.created_at > newest[ref].created_at):
+            newest[ref] = job
+    return {j.id for j in jobs if (ref := (j.tracker or {}).get("ref")) and newest[ref].id != j.id}
+
+
 def reconcile_trackers(jobs: list[state.Job]) -> bool:
-    """Move the card of every done/cancelled job that is not in a matching state. Returns True on any error.
+    """Move the card of every done/cancelled job that is not in a matching state, unless a newer job owns
+    the card. Returns True on any error.
 
     Call it inside a Plane cycle (`plane_mod.begin_cycle`): outside one, each job refetches the project's issues.
     """
     failed = False
+    skip = superseded(jobs)
     for job in jobs:
+        if job.id in skip:
+            continue
         group = RECONCILE_GROUP.get(job.stage)
         tracker = plane_tracker(job) if group else None
         if not tracker:
