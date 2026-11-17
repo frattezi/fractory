@@ -177,6 +177,17 @@ class SyncCli(unittest.TestCase):
         self.assertNotIn("reconciled", out)
         self.assertEqual(len(FakePlane.patches), before + 1)
 
+    def test_reconcile_leaves_a_card_to_the_job_that_replaced_a_cancelled_one(self) -> None:
+        FakePlane.issues.append({"id": "issue-1", "external_id": "", "external_source": "", "state": "s-doing"})
+        self.finish_outside_sync("cancel")  # cortadas-0001, replaced below by a live job for the same card
+        old = json.loads((self.tmp / "factory" / "jobs" / "cortadas-0001" / "state.json").read_text())
+        replacement = dict(old, id="cortadas-0002", stage="build", history=[], created_at=old["created_at"] + "Z")
+        (self.tmp / "factory" / "jobs" / "cortadas-0002").mkdir()
+        (self.tmp / "factory" / "jobs" / "cortadas-0002" / "state.json").write_text(json.dumps(replacement))
+        _, out = self.run_cli("watch", "--rounds", "1", "--no-reload")
+        self.assertNotIn("reconciled", out)
+        self.assertEqual(FakePlane.issues[0]["state"], "s-doing")
+
     def test_reconcile_moves_a_cancelled_job_to_cancelled(self) -> None:
         FakePlane.issues.append({"id": "issue-1", "external_id": "", "external_source": "", "state": "s-doing"})
         self.finish_outside_sync("cancel")
