@@ -44,10 +44,10 @@ def profile_agent(profile: str, repo: Path) -> str | None:
     return agent
 
 
-def personal_only(profile: str, repo: Path) -> tuple[str, str | None]:
+def personal_only(profile: str, repo: Path, kind: str) -> tuple[str, str | None]:
     """(profile, why). pi workers are for personal projects only: an Able job never runs on one (user, 2026-11-17).
     `why` is set only when the profile was replaced."""
-    if store.repo_kind(Path(repo)) == "able" and profile_agent(profile, repo) == "pi":
+    if kind == "able" and profile_agent(profile, repo) == "pi":
         return STRONG, f"pi is personal-only: {profile} -> {STRONG}"
     return profile, None
 
@@ -180,7 +180,7 @@ def launch(a: Args, plane, orch: Path) -> int:
     done: list[str] = []
     job_id: str | None = None
     step = "1 title"
-    swapped, swap_why = personal_only(a.profile, repo)
+    swapped, swap_why = personal_only(a.profile, repo, store.repo_kind(repo))
     if swap_why:
         a.profile, a.profile_why = swapped, swap_why
     try:

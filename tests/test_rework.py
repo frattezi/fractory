@@ -26,6 +26,21 @@ def pr_json(conclusion: str = "FAILURE") -> str:
     return json.dumps({"state": "OPEN", "isDraft": False, "statusCheckRollup": [check]})
 
 
+def make_able_with_pi_profiles(case: ReworkBase, profile: str | None = None) -> None:
+    """workers.toml with a pi `backend` and a claude `strong`; the job becomes kind=able (and takes `profile`)."""
+    toml = case.tmp / "workers.toml"
+    toml.write_text('[profiles.backend]\nagent = "pi"\n[profiles.strong]\nagent = "claude"\n')
+    env = mock.patch.dict(os.environ, {"WORKERS_TOML": str(toml)})
+    env.start()
+    case.addCleanup(env.stop)
+    path = case.tmp / "factory" / "jobs" / JOB / "state.json"
+    data = json.loads(path.read_text())
+    data["kind"] = "able"
+    if profile:
+        data["links"]["profile"] = profile
+    path.write_text(json.dumps(data))
+
+
 class ReworkMessage(unittest.TestCase):
     def test_judge_message_has_round_reasons_and_steps(self) -> None:
         job = state.new_job("cortadas-0007", "/r", "x", "internal")
@@ -298,6 +313,20 @@ class EscalateOnRejection(ReworkCli):
         self.assertIn("profile_escalated", self.events())
         self.assertEqual(self.events()[-1], "rework_sent")
 
+    def test_able_job_escalated_to_a_pi_profile_runs_and_is_recorded_as_strong(self) -> None:
+        self.route_reply = (0, "profile backend: --agent pi --model x  (step up)\n")
+        self.new_pi_job()
+        make_able_with_pi_profiles(self)
+        self.run_cli("judge", JOB)
+        launch_cmd = next(a for a in self.nudges if "launch" in a)
+        self.assertEqual(launch_cmd[launch_cmd.index("--profile") + 1], "strong")
+        job = self.job()
+        self.assertEqual(job["links"]["profile"], "strong")
+        escalated = next(h for h in job["history"] if h["event"] == "profile_escalated")
+        self.assertEqual(escalated["profile"], "strong")
+        chosen = next(h for h in job["history"] if h["event"] == "profile_chosen")
+        self.assertEqual(chosen["why"], "pi is personal-only: backend -> strong")
+
     def test_no_step_up_falls_back_to_a_nudge(self) -> None:
         self.route_reply = (0, "no step up from backend: escalate to the main session\n")
         self.new_pi_job()
@@ -374,6 +403,30 @@ class RelaunchDeadWorker(ReworkBase):
         self.assertEqual(self.job()["links"]["terminal"], "term_new1")
         self.assertEqual(self.events().count("relaunched"), 1)
         self.assertIsNone(self.job()["gate"])
+
+    def test_able_job_on_a_pi_profile_is_relaunched_on_strong(self) -> None:
+        self.linked_job()
+        make_able_with_pi_profiles(self, profile="backend")
+        self.pr = json.dumps({"state": "OPEN", "isDraft": False, "statusCheckRollup": []})
+        self.watch_once()
+        (cmd,) = self.launches()
+        self.assertEqual(cmd[cmd.index("--profile") + 1], "strong")
+        job = self.job()
+        self.assertEqual(job["links"]["profile"], "strong")
+        chosen = next(h for h in job["history"] if h["event"] == "profile_chosen")
+        self.assertEqual(chosen["why"], "pi is personal-only: backend -> strong")
+
+    def test_internal_job_on_a_pi_profile_is_relaunched_on_it(self) -> None:
+        self.linked_job()
+        make_able_with_pi_profiles(self, profile="backend")
+        path = self.tmp / "factory" / "jobs" / JOB / "state.json"
+        data = json.loads(path.read_text())
+        data["kind"] = "internal"
+        path.write_text(json.dumps(data))
+        self.pr = json.dumps({"state": "OPEN", "isDraft": False, "statusCheckRollup": []})
+        self.watch_once()
+        (cmd,) = self.launches()
+        self.assertEqual(cmd[cmd.index("--profile") + 1], "backend")
 
     def assert_one_attempt_per_hour(self, result: tuple[int, str]) -> None:
         self.launch_result = result

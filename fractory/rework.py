@@ -39,6 +39,20 @@ def rework_message(job: state.Job, event: str, detail: str) -> str:
     )
 
 
+def personal_profile(job: state.Job, profile: str) -> str:
+    """`profile`, or `strong` when the job is able and the profile runs on pi; the swap is logged as profile_chosen
+    and becomes the job's profile."""
+    from . import launch
+
+    chosen, why = launch.personal_only(profile, Path(job.repo), job.kind)
+    if why:
+        job.history.append(
+            {"at": state.now_iso(), "event": "profile_chosen", "stage": job.stage, "profile": chosen, "why": why}
+        )
+        job.links["profile"] = chosen
+    return chosen
+
+
 def start_worker(job: state.Job, profile: str, note: str, orch: Path, runner) -> str | None:
     """Start a worker of `profile` in the job's existing worktree with the job's brief plus `note`.
     Returns the new terminal, or None when `orch.py launch` fails."""
@@ -48,7 +62,7 @@ def start_worker(job: state.Job, profile: str, note: str, orch: Path, runner) ->
         guard.install(guard.worktree_path(str(job.links["worktree_id"])))
     except guard.GuardError as err:
         raise launch.LaunchError(str(err)) from err
-    profile, _ = launch.personal_only(profile, Path(job.repo))
+    profile, _ = launch.personal_only(profile, Path(job.repo), job.kind)
     brief = store.job_dir(job.id) / "brief.md"
     with tempfile.TemporaryDirectory() as tmp:
         spec = Path(tmp) / "rework.md"
@@ -112,8 +126,10 @@ def relaunch(job: state.Job, orch: Path, runner, extra: str = "") -> str | None:
         "profile": profile,
     }
     job.history.append(attempt)
+    profile = personal_profile(job, str(profile))
+    attempt["profile"] = profile
     try:
-        term = start_worker(job, str(profile), note, orch, runner)
+        term = start_worker(job, profile, note, orch, runner)
     except (OSError, launch.LaunchError) as err:
         attempt["error"] = str(err)[:200]
         return None
@@ -155,7 +171,8 @@ def escalate_worker(job: state.Job, message: str, orch: Path, runner) -> str | N
         m = re.match(r"profile (\S+?):", out.strip()) if code == 0 else None
         if not m:
             return None
-        term = start_worker(job, m.group(1), message, orch, runner)
+        target = personal_profile(job, m.group(1))
+        term = start_worker(job, target, message, orch, runner)
     except (OSError, launch.LaunchError):
         return None
     if not term:
@@ -166,11 +183,11 @@ def escalate_worker(job: state.Job, message: str, orch: Path, runner) -> str | N
             "event": "profile_escalated",
             "stage": job.stage,
             "from": profile,
-            "profile": m.group(1),
+            "profile": target,
             "terminal": term,
         }
     )
-    job.links.update(profile=m.group(1), terminal=term)
+    job.links.update(profile=target, terminal=term)
     return term
 
 
