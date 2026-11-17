@@ -343,6 +343,11 @@ After a first Judge rejection on a job whose profile has `escalate_to`, the fact
 profile (`orch.py route --escalate-from`) in the same worktree and branch and logs `profile_escalated`; it
 happens once per job.
 
+pi workers are for personal projects only: whatever picked the profile (card line, config, route, quota
+fallback, escalation, relaunch), a job of kind `able` whose profile has `agent = "pi"` in `workers.toml` (or the
+repo's override) starts on `strong` instead, and the job history logs `profile_chosen` with
+`pi is personal-only: <profile> -> strong`.
+
 `fractory intake --dry-run` lists what would launch (which cards wait, with `waits for <refs>`, and which labelled
 Backlog cards are `parked (backlog)`) and changes nothing. A job that reaches done sets the card's target date to today if empty.
 
