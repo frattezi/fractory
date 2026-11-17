@@ -200,3 +200,39 @@ class LaunchCli(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PersonalOnly(LaunchCli):
+    """Able jobs never run on a pi profile; internal jobs and claude profiles are untouched."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        toml = self.tmp / "workers.toml"
+        toml.write_text(
+            '[profiles.backend]\nagent = "pi"\n[profiles.ui]\nagent = "claude"\n[profiles.strong]\nagent = "claude"\n'
+        )
+        env = mock.patch.dict(os.environ, {"WORKERS_TOML": str(toml), "FRACTORY_ABLE_ROOT": str(self.tmp / "able")})
+        env.start()
+        self.addCleanup(env.stop)
+        (self.tmp / "able").mkdir()
+
+    def launched(self, repo: Path, profile: str) -> tuple[str, list[dict]]:
+        repo.mkdir(exist_ok=True)
+        self.repo = repo
+        code, out = self.run_cli("--profile", profile)
+        self.assertEqual(code, 0, out)
+        orch = self.calls[-1]
+        job = json.loads(next((self.tmp / "factory" / "jobs").glob("*/state.json")).read_text())
+        return orch[orch.index("--profile") + 1], job["history"]
+
+    def test_able_job_on_pi_profile_launches_strong(self) -> None:
+        profile, history = self.launched(self.tmp / "able" / "repo", "backend")
+        self.assertEqual(profile, "strong")
+        chosen = [h for h in history if h["event"] == "profile_chosen"][0]
+        self.assertEqual(chosen["why"], "pi is personal-only: backend -> strong")
+
+    def test_internal_job_keeps_pi_profile(self) -> None:
+        self.assertEqual(self.launched(self.tmp / "cortadas", "backend")[0], "backend")
+
+    def test_able_job_keeps_claude_profile(self) -> None:
+        self.assertEqual(self.launched(self.tmp / "able" / "repo", "ui")[0], "ui")

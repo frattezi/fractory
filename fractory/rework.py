@@ -48,6 +48,7 @@ def start_worker(job: state.Job, profile: str, note: str, orch: Path, runner) ->
         guard.install(guard.worktree_path(str(job.links["worktree_id"])))
     except guard.GuardError as err:
         raise launch.LaunchError(str(err)) from err
+    profile, _ = launch.personal_only(profile, Path(job.repo))
     brief = store.job_dir(job.id) / "brief.md"
     with tempfile.TemporaryDirectory() as tmp:
         spec = Path(tmp) / "rework.md"

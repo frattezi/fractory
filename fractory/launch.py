@@ -12,6 +12,7 @@ import re
 import shlex
 import subprocess
 import sys
+import tomllib
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -24,6 +25,31 @@ NAME_MAX = 30
 
 class LaunchError(RuntimeError):
     pass
+
+
+STRONG = "strong"
+
+
+def profile_agent(profile: str, repo: Path) -> str | None:
+    """The `agent` of `profile` in ~/.agents/workers.toml, overridden by <repo>/.agents/workers.toml."""
+    glob = Path(os.environ.get("WORKERS_TOML", Path.home() / ".agents" / "workers.toml"))
+    agent = None
+    for f in (glob, Path(repo) / ".agents" / "workers.toml"):
+        try:
+            table = (tomllib.loads(f.read_text(encoding="utf-8")).get("profiles") or {}).get(profile)
+        except (OSError, tomllib.TOMLDecodeError):
+            continue
+        if isinstance(table, dict):
+            agent = table.get("agent", "pi")
+    return agent
+
+
+def personal_only(profile: str, repo: Path) -> tuple[str, str | None]:
+    """(profile, why). pi workers are for personal projects only: an Able job never runs on one (user, 2026-11-17).
+    `why` is set only when the profile was replaced."""
+    if store.repo_kind(Path(repo)) == "able" and profile_agent(profile, repo) == "pi":
+        return STRONG, f"pi is personal-only: {profile} -> {STRONG}"
+    return profile, None
 
 
 def run_cmd(argv: list[str]) -> tuple[int, str]:
@@ -154,6 +180,9 @@ def launch(a: Args, plane, orch: Path) -> int:
     done: list[str] = []
     job_id: str | None = None
     step = "1 title"
+    swapped, swap_why = personal_only(a.profile, repo)
+    if swap_why:
+        a.profile, a.profile_why = swapped, swap_why
     try:
         issue = plane.get_item(a.issue)
         title = a.title or str(issue.get("name") or "").strip()
