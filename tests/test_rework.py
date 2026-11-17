@@ -324,6 +324,7 @@ class RelaunchDeadWorker(ReworkBase):
     """A job whose terminal is gone from Orca gets a new worker in its worktree, at most once an hour."""
 
     live: ClassVar[list[str]] = []
+    launch_result: tuple[int, str] | None = None  # set to fake a launch that started a worker but failed
 
     def fake_orch(self, argv: list[str]) -> tuple[int, str]:
         self.calls.append(argv)
@@ -331,6 +332,8 @@ class RelaunchDeadWorker(ReworkBase):
             return 0, json.dumps({"result": {"terminals": [{"handle": h} for h in self.live]}})
         if "launch" in argv:
             self.specs.append(Path(argv[argv.index("--spec-file") + 1]).read_text())
+            if self.launch_result is not None:
+                return self.launch_result
             return 0, f"launched dispatch d{len(self.launches())} in terminal term_new{len(self.launches())} (x)\n"
         return self.nudge_code, ""
 
@@ -371,6 +374,22 @@ class RelaunchDeadWorker(ReworkBase):
         self.assertEqual(self.job()["links"]["terminal"], "term_new1")
         self.assertEqual(self.events().count("relaunched"), 1)
         self.assertIsNone(self.job()["gate"])
+
+    def assert_one_attempt_per_hour(self, result: tuple[int, str]) -> None:
+        self.launch_result = result
+        self.linked_job()
+        self.pr = json.dumps({"state": "OPEN", "isDraft": False, "statusCheckRollup": []})
+        for _ in range(5):
+            self.watch_once()
+        self.assertEqual(len(self.launches()), 1)
+        self.assertEqual(self.events().count("relaunched"), 1)
+        self.assertEqual(self.job()["links"]["terminal"], "term_dead")
+
+    def test_launch_exiting_non_zero_still_holds_the_hourly_cap(self) -> None:
+        self.assert_one_attempt_per_hour((1, "launched dispatch d1 in terminal term_x (x)\n"))
+
+    def test_launch_without_a_terminal_handle_still_holds_the_hourly_cap(self) -> None:
+        self.assert_one_attempt_per_hour((0, "worker started, no handle\n"))
 
     def test_live_terminal_is_left_alone(self) -> None:
         self.live = ["term_dead"]
