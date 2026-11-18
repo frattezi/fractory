@@ -85,18 +85,24 @@ RESUME_NOTE = (
 )
 
 
-def terminal_is_gone(terminal: str, runner) -> bool:
-    """True only when `orca terminal list` worked and does not list `terminal`; a failed list proves nothing."""
+def live_terminals(runner) -> set[str] | None:
+    """Handles `orca terminal list` shows; None when the list failed (a failed list proves nothing)."""
     from . import launch
 
     try:
         code, out = runner([launch.orca_exe(), "terminal", "list", "--json"])
     except OSError:
-        return False
+        return None
     rows = (launch.json_payload(out).get("result") or {}).get("terminals")
     if code != 0 or not isinstance(rows, list):
-        return False
-    return terminal not in {str(r.get("handle")) for r in rows if isinstance(r, dict)}
+        return None
+    return {str(r.get("handle")) for r in rows if isinstance(r, dict)}
+
+
+def terminal_is_gone(terminal: str, runner) -> bool:
+    """True only when `orca terminal list` worked and does not list `terminal`."""
+    live = live_terminals(runner)
+    return live is not None and terminal not in live
 
 
 def relaunched_recently(job: state.Job, now: datetime | None = None) -> bool:
@@ -143,18 +149,36 @@ def relaunch(job: state.Job, orch: Path, runner, extra: str = "") -> str | None:
 
 
 def relaunch_dead_workers(orch: Path, runner=None) -> None:
-    """Watch step: a job in build/checks/review whose linked terminal is gone from Orca gets a new worker."""
+    """Watch step: a job in build/checks/review whose linked terminal is gone from Orca gets a new worker,
+    while fewer than `max_parallel_jobs` job workers are alive. After a reboot every terminal is gone at once,
+    and relaunching them all together is what overloads the machine; the rest wait for a free slot."""
+    from . import intake
+
     runner = runner or run_cmd
-    for found in store.all_jobs():
-        terminal = found.links.get("terminal")
-        if found.stage not in RELAUNCH_STAGES or found.gate or not terminal or relaunched_recently(found):
+    jobs = store.all_jobs()
+    candidates = [
+        j
+        for j in jobs
+        if j.stage in RELAUNCH_STAGES and not j.gate and j.links.get("terminal") and not relaunched_recently(j)
+    ]
+    if not candidates:
+        return
+    live = live_terminals(runner)
+    if live is None:
+        return
+    limit = int(store.config().get("max_parallel_jobs") or intake.DEFAULT_MAX_PARALLEL)
+    alive = sum(1 for j in jobs if j.stage not in state.TERMINAL and str(j.links.get("terminal")) in live)
+    for found in candidates:
+        if str(found.links["terminal"]) in live:
             continue
-        if not terminal_is_gone(str(terminal), runner):
+        if alive >= limit:
+            print(f"{found.id}  relaunch waits: {alive} workers alive (max_parallel_jobs {limit})")
             continue
         with store.locked(found.id):
             job = store.load(found.id)
             if job.stage in RELAUNCH_STAGES and not job.gate:
-                relaunch(job, orch, runner)
+                if relaunch(job, orch, runner):
+                    alive += 1
                 store.save(job)  # also a failed attempt: it holds the cap
 
 

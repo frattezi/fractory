@@ -404,6 +404,24 @@ class RelaunchDeadWorker(ReworkBase):
         self.assertEqual(self.events().count("relaunched"), 1)
         self.assertIsNone(self.job()["gate"])
 
+    def test_relaunch_waits_while_max_parallel_jobs_workers_are_alive(self) -> None:
+        self.linked_job()
+        (self.tmp / "factory" / "config.toml").write_text('orca_run = "run_1"\nmax_parallel_jobs = 1\n')
+        other = self.tmp / "factory" / "jobs" / "cortadas-0002"
+        other.mkdir()
+        data = json.loads((self.tmp / "factory" / "jobs" / JOB / "state.json").read_text())
+        data.update(id="cortadas-0002", tracker={})
+        data["links"]["terminal"] = "term_alive"
+        (other / "state.json").write_text(json.dumps(data))
+        (other / "brief.md").write_text("# other brief\n")
+        self.pr = json.dumps({"state": "OPEN", "isDraft": False, "statusCheckRollup": []})
+        self.live = ["term_alive"]
+        self.watch_once()
+        self.assertEqual(self.launches(), [])
+        self.live = []  # after a reboot both are gone: only one comes back
+        self.watch_once()
+        self.assertEqual(len(self.launches()), 1)
+
     def test_able_job_on_a_pi_profile_is_relaunched_on_strong(self) -> None:
         self.linked_job()
         make_able_with_pi_profiles(self, profile="backend")
