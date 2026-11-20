@@ -61,6 +61,26 @@ def orca_exe() -> str:
     return os.environ.get("ORCA") or os.environ.get("ORCA_CLI_COMMAND") or "orca"
 
 
+JOB_FOOTER = """
+
+---
+## Your job (Fractory)
+
+- Job ID: `{id}`. You never need to ask for it.
+- When the PR is open, link it, from the Fractory checkout:
+  `python3 -m fractory job link {id} --branch <branch> --pr <n>`
+- When the work is done, advance the job:
+  `python3 -m fractory job advance {id} built --note '<what you did>'`
+- Nobody answers questions sent to the coordinator in real time: a person answers through a gate on the card, so
+  pick the safe, reversible default and say so in the PR; ask only when you cannot go on.
+"""
+
+
+def with_job_footer(brief: str, job_id: str) -> str:
+    """The brief plus the job id and the commands that link its PR and advance it."""
+    return brief.rstrip("\n") + "\n" + JOB_FOOTER.format(id=job_id)
+
+
 def worktree_name(title: str) -> str:
     return store.slug(title)[:NAME_MAX].strip("-") or "job"
 
@@ -212,7 +232,7 @@ def launch(a: Args, plane, orch: Path) -> int:
         dest = store.job_dir(job_id) / "brief.md" if not a.dry_run else Path("$FACTORY_HOME/jobs/<job id>/brief.md")
         print(f"3. copy brief to {dest}")
         if not a.dry_run:
-            dest.write_text(brief.read_text())
+            dest.write_text(with_job_footer(brief.read_text(), job_id))
         done.append("3 brief")
 
         step = "4 worktree create"

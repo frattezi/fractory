@@ -95,7 +95,11 @@ class LaunchCli(unittest.TestCase):
         self.assertEqual(wt[wt.index("--name") + 1], "launch-job-worktree-and-worker")
         self.assertIn("--no-parent", wt)
         brief = self.tmp / "factory" / "jobs" / "cortadas-0001" / "brief.md"
-        self.assertEqual(brief.read_text(), "# do the thing\n")
+        text = brief.read_text()
+        self.assertTrue(text.startswith("# do the thing\n"))
+        self.assertIn("Job ID: `cortadas-0001`", text)
+        self.assertIn("python3 -m fractory job link cortadas-0001 --branch <branch> --pr <n>", text)
+        self.assertIn("python3 -m fractory job advance cortadas-0001 built", text)
         self.assertEqual(orch[4], "launch")
         for flag, value in {
             "--run": "run_1",
