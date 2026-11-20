@@ -12,6 +12,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
+from .state import TERMINAL as TERMINAL_STAGES
 from .state import Job
 
 FAILED = {"FAILURE", "CANCELLED", "TIMED_OUT", "ACTION_REQUIRED", "STARTUP_FAILURE", "ERROR"}
@@ -38,6 +39,7 @@ class Pr:
     checks: tuple[tuple[str, str], ...]  # (name, PENDING|SUCCESS|FAILURE|...)
     mergeable: str = "UNKNOWN"  # MERGEABLE | CONFLICTING | UNKNOWN
     base: str = ""  # the branch the PR targets
+    approved: bool = False  # reviewDecision == APPROVED
 
 
 def parse_pr(data: dict) -> Pr:
@@ -58,6 +60,7 @@ def parse_pr(data: dict) -> Pr:
         checks=tuple(checks),
         mergeable=(data.get("mergeable") or "UNKNOWN").upper(),
         base=data.get("baseRefName") or "",
+        approved=(data.get("reviewDecision") or "").upper() == "APPROVED",
     )
 
 
@@ -89,15 +92,55 @@ def pr_event(job: Job, pr: Pr) -> tuple[str, str | None] | None:
     return None
 
 
+def pr_outcome(job: Job, pr: Pr, factory_merges: bool) -> tuple[str, str] | None:
+    """What a PR's state means for a job in any working stage that `pr_event` did not already handle.
+
+    ("merged", "") | ("pr_closed", detail) | ("merge_needed", detail) | None.
+    `factory_merges`: the factory itself merges this job's PR (auto_merge on, internal job), so an approved PR is
+    not waiting on a person. A `merge_needed` gate is opened once per job: after a person resolved it, the job
+    waits for the merge to show up as MERGED.
+    """
+    if job.stage in TERMINAL_STAGES or job.gate is not None:
+        return None  # a gated job waits for its person (a branch-sync conflict must not be retried every round)
+    if pr.state == "MERGED":
+        return "merged", ""
+    pr_no = job.links.get("pr", "?")
+    if pr.state == "CLOSED":
+        return "pr_closed", f"PR #{pr_no} was closed without merging"
+    if (
+        pr.state == "OPEN"
+        and not pr.draft
+        and pr.approved
+        and pr.mergeable == "MERGEABLE"
+        and not factory_merges
+        and not any(h["event"] == "gate_resolved" and h.get("reason") == "merge_needed" for h in job.history)
+    ):
+        return "merge_needed", f"PR #{pr_no} is approved and mergeable: merge it"
+    return None
+
+
 Gh = Callable[[list[str], str], str]
 
 
+class GhError(subprocess.CalledProcessError):
+    """A failed `gh` call; unlike CalledProcessError, its message says why (gh's stderr)."""
+
+    def __str__(self) -> str:
+        why = (self.stderr or self.stdout or "").strip()[:300]
+        return f"{super().__str__()}: {why}" if why else super().__str__()
+
+
 def run_gh(args: list[str], cwd: str) -> str:
-    return subprocess.run(["gh", *args], cwd=cwd, capture_output=True, text=True, check=True).stdout
+    done = subprocess.run(["gh", *args], cwd=cwd, capture_output=True, text=True, check=False)
+    if done.returncode:
+        raise GhError(done.returncode, ["gh", *args], done.stdout, done.stderr)
+    return done.stdout
 
 
 def fetch_pr(repo: str, pr: str, gh: Gh | None = None) -> Pr:
-    out = (gh or run_gh)(["pr", "view", pr, "--json", "state,isDraft,statusCheckRollup,mergeable,baseRefName"], repo)
+    out = (gh or run_gh)(
+        ["pr", "view", pr, "--json", "state,isDraft,statusCheckRollup,mergeable,baseRefName,reviewDecision"], repo
+    )
     return parse_pr(json.loads(out))
 
 

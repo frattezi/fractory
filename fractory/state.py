@@ -119,6 +119,17 @@ def resolve_gate(job: Job, decision: str, note: str = "") -> Job:
     return job
 
 
+def finish_merged(job: Job, note: str = "") -> Job:
+    """The job's PR merged while it was in any working stage (its worker died, or a person merged by hand): done."""
+    if job.stage in TERMINAL:
+        raise TransitionError(f"{job.id} is {job.stage}")
+    job = copy.deepcopy(job)
+    before = job.stage
+    job.stage, job.gate = "done", None
+    _log(job, "merged", **{"from": before}, **({"note": note} if note else {}))
+    return job
+
+
 def apply_event(job: Job, event: str, check: str | None = None, note: str = "") -> tuple[Job, list[str]]:
     """Move `job` by `event`. Returns the new job and actions: `escalate_model`, `gate:<reason>`."""
     if event == "cancel":

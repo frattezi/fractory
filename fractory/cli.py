@@ -475,6 +475,19 @@ def plane_tracker(job: state.Job) -> plane_mod.Plane | None:
     return plane_mod.Plane(t["project"], plane_mod.api_key_from_env(), t.get("url") or plane_mod.DEFAULT_URL)
 
 
+def gate_tracker(job: state.Job) -> plane_mod.Plane | None:
+    """The Plane project that holds a job's gate card. Jira-tracked jobs have no Plane project of their own:
+    their cards go to `plane_gate_project` from config; without it there is no card and the gate stays in `gate list`."""
+    t = job.tracker
+    if t.get("kind") != "jira" and str(t.get("project", "")).lower() != "jira":
+        return plane_tracker(job)
+    project = store.config().get("plane_gate_project")
+    if not project:
+        return None
+    url = t.get("url") or store.config().get("plane_url") or plane_mod.DEFAULT_URL
+    return plane_mod.Plane(str(project), plane_mod.api_key_from_env(), str(url))
+
+
 def _judge_cost(job: state.Job, usd: float) -> tuple[state.Job, list[str]]:
     return state.add_cost(job, usd, source="judge") if usd > 0 else (job, [])
 
@@ -607,11 +620,10 @@ def cmd_sync(a: argparse.Namespace) -> int:
         if job.stage in state.TERMINAL or not job.links.get("pr"):
             continue
         try:
-            if auto_judge and job.stage == "review" and not job.gate and plane_tracker(job):
-                failed |= judge_job(job.id) != 0
-                continue
             pr = sync.fetch_pr(job.repo, job.links["pr"])
             conflicted = False
+            outcome = None
+            judge_next = auto_judge and job.stage == "review" and not job.gate and bool(plane_tracker(job))
             with store.locked(job.id):
                 current = store.load(job.id)
                 found = sync.pr_event(current, pr)
@@ -619,16 +631,33 @@ def cmd_sync(a: argparse.Namespace) -> int:
                     if not _sync_branches(current, pr):
                         continue  # gate opened, or the branch merge failed: retry next round
                     current = store.load(job.id)  # carries the branch_sync history entry
-                if found is None and auto_merge and sync.should_merge(current, pr):
-                    if sync.has_conflict(pr):
-                        conflicted = True
+                if found is None:
+                    factory_merges = judge_next or (auto_merge and current.kind == "internal")
+                    outcome = sync.pr_outcome(current, pr, factory_merges)
+                if outcome is not None:
+                    event, detail = outcome
+                    if event == "merged":
+                        if not _sync_branches(current, pr):
+                            continue
+                        current = store.load(job.id)
+                        updated, actions = state.finish_merged(current, "sync"), []
                     else:
-                        _merge_if_low_risk(current)
-                if found is not None:
-                    event, check = found
-                    updated, actions = state.apply_event(current, event, check, note="sync")
+                        updated, actions = state.open_gate(current, event, detail), [f"gate:{event}"]
                     store.save(updated)
-            if found is None:
+                else:
+                    if found is None and auto_merge and sync.should_merge(current, pr):
+                        if sync.has_conflict(pr):
+                            conflicted = True
+                        else:
+                            _merge_if_low_risk(current)
+                    if found is not None:
+                        event, check = found
+                        updated, actions = state.apply_event(current, event, check, note="sync")
+                        store.save(updated)
+            if found is None and outcome is None:
+                if judge_next:
+                    failed |= judge_job(job.id) != 0
+                    continue
                 if conflicted:  # outside the lock: notify_conflict takes it
                     rework.notify_conflict(job.id, ORCH)
                 continue
