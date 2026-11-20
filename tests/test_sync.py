@@ -180,6 +180,35 @@ class SyncCli(unittest.TestCase):
         self.assertEqual(self.job_state_of()["history"][-1]["event"], "merged")
         self.assertEqual([p for p in FakePlane.patches if "issue-1" in p[0]][-1][1]["state"], "s-done")
 
+    def replay_job(self, name: str, stage: str, pr: str, history: list[str]) -> str:
+        repo = self.tmp / name
+        repo.mkdir()
+        self.run_cli(
+            "job", "new", "--repo", str(repo), "--title", name, "--stage", stage,
+            "--tracker", "plane", "--project", PROJECT, "--ref", "issue-1", "--plane-url", self.url,
+        )  # fmt: skip
+        job_id = f"{name}-0001"
+        self.run_cli("job", "link", job_id, "--pr", pr, "--terminal", "term_dead")
+        path = self.tmp / "factory" / "jobs" / job_id / "state.json"
+        data = json.loads(path.read_text())
+        data["history"] += [{"at": "2026-11-17T10:00:00+00:00", "event": e, "stage": stage} for e in history]
+        path.write_text(json.dumps(data))
+        return job_id
+
+    def test_replay_modular_monolith_0001_merged_pr_after_red_and_rework(self) -> None:
+        FakePlane.issues.append({"id": "issue-1", "external_id": "", "external_source": ""})
+        job_id = self.replay_job("modular-monolith", "build", "5417", ["red", "rework_sent"])
+        self.pr = pr_json(state="MERGED", review="APPROVED")
+        self.run_cli("sync")
+        self.assertEqual(self.stage(job_id), "done")
+
+    def test_replay_portal_0001_approved_open_pr_in_review_opens_a_merge_gate(self) -> None:
+        job_id = self.replay_job("portal", "review", "2235", [])
+        self.pr = pr_json(review="APPROVED")
+        self.run_cli("sync")
+        self.assertEqual(self.stage(job_id), "review")
+        self.assertEqual(self.job_state_of(job_id)["gate"]["reason"], "merge_needed")
+
     def test_closed_pr_opens_a_gate_in_any_stage(self) -> None:
         self.new_job(stage="build")
         self.pr = pr_json(state="CLOSED")
