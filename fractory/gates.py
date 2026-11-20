@@ -11,7 +11,7 @@ import html
 import json
 import re
 
-from . import rework, risk, state, store, sync
+from . import asks, rework, risk, state, store, sync
 from .trackers.base import Duplicate
 
 LABEL = "humano"
@@ -22,6 +22,8 @@ WHAT_MOVING_DOES = (
 
 
 def card_title(job: state.Job, gate: state.Gate) -> str:
+    if gate.reason == asks.REASON:
+        return f"Needs you: worker asks: {asks.title_for(gate.detail)} · {job.title}"
     return f"Needs you: {gate.reason} · {job.title}"
 
 
@@ -123,6 +125,8 @@ def resolve_from_card(job_id: str, plane_factory=None) -> bool:
     print(f"{job_id}  gate {gate.reason} {decision} (card {gate.card_key or gate.card})")
     if gate.reason == "judge_rounds" and decision == "continue":
         rework.resume_after_rounds(job_id, cli.ORCH)
+    if gate.reason == asks.REASON and decision == "continue":
+        asks.deliver_answer(job, gate, note, cli.ORCH)
     return True
 
 
