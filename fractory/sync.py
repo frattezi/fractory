@@ -10,6 +10,7 @@ import json
 import subprocess
 from collections.abc import Callable
 from dataclasses import dataclass
+from pathlib import Path
 
 from .state import Job
 
@@ -36,6 +37,7 @@ class Pr:
     draft: bool
     checks: tuple[tuple[str, str], ...]  # (name, PENDING|SUCCESS|FAILURE|...)
     mergeable: str = "UNKNOWN"  # MERGEABLE | CONFLICTING | UNKNOWN
+    base: str = ""  # the branch the PR targets
 
 
 def parse_pr(data: dict) -> Pr:
@@ -55,6 +57,7 @@ def parse_pr(data: dict) -> Pr:
         draft=bool(data.get("isDraft")),
         checks=tuple(checks),
         mergeable=(data.get("mergeable") or "UNKNOWN").upper(),
+        base=data.get("baseRefName") or "",
     )
 
 
@@ -94,7 +97,7 @@ def run_gh(args: list[str], cwd: str) -> str:
 
 
 def fetch_pr(repo: str, pr: str, gh: Gh | None = None) -> Pr:
-    out = (gh or run_gh)(["pr", "view", pr, "--json", "state,isDraft,statusCheckRollup,mergeable"], repo)
+    out = (gh or run_gh)(["pr", "view", pr, "--json", "state,isDraft,statusCheckRollup,mergeable,baseRefName"], repo)
     return parse_pr(json.loads(out))
 
 
@@ -138,3 +141,35 @@ def pr_diff(repo: str, pr: str, gh: Gh | None = None) -> str:
 
 def pr_comment(repo: str, pr: str, body: str, gh: Gh | None = None) -> None:
     (gh or run_gh)(["pr", "comment", pr, "--body", body], repo)
+
+
+class BranchConflict(Exception):
+    """GitHub answered 409: the branches cannot be merged without a human."""
+
+
+def sync_target(repo: str, base: str, config: dict | None) -> tuple[str, str] | None:
+    """(from, into) when a PR merged into `base` of `repo` must be followed by merging `from` into `into`.
+
+    Config: `[sync_branches] "~/path/to/repo" = { from = "main", into = "release" }`.
+    """
+    target = Path(repo).expanduser().resolve()
+    for path, rule in ((config or {}).get("sync_branches") or {}).items():
+        if Path(path).expanduser().resolve() == target and rule.get("from") == base and rule.get("into"):
+            return rule["from"], rule["into"]
+    return None
+
+
+def merge_branches(repo: str, source: str, into: str, gh: Gh | None = None) -> str:
+    """Merge `source` into `into` on GitHub. Returns the merge commit SHA, or '' when there was nothing to merge.
+
+    Raises BranchConflict on 409.
+    """
+    args = ["api", "repos/{owner}/{repo}/merges", "-f", f"base={into}", "-f", f"head={source}"]
+    try:
+        out = (gh or run_gh)(args, repo)
+    except subprocess.CalledProcessError as err:
+        text = f"{err.stdout or ''}{err.stderr or ''}"
+        if "409" in text or "onflict" in text:
+            raise BranchConflict(text.strip()[:300]) from err
+        raise
+    return (json.loads(out).get("sha") or "") if out.strip() else ""  # 204: already up to date

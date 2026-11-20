@@ -564,6 +564,34 @@ def _merge_if_low_risk(job: state.Job) -> None:
     print(f"{job.id}  auto-merged PR {pr_number}")
 
 
+def _sync_branches(job: state.Job, pr: sync.Pr) -> bool:
+    """After a PR merged into the configured `from` branch, merge `from` into `into`. Caller holds the lock.
+
+    False means the job must not finish yet: a conflict opened a gate, or GitHub failed (retried next round).
+    A gate resolved with `continue` retries the merge, which is a no-op once a human merged by hand.
+    """
+    rule = sync.sync_target(job.repo, pr.base, store.config())
+    if rule is None:
+        return True
+    source, into = rule
+    try:
+        sha = sync.merge_branches(job.repo, source, into)
+    except sync.BranchConflict as err:
+        store.save(state.open_gate(job, "branch_sync_conflict", f"merging {source} into {into} conflicts: {err}"))
+        print(f"{job.id}  GATE branch_sync_conflict: {source} -> {into}")
+        return False
+    except (OSError, subprocess.CalledProcessError) as err:
+        print(f"{job.id}  branch sync {source} -> {into} failed: {err}")
+        return False
+    fresh = store.load(job.id)
+    fresh.history.append(
+        {"at": state.now_iso(), "event": "branch_sync", "stage": fresh.stage, "from": source, "into": into, "sha": sha}
+    )
+    store.save(fresh)
+    print(f"{job.id}  merged {source} into {into}" + (f" ({sha[:10]})" if sha else " (nothing to merge)"))
+    return True
+
+
 def cmd_sync(a: argparse.Namespace) -> int:
     """Advance jobs from their PR and CI, and mirror stage changes to the tracker."""
     jobs = [store.load(i) for i in a.ids] if a.ids else store.all_jobs()
@@ -583,6 +611,10 @@ def cmd_sync(a: argparse.Namespace) -> int:
             with store.locked(job.id):
                 current = store.load(job.id)
                 found = sync.pr_event(current, pr)
+                if found is not None and found[0] == "merged":
+                    if not _sync_branches(current, pr):
+                        continue  # gate opened, or the branch merge failed: retry next round
+                    current = store.load(job.id)  # carries the branch_sync history entry
                 if found is None and auto_merge and sync.should_merge(current, pr):
                     if sync.has_conflict(pr):
                         conflicted = True

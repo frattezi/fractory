@@ -6,6 +6,7 @@ import contextlib
 import io
 import json
 import os
+import subprocess
 import tempfile
 import threading
 import unittest
@@ -359,3 +360,91 @@ class SyncCli(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SyncBranches(SyncCli):
+    """`[sync_branches]`: a PR merged into `from` is followed by merging `from` into `into`."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.api_calls: list[list[str]] = []
+        self.api_error: Exception | None = None
+        self.api_out = json.dumps({"sha": "abc1234567890"})
+        self.set_rule(True)
+
+    def set_rule(self, on: bool, repo: Path | None = None) -> None:
+        home = self.tmp / "factory"
+        home.mkdir(exist_ok=True)
+        body = f'[sync_branches]\n"{repo or self.repo}" = {{ from = "main", into = "release" }}\n' if on else ""
+        (home / "config.toml").write_text(body)
+
+    def fake_gh(self, args: list[str], cwd: str) -> str:
+        if args[0] == "api":
+            self.api_calls.append(args)
+            if self.api_error:
+                raise self.api_error
+            return self.api_out
+        return super().fake_gh(args, cwd)
+
+    def merged_pr(self, base: str) -> None:
+        self.new_job(stage="ship")
+        self.pr = json.dumps({"state": "MERGED", "isDraft": False, "statusCheckRollup": [], "baseRefName": base})
+
+    def history(self) -> list[dict]:
+        return json.loads((self.tmp / "factory" / "jobs" / "cortadas-0001" / "state.json").read_text())["history"]
+
+    def test_merge_to_main_triggers_one_sync_merge_and_logs_the_sha(self) -> None:
+        self.merged_pr("main")
+        self.run_cli("sync")
+        self.run_cli("sync")  # the job is done: no second merge
+        self.assertEqual(
+            self.api_calls, [["api", "repos/{owner}/{repo}/merges", "-f", "base=release", "-f", "head=main"]]
+        )
+        self.assertEqual(self.stage(), "done")
+        entry = next(h for h in self.history() if h["event"] == "branch_sync")
+        self.assertEqual((entry["from"], entry["into"], entry["sha"]), ("main", "release", "abc1234567890"))
+
+    def test_nothing_to_merge_is_success(self) -> None:
+        self.api_out = ""
+        self.merged_pr("main")
+        self.run_cli("sync")
+        self.assertEqual(self.stage(), "done")
+        self.assertEqual(next(h for h in self.history() if h["event"] == "branch_sync")["sha"], "")
+
+    def test_merge_to_release_triggers_none(self) -> None:
+        self.merged_pr("release")
+        self.run_cli("sync")
+        self.assertEqual(self.api_calls, [])
+        self.assertEqual(self.stage(), "done")
+
+    def test_conflict_opens_a_gate_naming_both_branches(self) -> None:
+        self.api_error = subprocess.CalledProcessError(
+            1, "gh", output='{"message":"Merge conflict"}', stderr="HTTP 409"
+        )
+        self.merged_pr("main")
+        self.run_cli("sync")
+        job = json.loads((self.tmp / "factory" / "jobs" / "cortadas-0001" / "state.json").read_text())
+        self.assertEqual(job["stage"], "ship")
+        self.assertEqual(job["gate"]["reason"], "branch_sync_conflict")
+        self.assertIn("main", job["gate"]["detail"])
+        self.assertIn("release", job["gate"]["detail"])
+        self.run_cli("sync")
+        self.assertEqual(len(self.api_calls), 1)  # gated: no retry until a human resolves it
+
+    def test_other_gh_failure_retries_next_round(self) -> None:
+        self.api_error = subprocess.CalledProcessError(1, "gh", output="", stderr="HTTP 502")
+        self.merged_pr("main")
+        self.run_cli("sync")
+        self.assertEqual(self.stage(), "ship")
+        self.api_error = None
+        self.run_cli("sync")
+        self.assertEqual(self.stage(), "done")
+
+    def test_unconfigured_repo_is_untouched(self) -> None:
+        self.set_rule(False)
+        self.merged_pr("main")
+        self.run_cli("sync")
+        self.assertEqual(self.api_calls, [])
+        self.assertEqual(self.stage(), "done")
+        self.set_rule(True, repo=self.tmp / "other")
+        self.assertEqual(self.api_calls, [])
