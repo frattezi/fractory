@@ -62,7 +62,7 @@ def ensure_card(job_id: str, plane_factory=None) -> None:
     job = store.load(job_id)
     if job.gate is None or job.gate.card:
         return
-    tracker = (plane_factory or cli.plane_tracker)(job)
+    tracker = (plane_factory or cli.gate_tracker)(job)
     if tracker is None:
         return
     gate = job.gate
@@ -106,7 +106,7 @@ def resolve_from_card(job_id: str, plane_factory=None) -> bool:
     job = store.load(job_id)
     if job.gate is None or not job.gate.card:
         return False
-    tracker = (plane_factory or cli.plane_tracker)(job)
+    tracker = (plane_factory or cli.gate_tracker)(job)
     if tracker is None:
         return False
     gate = job.gate
@@ -120,7 +120,7 @@ def resolve_from_card(job_id: str, plane_factory=None) -> bool:
             return False  # resolved by hand meanwhile
         resolved = state.resolve_gate(current, decision, note or "via Plane card")
         store.save(resolved)
-    if decision == "cancel":
+    if decision == "cancel" and cli.plane_tracker(job):
         tracker.set_status(job.tracker["ref"], "cancelled")
     print(f"{job_id}  gate {gate.reason} {decision} (card {gate.card_key or gate.card})")
     if gate.reason == "judge_rounds" and decision == "continue":
@@ -137,7 +137,7 @@ def close_card(job: state.Job, gate: state.Gate, plane_factory=None) -> None:
     if not gate.card:
         return
     try:
-        tracker = (plane_factory or cli.plane_tracker)(job)
+        tracker = (plane_factory or cli.gate_tracker)(job)
         if tracker:
             tracker.set_status(gate.card, "done")
     except (OSError, RuntimeError) as err:

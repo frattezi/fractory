@@ -118,3 +118,29 @@ class GateCards(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class JiraGateCards(unittest.TestCase):
+    """A Jira-tracked job has no Plane project of its own: its card goes to `plane_gate_project`, or nowhere."""
+
+    run_cli = GateCards.run_cli
+    job = GateCards.job
+    cards = GateCards.cards
+
+    def setUp(self) -> None:
+        GateCards.setUp(self)
+        job = self.job()
+        job["tracker"] = {"kind": "plane", "project": "jira", "ref": "CARE-1", "url": self.url}
+        (self.tmp / "factory" / "jobs" / JOB / "state.json").write_text(json.dumps(job))
+
+    def test_without_a_gate_project_there_is_no_card_and_no_error(self) -> None:
+        _, out = self.run_cli("sync")
+        self.assertNotIn("error", out)
+        self.assertEqual(self.cards(), [])
+        self.assertEqual(self.job()["gate"]["reason"], "cost")  # still open, listed by `gate list`
+
+    def test_card_goes_to_the_configured_gate_project(self) -> None:
+        (self.tmp / "factory" / "config.toml").write_text(f'plane_gate_project = "{PROJECT}"\n')
+        self.run_cli("sync")
+        (card,) = self.cards()
+        self.assertEqual(card["external_id"], f"gate-{JOB}-cost-1")

@@ -25,9 +25,21 @@ def check_run(name: str, status: str = "COMPLETED", conclusion: str | None = "SU
 
 
 def pr_json(
-    state: str = "OPEN", draft: bool = False, checks: list[dict] | None = None, mergeable: str = "MERGEABLE"
+    state: str = "OPEN",
+    draft: bool = False,
+    checks: list[dict] | None = None,
+    mergeable: str = "MERGEABLE",
+    review: str = "",
 ) -> str:
-    return json.dumps({"state": state, "isDraft": draft, "statusCheckRollup": checks or [], "mergeable": mergeable})
+    return json.dumps(
+        {
+            "state": state,
+            "isDraft": draft,
+            "statusCheckRollup": checks or [],
+            "mergeable": mergeable,
+            "reviewDecision": review,
+        }
+    )
 
 
 class ParsePr(unittest.TestCase):
@@ -152,6 +164,95 @@ class SyncCli(unittest.TestCase):
         self.new_job(stage="ship")
         self.run_cli("job", "advance", "cortadas-0001", event)
         FakePlane.issues[0]["state"] = "s-doing"
+
+    def job_state_of(self, job_id: str = "cortadas-0001") -> dict:
+        return json.loads((self.tmp / "factory" / "jobs" / job_id / "state.json").read_text())
+
+    def test_merged_pr_finishes_a_job_still_in_build_before_any_relaunch(self) -> None:
+        FakePlane.issues.append({"id": "issue-1", "external_id": "", "external_source": ""})
+        self.new_job(stage="build")
+        self.pr = pr_json(state="MERGED", review="APPROVED")
+        with mock.patch.object(rework, "relaunch") as relaunch:
+            code, out = self.run_cli("sync")
+        self.assertEqual(code, 0, out)
+        self.assertEqual(self.stage(), "done")
+        relaunch.assert_not_called()
+        self.assertEqual(self.job_state_of()["history"][-1]["event"], "merged")
+        self.assertEqual([p for p in FakePlane.patches if "issue-1" in p[0]][-1][1]["state"], "s-done")
+
+    def replay_job(self, name: str, stage: str, pr: str, history: list[str]) -> str:
+        repo = self.tmp / name
+        repo.mkdir()
+        self.run_cli(
+            "job", "new", "--repo", str(repo), "--title", name, "--stage", stage,
+            "--tracker", "plane", "--project", PROJECT, "--ref", "issue-1", "--plane-url", self.url,
+        )  # fmt: skip
+        job_id = f"{name}-0001"
+        self.run_cli("job", "link", job_id, "--pr", pr, "--terminal", "term_dead")
+        path = self.tmp / "factory" / "jobs" / job_id / "state.json"
+        data = json.loads(path.read_text())
+        data["history"] += [{"at": "2026-11-17T10:00:00+00:00", "event": e, "stage": stage} for e in history]
+        path.write_text(json.dumps(data))
+        return job_id
+
+    def test_replay_modular_monolith_0001_merged_pr_after_red_and_rework(self) -> None:
+        FakePlane.issues.append({"id": "issue-1", "external_id": "", "external_source": ""})
+        job_id = self.replay_job("modular-monolith", "build", "5417", ["red", "rework_sent"])
+        self.pr = pr_json(state="MERGED", review="APPROVED")
+        self.run_cli("sync")
+        self.assertEqual(self.stage(job_id), "done")
+
+    def test_replay_portal_0001_approved_open_pr_in_review_opens_a_merge_gate(self) -> None:
+        job_id = self.replay_job("portal", "review", "2235", [])
+        self.pr = pr_json(review="APPROVED")
+        self.run_cli("sync")
+        self.assertEqual(self.stage(job_id), "review")
+        self.assertEqual(self.job_state_of(job_id)["gate"]["reason"], "merge_needed")
+
+    def test_closed_pr_opens_a_gate_in_any_stage(self) -> None:
+        self.new_job(stage="build")
+        self.pr = pr_json(state="CLOSED")
+        self.run_cli("sync")
+        self.assertEqual(self.job_state_of()["gate"]["reason"], "pr_closed")
+        self.assertEqual(self.stage(), "build")
+
+    def test_approved_mergeable_pr_in_a_repo_the_factory_does_not_merge_opens_a_merge_gate_once(self) -> None:
+        self.new_job(stage="review")
+        self.pr = pr_json(review="APPROVED")
+        self.run_cli("sync")
+        gate = self.job_state_of()["gate"]
+        self.assertEqual(gate["reason"], "merge_needed")
+        self.assertIn("PR #42", gate["detail"])
+        self.run_cli("gate", "resolve", "cortadas-0001", "continue")
+        self.run_cli("sync")
+        self.assertIsNone(self.job_state_of()["gate"])  # a person decided; the PR is theirs to merge
+
+    def test_approved_pr_is_left_to_the_factory_when_it_merges(self) -> None:
+        self.enable_auto_merge()
+        self.new_job(stage="review")
+        self.pr = pr_json(review="APPROVED")
+        self.run_cli("sync")
+        self.assertIsNone(self.job_state_of()["gate"])
+
+    def test_unapproved_or_conflicting_open_pr_opens_no_merge_gate(self) -> None:
+        self.new_job(stage="review")
+        for pr in (
+            pr_json(),
+            pr_json(review="APPROVED", mergeable="CONFLICTING"),
+            pr_json(review="APPROVED", draft=True),
+        ):
+            self.pr = pr
+            self.run_cli("sync")
+            self.assertIsNone(self.job_state_of()["gate"])
+
+    def test_sync_error_carries_gh_stderr(self) -> None:
+        self.new_job(stage="build")
+        err = sync.GhError(1, ["gh", "pr", "view", "42"], "", "GraphQL: Could not resolve to a PullRequest")
+        self.gh.side_effect = err
+        code, out = self.run_cli("sync")
+        self.assertEqual(code, 1)
+        self.assertIn("sync error:", out)
+        self.assertIn("Could not resolve to a PullRequest", out)
 
     def test_job_advance_merged_moves_the_card(self) -> None:
         FakePlane.issues.append({"id": "issue-1", "external_id": "", "external_source": "", "state": "s-doing"})
@@ -360,6 +461,14 @@ class SyncCli(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class RunGh(unittest.TestCase):
+    def test_error_message_has_gh_stderr(self) -> None:
+        done = subprocess.CompletedProcess(["gh"], 1, "", "no such PR\n")
+        with mock.patch("subprocess.run", return_value=done), self.assertRaises(subprocess.CalledProcessError) as ctx:
+            sync.run_gh(["pr", "view"], ".")
+        self.assertIn("no such PR", str(ctx.exception))
 
 
 class SyncBranches(SyncCli):
