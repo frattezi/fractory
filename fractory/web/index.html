@@ -320,7 +320,7 @@ const num = (v) => (v == null ? "–" : (Math.round(v * 10) / 10).toString());
 const usd = (v) => `US$ ${v.toFixed(2)}`;
 const STAGE_PT = { discovery: "descoberta", spec: "especificação", build: "construção", checks: "CI", review: "revisão", judge: "Judge", ship: "entrega" };
 const STAGE_ORDER = Object.keys(STAGE_PT);
-const GATE_PT = { merge_review: "Revisar merge", cost: "Orçamento estourado", judge_rounds: "Judge reprovou várias vezes", judge_error: "Judge falhou", launch_failed: "Falha ao lançar", rework_needed: "Retrabalho pendente", merge_conflict: "Conflito com a main" };
+const GATE_PT = { merge_review: "Revisar merge", cost: "Orçamento estourado", judge_rounds: "Judge reprovou várias vezes", judge_error: "Judge falhou", worker_stalled: "Worker parado", launch_failed: "Falha ao lançar", rework_needed: "Retrabalho pendente", merge_conflict: "Conflito com a main" };
 const color = (i) => `var(--c${(i % 6) + 1})`;
 
 function infoTile(label, value, hint) {

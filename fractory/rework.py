@@ -25,11 +25,6 @@ def rework_message(job: state.Job, event: str, detail: str) -> str:
         what = f"the Judge rejected it (round {job.judge_rounds}/{MAX_ROUNDS}): {detail}"
     elif event == "resumed":
         what = f"the Judge rejected it and a person let it continue: {detail or 'see the Judge comment on the PR'}"
-    elif event == "stuck":
-        return (
-            f"[fractory] You have an open job, {job.id}: finish it, push, then run: "
-            f"python3 -m fractory job advance {job.id} built --note '<what you did>'"
-        )
     else:
         what = f"CI is red on check {detail or 'ci'}"
     return (
@@ -224,8 +219,6 @@ def notify(job_id: str, event: str, detail: str, orch: Path, runner=None) -> Non
         if job.stage != "build" or job.gate:
             return
         message = rework_message(job, event, detail)
-        if event == "stuck" and not _nudge_stuck(job, message, orch, runner):
-            return
         terminal = job.links.get("terminal")
         sent = False
         escalated = escalate_worker(job, message, orch, runner) if event == "rejected" else None
@@ -304,32 +297,3 @@ def terminal_is_idle(terminal: str, orch: Path, runner) -> bool:
     except OSError:
         return False
     return out.strip().startswith(f"{terminal}: idle")
-
-
-def _nudge_stuck(job: state.Job, message: str, orch: Path, runner) -> bool:
-    """For a stuck build: nudge once (logs `nudged`), the second time open `rework_needed`.
-    Returns False when notify() has nothing more to do (it already logged or saved here)."""
-    terminal = job.links.get("terminal")
-    if not terminal or not terminal_is_idle(terminal, orch, runner):
-        return False
-    if job.history[-1]["event"] == "nudged":
-        store.save(state.open_gate(job, "rework_needed", f"{job.id} is idle in build after a nudge"))
-        return False
-    code, _ = runner([sys.executable, str(orch), "nudge", terminal, "--text", message])
-    if code == 0:
-        job.history.append({"at": state.now_iso(), "event": "nudged", "stage": job.stage, "terminal": terminal})
-        store.save(job)
-    return False
-
-
-def nudge_stuck_builds(orch: Path, runner=None) -> None:
-    """Watch step: a job in build with a PR, quiet for longer than the `[stuck]` build threshold."""
-    from . import metrics  # late: keeps rework importable on its own
-
-    limit = metrics.thresholds(store.config())["build"]
-    now = datetime.now(UTC)
-    for job in store.all_jobs():
-        if job.stage != "build" or job.gate or not job.links.get("pr") or not job.history:
-            continue
-        if (now - metrics.parse(job.history[-1]["at"])).total_seconds() / 60 > limit:
-            notify(job.id, "stuck", "", orch, runner)
