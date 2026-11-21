@@ -159,6 +159,62 @@ class WorkerAsks(unittest.TestCase):
     def test_question_text_falls_back_to_the_body(self) -> None:
         self.assertEqual(asks.question_text({"body": "a\n b", "payload": "not json"}), "a b")
 
+    def test_questions_answered_before_the_last_input_open_no_gate(self) -> None:
+        # esquerda-nas-ruas-0007/-0008, 2026-11-21: asked, answered in the terminal, the worker moved on (a stage
+        # event followed); the unhandled messages must not open a gate.
+        self.inbox = [
+            {**ask_message("msg_old7", question="Which route?"), "created_at": "2026-11-20T10:00:00Z"},
+            {**ask_message("msg_old8", question="Keep the schema?"), "created_at": "2026-11-20T11:00:00Z"},
+        ]
+        path = self.tmp / "factory" / "jobs" / JOB / "state.json"
+        data = json.loads(path.read_text())
+        data["history"].append(
+            {"at": "2026-11-20T12:00:00+00:00", "event": "worker_ask", "stage": "build", "message": "x"}
+        )
+        data["history"].append({"at": "2026-11-20T12:30:00+00:00", "event": "rework_sent", "stage": "build"})
+        path.write_text(json.dumps(data))
+        self.run_cli("sync")
+        self.assertIsNone(self.job()["gate"])
+        self.inbox.append({**ask_message("msg_new", question="Fresh?"), "created_at": "2026-11-21T09:00:00Z"})
+        self.run_cli("sync")
+        self.assertEqual(self.job()["gate"]["detail"], "Fresh?")
+
+
+class DeliveryCheck(unittest.TestCase):
+    ORCH = Path("orch.py")
+
+    def deliver(self, nudge_code: int, stalls: str, tail: list[str]) -> tuple[bool, str]:
+        job = mock.Mock(links={"terminal": "term_w"}, id="j-1")
+        gate = mock.Mock(detail="Which route?")
+
+        def runner(argv: list[str]) -> tuple[int, str]:
+            if "nudge" in argv:
+                return nudge_code, "NOT picked up"
+            if "stalls" in argv:
+                return 1, stalls
+            return 0, json.dumps({"ok": True, "result": {"terminal": {"tail": tail}}})
+
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            ok = asks.deliver_answer(job, gate, "route A", self.ORCH, runner, sleep=lambda _: None)
+        return ok, out.getvalue()
+
+    def test_a_nudge_that_timed_out_but_left_the_worker_busy_is_delivered(self) -> None:
+        ok, out = self.deliver(1, "term_w: busy | Thinking", [])
+        self.assertTrue(ok)
+        self.assertNotIn("not picked up", out)
+
+    def test_a_nudge_that_timed_out_but_is_echoed_on_screen_is_delivered(self) -> None:
+        echo = "> [fractory] Answer to your question (Which route?): route A"
+        ok, out = self.deliver(1, "term_w: idle | ❯", ["x", echo])
+        self.assertTrue(ok)
+        self.assertNotIn("not picked up", out)
+
+    def test_a_real_miss_is_reported(self) -> None:
+        ok, out = self.deliver(1, "term_w: idle | ❯", ["nothing here"])
+        self.assertFalse(ok)
+        self.assertIn("not picked up by term_w", out)
+
 
 if __name__ == "__main__":
     unittest.main()
