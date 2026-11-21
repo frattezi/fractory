@@ -312,11 +312,57 @@ class JudgeCli(unittest.TestCase):
         self.assertIn("- pnpm-lock.yaml", self.prompt)
         self.assertNotIn("+line 5000", self.prompt)
 
-    def test_oversized_diff_gates_without_calling_the_model(self) -> None:
-        self.diff = "x" * (judge.MAX_DIFF_CHARS + 1)
+    def test_200k_diff_is_judged_in_full(self) -> None:
+        self.diff = "".join(file_diff(f"src/f{i}.py", 2000) for i in range(10))
+        self.assertGreater(len(self.diff), 200_000)
         self.run_cli("judge", "cortadas-0001")
-        self.assertEqual(self.job()["gate"]["detail"], "diff too large")
-        self.claude.assert_not_called()
+        self.assertEqual(self.job()["stage"], "ship")
+        self.assertIn(self.diff, self.prompt)
+        self.assertNotIn("PARTIAL DIFF", self.prompt)
+
+    def test_2m_diff_is_judged_reduced_and_marked_partial(self) -> None:
+        self.diff = (
+            "".join(file_diff(f"src/f{i}.py", 4000) for i in range(100))
+            + "diff --git a/logo.png b/logo.png\nBinary files a/logo.png and b/logo.png differ\n"
+        )
+        self.assertGreater(len(self.diff), 2_000_000)
+        self.run_cli("judge", "cortadas-0001")
+        self.assertEqual(self.job()["stage"], "ship")
+        self.assertLess(len(self.prompt), judge.MAX_DIFF_CHARS + 50_000)
+        self.assertIn("PARTIAL DIFF", self.prompt)
+        self.assertIn("src/f0.py: truncated", self.prompt)
+        self.assertIn("logo.png: binary file, not shown", self.prompt)
+        self.assertIn("reduced diff", self.pr_comments[0])
+        self.assertTrue(self.job()["history"][-3]["partial"])
+
+    def test_limit_comes_from_config(self) -> None:
+        (self.tmp / "factory" / "config.toml").write_text("[judge]\nmax_diff_chars = 5000\n")
+        self.diff = file_diff("src/a.py", 2000) + file_diff("src/b.py", 2000)
+        self.run_cli("judge", "cortadas-0001")
+        self.assertIn("PARTIAL DIFF", self.prompt)
+        self.assertLess(len(self.prompt), len(judge.RUBRIC) + 12_000)
+
+    def test_partial_verdict_never_auto_merges_even_when_the_repo_skips_merge_review(self) -> None:
+        self.diff = "".join(file_diff(f"src/f{i}.py", 4000) for i in range(60))
+        (self.tmp / "factory" / "config.toml").write_text(
+            'auto_merge = true\nrisk = { no_merge_review = ["cortadas"] }\n'
+        )
+        self.run_cli("judge", "cortadas-0001")
+        job = cli.store.load("cortadas-0001")
+        with mock.patch.object(sync, "merge_pr") as merge:
+            cli._merge_if_low_risk(job)
+        merge.assert_not_called()
+        self.assertEqual(cli.store.load("cortadas-0001").gate.reason, "merge_review")
+        self.assertIn("partial diff", cli.store.load("cortadas-0001").gate.detail)
+
+    def test_judge_error_gate_gets_a_card_with_the_release_action(self) -> None:
+        self.write_brief("x" * (judge.MAX_BRIEF_CHARS + 1))
+        self.run_cli("judge", "cortadas-0001")
+        self.assertEqual(self.job()["gate"]["reason"], "judge_error")
+        (card,) = [i for i in FakePlane.issues if i["external_id"].startswith("gate-")]
+        self.assertIn("judge_error", card["name"])
+        self.assertIn("brief too large", card["description_html"])
+        self.assertIn("To release it", card["description_html"])
 
     def write_brief(self, text: str) -> None:
         path = self.tmp / "factory" / "jobs" / "cortadas-0001" / "brief.md"
