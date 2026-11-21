@@ -151,6 +151,7 @@ judge --approved--> ship --merged (internal) | draft_pr (Able)--> done          
 | Worker question in the Orca inbox → gate `worker_asks`; the answer is typed into the worker's terminal | `asks.open_gates`, `asks.deliver_answer` |
 | Spend over budget (default US$ 50) → gate `cost` | `state.add_cost` |
 | Able repos (under `~/Factory/Able`) end in `draft_pr`; internal ones in `merged` | `state.apply_event`, `store.repo_kind` |
+| Able repos track work in Jira and nothing they share (Jira, PRs, commits, repo docs) mentions the Fractory or the AI-dev setup | `AGENTS.md` (not enforced in code yet) |
 
 ```sh
 fractory job new --repo ~/Factory/Esquerdalha/cortadas --title "Chat no Plane"
