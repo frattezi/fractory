@@ -51,14 +51,16 @@ class FakeLaunchctl(unittest.TestCase):
 
     def setUp(self) -> None:
         self.tmp = Path(tempfile.mkdtemp())
+        self.runtime = self.tmp / "factory" / "runtime"
         for patcher in (
+            mock.patch.object(launchd.reload, "ensure_runtime", return_value=self.runtime),
             mock.patch.object(Path, "home", return_value=self.tmp / "home"),
             mock.patch.dict(os.environ, {"FACTORY_HOME": str(self.tmp / "factory")}),
             mock.patch.object(launchd.subprocess, "run"),
         ):
             self.addCleanup(patcher.stop)
             started = patcher.start()
-        self.run = started
+        self.run = started  # the last patcher is subprocess.run
 
     def launchctl_calls(self) -> list[list[str]]:
         return [c.args[0] for c in self.run.call_args_list]
@@ -78,6 +80,9 @@ class FakeLaunchctl(unittest.TestCase):
         self.assertEqual(path, launchd.agent_path("serve"))
         self.assertEqual(self.plist("serve")["ProgramArguments"][-3:], ["serve", "--port", "9000"])
         self.assertEqual(self.launchctl_calls()[-1], ["launchctl", "bootstrap", f"gui/{os.getuid()}", str(path)])
+        plist = self.plist("serve")
+        self.assertEqual(plist["WorkingDirectory"], str(self.runtime))
+        self.assertEqual(plist["EnvironmentVariables"]["PYTHONPATH"], str(self.runtime))
 
     def test_uninstall_boots_out_and_removes_plist(self) -> None:
         self.assertFalse(launchd.uninstall("serve"))

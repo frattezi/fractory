@@ -84,6 +84,9 @@ A job's life today, with the manual steps v1 will automate marked *(manual)*.
    finished PR-review agents and settled workers leave open in Orca (see step 9).
 4. `fractory serve --install`: a LaunchAgent keeps the board up at http://127.0.0.1:8777 (log:
    `~/.factory/serve.log`; `--port N` to change it).
+   Both agents run from their own runtime checkout, `~/.factory/runtime` (cloned from `origin` by the install,
+   reset to `origin/main` on every reload, never edited by anyone), so uncommitted work in `~/Factory/Fractory`
+   never blocks a self-update. A failed reload is logged and retried next cycle.
    Run both installs from an Orca terminal: they copy `ORCA_USER_DATA_PATH` and `ORCA_CLI_COMMAND` into the
    agent, without which `orca` answers `runtime_unavailable` under launchd and the rework hook cannot reach
    workers (the install warns when it is unset).
@@ -166,7 +169,7 @@ fractory sync                       # advance jobs from their PR and CI, mirror 
 fractory watch                      # sync every 60 s until stopped (--every S, --rounds N); each cycle also moves the Plane card of every done job to Done (cancelled → Cancelled) when it is not there yet, one line per fix, from one cached issue listing per project
 fractory watch --install            # the same, as a LaunchAgent that survives reboots
 fractory cleanup [--job ID] [--dry-run]  # close a finished job's terminals, worktree and branch in Orca (also retries kept ones), finished PR-review agents and settled worker terminals; --dry-run lists them
-                                    # watch and serve exit when main moves, launchd restarts them (watch: --no-reload)
+                                    # watch and serve exit when main moves, launchd restarts them (watch: --no-reload); the reloader resets ~/.factory/runtime
 fractory dash --out /tmp/dash.json
 fractory serve                      # the live board at http://127.0.0.1:8777
 fractory orch alive term_…          # everything orch.py does, unchanged
@@ -385,3 +388,17 @@ prompt tells the Judge it saw a partial diff. Such a verdict is marked partial: 
 Holdout verifier, risk score and review by risk, `fractory watch` under
 launchd, Orca native gates, and retiring the always-on orchestrator. The roadmap lives in the Plane
 project FRACTORY.
+
+## Migration: agents installed before the runtime checkout
+
+Agents installed earlier run from `~/Factory/Fractory` and skip reloads while it has uncommitted changes
+(`reload: skipped, checkout has uncommitted changes`). Once, from an Orca terminal in `~/Factory/Fractory`
+(after this change is on `main`):
+
+```sh
+python3 -m fractory watch --install   # clones ~/.factory/runtime, rewrites the plist, restarts the agent
+python3 -m fractory serve --install
+tail -f ~/.factory/watch.log          # after the next merge: "watch: main moved to <sha>, restarting"
+```
+
+`~/Factory/Fractory` is then only the dev checkout; its state no longer matters to the running factory.
