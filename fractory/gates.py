@@ -28,6 +28,7 @@ RELEASE = {
     "judge_rounds": "Move this card to Done to reset the Judge rounds and send the worker back to work.",
     "launch_failed": "Fix the launch problem, then move this card to Done to try again.",
     "rework_needed": "Tell the worker what to fix, then move this card to Done.",
+    "worker_stalled": "Look at the worker's terminal; move this card to Done and it is nudged again.",
     "merge_conflict": "Resolve the conflict with main, then move this card to Done.",
 }
 

@@ -13,7 +13,7 @@ from http.server import ThreadingHTTPServer
 from pathlib import Path
 from unittest import mock
 
-from fractory import asks, cli, launch, rework
+from fractory import asks, cli, launch, retry, rework
 from tests.test_plane_import import KEY, PROJECT, FakePlane, reset_fake
 
 JOB = "cortadas-0001"
@@ -62,8 +62,8 @@ class WorkerAsks(unittest.TestCase):
         patch.start()
         self.addCleanup(patch.stop)
         # sync also relaunches dead workers and nudges stuck builds: keep those out of the way
-        for fn in ("relaunch_dead_workers", "nudge_stuck_builds"):
-            quiet = mock.patch.object(rework, fn)
+        for module, fn in ((rework, "relaunch_dead_workers"), (retry, "nudge_stalled")):
+            quiet = mock.patch.object(module, fn)
             quiet.start()
             self.addCleanup(quiet.stop)
         self.run_cli(

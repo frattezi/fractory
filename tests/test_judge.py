@@ -284,7 +284,11 @@ class JudgeCli(unittest.TestCase):
         self.assertEqual(self.job()["cost_usd"], 0.0)
         self.assertEqual(self.cost_events(), [])
 
+    def no_retries(self) -> None:
+        (self.tmp / "factory" / "config.toml").write_text("[retry]\nmax_attempts = 0\n")
+
     def test_unparseable_verdict_still_records_the_paid_call(self) -> None:
+        self.no_retries()
         self.model_reply = "I think it looks fine"
         self.model_extra = {"total_cost_usd": 0.2}
         self.run_cli("judge", "cortadas-0001")
@@ -297,6 +301,7 @@ class JudgeCli(unittest.TestCase):
         self.assertEqual(self.job()["gate"]["reason"], "cost")
 
     def test_malformed_output_opens_judge_error_gate_and_stays_in_review(self) -> None:
+        self.no_retries()
         self.model_reply = "I think it looks fine"
         code, out = self.run_cli("judge", "cortadas-0001")
         self.assertEqual(code, 0, out)
@@ -356,6 +361,7 @@ class JudgeCli(unittest.TestCase):
         self.assertIn("partial diff", cli.store.load("cortadas-0001").gate.detail)
 
     def test_judge_error_gate_gets_a_card_with_the_release_action(self) -> None:
+        self.no_retries()
         self.write_brief("x" * (judge.MAX_BRIEF_CHARS + 1))
         self.run_cli("judge", "cortadas-0001")
         self.assertEqual(self.job()["gate"]["reason"], "judge_error")
@@ -391,6 +397,7 @@ class JudgeCli(unittest.TestCase):
         self.assertNotIn("\nBRIEF\n", self.prompt)
 
     def test_oversized_brief_gates_without_calling_the_model(self) -> None:
+        self.no_retries()
         self.write_brief("x" * (judge.MAX_BRIEF_CHARS + 1))
         self.run_cli("judge", "cortadas-0001")
         self.assertEqual(self.job()["gate"]["detail"], "brief too large")

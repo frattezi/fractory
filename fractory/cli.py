@@ -57,6 +57,7 @@ from . import (
     launchd,
     prcleanup,
     reload,
+    retry,
     rework,
     risk,
     specs_import,
@@ -520,9 +521,9 @@ def judge_job(job_id: str) -> int:
 
         def gate(j: state.Job):
             j, actions = _judge_cost(j, spent)
-            if j.gate is None:
-                j = state.open_gate(j, "judge_error", detail)
-                actions = [*actions, "gate:judge_error"]
+            if j.gate is None:  # a technical failure: retried by watch with backoff, a gate only after the last try
+                j, opened = retry.fail(j, "judge_error", detail, retry.settings(store.config()))
+                actions = [*actions, "gate:judge_error"] if opened else actions
             return j, actions
 
         code = _mutate(job_id, gate)
@@ -642,7 +643,16 @@ def cmd_sync(a: argparse.Namespace) -> int:
             pr = sync.fetch_pr(job.repo, job.links["pr"])
             conflicted = False
             outcome = None
-            judge_next = auto_judge and job.stage == "review" and not job.gate and bool(plane_tracker(job))
+            judge_next = (
+                (auto_judge or retry.retry_pending(job, "judge_error"))
+                and job.stage == "review"
+                and not job.gate
+                and not retry.waiting(job, "judge_error")
+                and bool(plane_tracker(job))
+            )
+            red = sync.ci_result(pr)
+            if job.stage == "checks" and not job.gate and red[0] == "red" and retry.hold_red_for_rerun(job, red[1]):
+                continue
             with store.locked(job.id):
                 current = store.load(job.id)
                 found = sync.pr_event(current, pr)
@@ -688,7 +698,7 @@ def cmd_sync(a: argparse.Namespace) -> int:
             failed = True
             print(f"{job.id}  sync error: {err}")
     rework.relaunch_dead_workers(ORCH)
-    rework.nudge_stuck_builds(ORCH)
+    retry.nudge_stalled(ORCH)
     return 1 if failed else 0
 
 
