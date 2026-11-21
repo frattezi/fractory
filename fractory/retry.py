@@ -131,7 +131,9 @@ def attempt_log(job: state.Job, kind: str, detail: str, cfg: Settings, now: date
 
 def gate_detail(job: state.Job, kind: str, detail: str) -> str:
     past = [f"{h['attempt']}. {h['detail']}" for h in attempts(job, kind)]
-    return "\n".join([f"{detail}", f"Failed after {len(past)} automatic retries:", *past])
+    if not past:
+        return detail
+    return "\n".join([detail, f"Failed after {len(past)} automatic retries:", *past])
 
 
 def fail(job: state.Job, kind: str, detail: str, cfg: Settings, now: datetime | None = None) -> tuple[state.Job, bool]:
