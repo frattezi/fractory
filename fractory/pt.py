@@ -68,7 +68,9 @@ def gate_text(reason: str, detail: str = "") -> str:
             else "O Judge reprovou várias vezes: decidir como seguir"
         )
     if reason == "judge_error":
-        return "O Judge falhou ao revisar o PR"
+        return "O Judge falhou ao revisar o PR, mesmo após novas tentativas"
+    if reason == "worker_stalled":
+        return "O worker parou sem perguntar nada, mesmo após ser cutucado"
     if reason == "launch_failed":
         return "Falha ao lançar o job: o worker não subiu"
     if reason == "rework_needed":

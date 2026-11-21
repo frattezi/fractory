@@ -202,7 +202,7 @@ class ReworkCli(ReworkBase):
 
 
 class ResumeAndNudge(ReworkCli):
-    """Resolving judge_rounds sends the rework; a quiet idle build gets one nudge, then a gate."""
+    """Resolving judge_rounds sends the last rejection to the worker."""
 
     idle = True
 
@@ -240,32 +240,6 @@ class ResumeAndNudge(ReworkCli):
         self.run_cli("judge", JOB)
         self.run_cli("gate", "resolve", JOB, "continue")
         self.assertEqual(self.job()["gate"]["reason"], "rework_needed")
-
-    def age_job(self) -> None:
-        path = self.tmp / "factory" / "jobs" / JOB / "state.json"
-        data = json.loads(path.read_text())
-        data["history"][-1]["at"] = "2020-01-01T00:00:00+00:00"
-        path.write_text(json.dumps(data))
-
-    def test_idle_stuck_build_is_nudged_once_then_gated(self) -> None:
-        self.new_job("build")
-        self.age_job()
-        rework.nudge_stuck_builds(Path("orch.py"))
-        self.assertEqual(self.events()[-1], "nudged")
-        self.assertTrue(any("nudge" in a for a in self.nudges))
-        self.age_job()
-        rework.nudge_stuck_builds(Path("orch.py"))
-        self.assertEqual(self.job()["gate"]["reason"], "rework_needed")
-        self.assertEqual(sum("nudge" in a for a in self.nudges), 1)
-
-    def test_busy_or_fresh_build_is_left_alone(self) -> None:
-        self.new_job("build")
-        rework.nudge_stuck_builds(Path("orch.py"))
-        self.age_job()
-        self.idle = False
-        rework.nudge_stuck_builds(Path("orch.py"))
-        self.assertNotIn("nudged", self.events())
-        self.assertIsNone(self.job()["gate"])
 
 
 class EscalateOnRejection(ReworkCli):

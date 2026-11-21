@@ -31,7 +31,7 @@ class GateText(unittest.TestCase):
         cases = {
             ("cost", "US$ 52.00 over budget US$ 50.00"): "Orçamento estourado: US$ 52.00 de US$ 50.00",
             ("judge_rounds", "2 judge rounds without passing"): "O Judge reprovou 2 vezes: decidir como seguir",
-            ("judge_error", "claude exited 1"): "O Judge falhou ao revisar o PR",
+            ("judge_error", "claude exited 1"): "O Judge falhou ao revisar o PR, mesmo após novas tentativas",
             ("launch_failed", "worktree: boom"): "Falha ao lançar o job: o worker não subiu",
             ("rework_needed", "[fractory] Rework on x"): "Retrabalho pendente: não consegui avisar o worker",
             ("merge_conflict", "[fractory] Rework on x"): "O PR tem conflito com a main e o worker não foi avisado",
