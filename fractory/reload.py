@@ -7,6 +7,8 @@ import subprocess
 from collections.abc import Callable
 from pathlib import Path
 
+from . import store
+
 Git = Callable[..., str]
 
 
@@ -47,10 +49,38 @@ def describe(err: Exception) -> str:
     return " ".join(str(stderr).split()) if stderr else str(err)
 
 
+def runtime_root() -> Path:
+    """The checkout the LaunchAgents run from. Only the reloader touches it, so it is always reset, never merged."""
+    return store.factory_home() / "runtime"
+
+
+def is_runtime(repo_root: Path) -> bool:
+    return repo_root.resolve() == runtime_root().resolve()
+
+
+def ensure_runtime(source_root: Path, git: Git | None = None) -> Path:
+    """Clone origin of `source_root` into the runtime checkout when missing, at origin/main. Idempotent."""
+    git = git or run_git
+    target = runtime_root()
+    if not (target / ".git").exists():
+        url = https_remote(git(source_root, "remote", "get-url", "origin"))
+        target.parent.mkdir(parents=True, exist_ok=True)
+        subprocess.run(
+            ["git", "-c", "credential.helper=", "-c", "credential.helper=!gh auth git-credential",
+             "clone", "-q", "--branch", "main", url, str(target)],
+            check=True, capture_output=True, text=True, timeout=300,
+        )  # fmt: skip
+    return target
+
+
 def main_moved(repo_root: Path, git: Git | None = None) -> bool:
-    """True when remote main is ahead of a clean checkout of `main`. Any git error means False."""
+    """True when remote main is ahead of the checkout. A dev checkout must be clean and on `main`; the runtime
+    checkout is the reloader's own, so local state never blocks it. Any git error means False."""
     git = git or run_git
     try:
+        if is_runtime(repo_root):
+            fetch_main(repo_root, git)
+            return git(repo_root, "rev-parse", "HEAD") != git(repo_root, "rev-parse", "FETCH_HEAD")
         branch = git(repo_root, "rev-parse", "--abbrev-ref", "HEAD")
         if branch != "main":
             print(f"reload: skipped, checkout is on {branch}, not main", flush=True)
@@ -66,13 +96,17 @@ def main_moved(repo_root: Path, git: Git | None = None) -> bool:
 
 
 def fast_forward(repo_root: Path, git: Git | None = None) -> str | None:
-    """Fast-forward to FETCH_HEAD (set by main_moved); the new short sha, or None when git refuses."""
+    """Move to FETCH_HEAD (set by main_moved): reset --hard in the runtime checkout, fast-forward in a dev one.
+    The new short sha, or None when git refuses (logged; the next cycle retries)."""
     git = git or run_git
     try:
-        git(repo_root, "merge", "--ff-only", "FETCH_HEAD")
+        if is_runtime(repo_root):
+            git(repo_root, "reset", "--hard", "-q", "FETCH_HEAD")
+        else:
+            git(repo_root, "merge", "--ff-only", "FETCH_HEAD")
         return git(repo_root, "rev-parse", "--short", "HEAD")
     except (OSError, subprocess.SubprocessError) as err:
-        print(f"reload: fast-forward failed: {describe(err)}", flush=True)
+        print(f"reload: update failed, retrying next cycle: {describe(err)}", flush=True)
         return None
 
 

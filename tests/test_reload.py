@@ -105,6 +105,59 @@ class MainMoved(unittest.TestCase):
         self.assertIsNone(reload.pull_if_moved(self.root, FakeGit(remote="aaa111")))
 
 
+class RuntimeCheckout(unittest.TestCase):
+    """The LaunchAgents run from $FACTORY_HOME/runtime: dirty state or a stray branch never blocks a reload."""
+
+    def setUp(self) -> None:
+        home = tempfile.mkdtemp()
+        patcher = mock.patch.dict(os.environ, {"FACTORY_HOME": home})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.root = Path(home) / "runtime"
+
+    def test_dirty_or_off_main_runtime_still_reloads_with_reset(self) -> None:
+        for git in (FakeGit(dirty=" M fractory/cli.py"), FakeGit(branch="feature")):
+            self.assertEqual(reload.pull_if_moved(self.root, git), "aaa111")
+            self.assertIn(("reset", "--hard", "-q", "FETCH_HEAD"), git.calls)
+            self.assertNotIn(("merge", "--ff-only", "FETCH_HEAD"), git.calls)
+            self.assertNotIn(("status", "--porcelain"), git.calls)
+
+    def test_same_sha_is_not_moved(self) -> None:
+        git = FakeGit(remote="aaa111")
+        self.assertIsNone(reload.pull_if_moved(self.root, git))
+        self.assertNotIn(("reset", "--hard", "-q", "FETCH_HEAD"), git.calls)
+
+    def test_failed_reset_is_logged_and_retried_next_cycle(self) -> None:
+        git = FakeGit(fail_on="reset")
+        with contextlib.redirect_stdout(io.StringIO()) as out:
+            self.assertIsNone(reload.pull_if_moved(self.root, git))
+            self.assertIsNone(reload.pull_if_moved(self.root, git))
+        self.assertEqual(out.getvalue().count("retrying next cycle"), 2)
+
+    def test_fetch_failure_is_logged_not_raised(self) -> None:
+        with contextlib.redirect_stdout(io.StringIO()) as out:
+            self.assertFalse(reload.main_moved(self.root, FakeGit(fail_on="fetch")))
+        self.assertIn("git failed", out.getvalue())
+
+    def test_dev_checkout_is_never_reset(self) -> None:
+        git = FakeGit()
+        reload.pull_if_moved(Path("/dev/checkout"), git)
+        self.assertNotIn(("reset", "--hard", "-q", "FETCH_HEAD"), git.calls)
+
+    def test_ensure_runtime_skips_existing_clone(self) -> None:
+        (self.root / ".git").mkdir(parents=True)
+        git = FakeGit()
+        self.assertEqual(reload.ensure_runtime(Path("/dev/checkout"), git), self.root)
+        self.assertEqual(git.calls, [])
+
+    def test_ensure_runtime_clones_origin_main_over_https(self) -> None:
+        with mock.patch.object(reload.subprocess, "run") as run:
+            reload.ensure_runtime(Path("/dev/checkout"), FakeGit())
+        argv = run.call_args.args[0]
+        self.assertIn("clone", argv)
+        self.assertEqual(argv[-2:], ["https://github.com/o/r.git", str(self.root)])
+
+
 class WatchReload(unittest.TestCase):
     def setUp(self) -> None:
         home = tempfile.mkdtemp()

@@ -10,6 +10,8 @@ import sys
 from collections.abc import Mapping
 from pathlib import Path
 
+from . import reload
+
 LABEL = "com.fractory.watch"
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -85,7 +87,8 @@ def install(name: str, args: list[str], log: Path, environ: Mapping[str, str] | 
     path.parent.mkdir(parents=True, exist_ok=True)
     log.parent.mkdir(parents=True, exist_ok=True)
     uninstall(name)
-    path.write_bytes(plist_bytes(name, sys.executable, REPO_ROOT, log, path_env(), args, env))
+    runtime = reload.ensure_runtime(REPO_ROOT)
+    path.write_bytes(plist_bytes(name, sys.executable, runtime, log, path_env(), args, env))
     subprocess.run(["launchctl", "bootstrap", f"gui/{os.getuid()}", str(path)], check=True)
     return path
 
