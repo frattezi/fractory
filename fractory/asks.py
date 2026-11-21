@@ -65,7 +65,7 @@ def asked_ids(job: state.Job) -> set[str]:
 
 def parse_time(value: object) -> datetime | None:
     try:
-        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        parsed = datetime.fromisoformat(str(value))
     except ValueError:
         return None
     return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
