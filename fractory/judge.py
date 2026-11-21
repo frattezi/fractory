@@ -21,7 +21,8 @@ from pathlib import Path
 from typing import ClassVar
 
 RUBRIC = (Path(__file__).parent / "rubric.md").read_text().strip()
-MAX_DIFF_CHARS = 60_000
+MAX_DIFF_CHARS = 600_000  # default; `[judge] max_diff_chars` in config.toml overrides. Opus takes a 1M-token context
+MIN_FILE_CHARS = 400
 MAX_BRIEF_CHARS = 20_000
 CLAUDE_TIMEOUT_S = 900
 KEYS = {"decision", "spec_match", "scope_creep", "reasons"}
@@ -52,6 +53,7 @@ class Verdict:
     reasons: tuple[str, ...]
     unverified: tuple[str, ...] = ()  # findings the model is unsure of; notes when they do not block
     cost_usd: float = 0.0  # what the model call cost, from claude's total_cost_usd
+    partial: bool = False  # the model saw a reduced diff: the code never lets such a PR auto-merge
 
     @property
     def approved(self) -> bool:
@@ -67,6 +69,7 @@ class Verdict:
         return (
             f"**Fractory judge: {self.decision}**\n\n"
             f"spec match: {self.spec_match} · scope creep: {self.scope_creep}\n\n{bullets}{notes_md}"
+            + (f"\n\n{PARTIAL_NOTE}" if self.partial else "")
         )
 
     def comment_html(self) -> str:
@@ -76,7 +79,11 @@ class Verdict:
         return (
             f"<p><strong>Fractory judge: {self.decision}</strong></p>"
             f"<p>spec match: {self.spec_match} · scope creep: {self.scope_creep}</p><ul>{items}</ul>{notes_html}"
+            + (f"<p>{escape(PARTIAL_NOTE)}</p>" if self.partial else "")
         )
+
+
+PARTIAL_NOTE = "The diff was too large: the judge saw a reduced diff (large files truncated), so this PR needs a human merge review."
 
 
 def _file_path(header: str) -> str:
@@ -126,6 +133,52 @@ def trim_diff(diff: str, extra_patterns: tuple[str, ...] | list[str] = ()) -> tu
     return "".join(out), dropped
 
 
+def _sections(diff: str) -> list[list[str]]:
+    sections: list[list[str]] = []
+    for line in diff.splitlines(keepends=True):
+        if line.startswith("diff --git ") or not sections:
+            sections.append([])
+        sections[-1].append(line)
+    return sections
+
+
+def _is_binary(section: list[str]) -> bool:
+    return any(line.startswith(("Binary files ", "GIT binary patch")) for line in section)
+
+
+def reduce_diff(diff: str, max_chars: int) -> str:
+    """Fit a diff into `max_chars`: stub binary files, cut each remaining file to an equal share, stub what is left.
+
+    Called after `trim_diff` dropped generated files. The result carries a note on every cut, and is always <= max_chars.
+    """
+    sections = _sections(diff)
+    kept: list[str] = []
+    for section in sections:
+        if section[0].startswith("diff --git ") and _is_binary(section):
+            kept.append(f"# {_file_path(section[0])}: binary file, not shown\n")
+        else:
+            kept.append("".join(section))
+    if sum(map(len, kept)) <= max_chars:
+        return "".join(kept)
+    share = max(MIN_FILE_CHARS, max_chars // max(len(kept), 1) - 100)
+    cut = []
+    for text in kept:
+        if len(text) > share and text.startswith("diff --git "):
+            path = _file_path(text.split("\n", 1)[0])
+            text = f"{text[:share].rsplit(chr(10), 1)[0]}\n# {path}: truncated, {len(text) - share} chars not shown\n"
+        cut.append(text)
+    out: list[str] = []
+    used = 0
+    for i, text in enumerate(cut):
+        if used + len(text) > max_chars - 200:
+            omitted = [_file_path(t.split("\n", 1)[0]) for t in cut[i:] if t.startswith("diff --git ")]
+            out.append(f"# {len(cut) - i} more sections not shown: {', '.join(omitted)}"[:200] + "\n")
+            break
+        out.append(text)
+        used += len(text)
+    return "".join(out)
+
+
 def build_prompt(
     issue_title: str,
     issue_text: str,
@@ -134,7 +187,15 @@ def build_prompt(
     checks: Checks | None = None,
     dropped: list[str] | None = None,
     repo_access: bool = False,
+    partial: bool = False,
 ) -> str:
+    partial_section = (
+        "PARTIAL DIFF\nThe diff was too large to show in full: binary files are stubbed and big files truncated "
+        "(each cut is marked). You are judging part of the change; say in `unverified` what you could not see, and "
+        "do not approve with more confidence than that allows.\n\n"
+        if partial
+        else ""
+    )
     dropped_section = (
         "GENERATED FILES NOT SHOWN\nChanged in the PR, left out of the diff as generated:\n"
         + "\n".join(f"- {p}" for p in dropped)
@@ -169,6 +230,7 @@ def build_prompt(
         f"{brief_section}"
         f"{ci_section}"
         f"{dropped_section}"
+        f"{partial_section}"
         f"{access_section}"
         f"DIFF\n{diff}\n\n"
         "Reply with ONLY a JSON object, no prose, in exactly this shape:\n"
@@ -264,11 +326,6 @@ def ask_model_with_cost(prompt: str, runner: Runner | None = None, cwd: str | No
     return result, float(cost) if usable else 0.0
 
 
-def check_diff_size(diff: str) -> None:
-    if len(diff) > MAX_DIFF_CHARS:
-        raise JudgeError("diff too large")
-
-
 def check_brief_size(brief: str | None) -> None:
     if brief is not None and len(brief) > MAX_BRIEF_CHARS:
         raise JudgeError("brief too large")
@@ -311,16 +368,19 @@ def judge_diff(
     checks: Checks | None = None,
     generated: list[str] | None = None,
     checkout: str | None = None,
+    max_diff_chars: int = MAX_DIFF_CHARS,
 ) -> Verdict:
-    """Trim generated files, size checks, prompt, model, parse.
+    """Trim generated files, reduce a diff over `max_diff_chars`, prompt, model, parse.
 
-    Raises JudgeError before any model call if the trimmed diff or the brief is too big.
+    Raises JudgeError before any model call only if the brief is too big. A reduced diff marks the verdict `partial`.
     """
     diff, dropped = trim_diff(diff, generated or ())
-    check_diff_size(diff)
+    partial = len(diff) > max_diff_chars
+    if partial:
+        diff = reduce_diff(diff, max_diff_chars)
     check_brief_size(brief)
     prompt = build_prompt(
-        issue_title, html_to_text(issue_html), diff, brief, checks, dropped, repo_access=bool(checkout)
+        issue_title, html_to_text(issue_html), diff, brief, checks, dropped, repo_access=bool(checkout), partial=partial
     )
     text, cost = ask_model_with_cost(prompt, runner, checkout)
     try:
@@ -328,7 +388,7 @@ def judge_diff(
     except JudgeError as err:
         err.cost_usd = cost  # the call was paid for even though the verdict is unusable
         raise
-    return replace(verdict, cost_usd=cost)
+    return replace(verdict, cost_usd=cost, partial=partial)
 
 
 @contextlib.contextmanager

@@ -37,6 +37,7 @@ Exit 0 means it did what it says; 1 means it did not. Output is short plain text
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import os
 import subprocess
@@ -512,6 +513,7 @@ def judge_job(job_id: str) -> int:
                 checks=sync.pr_checks(job.repo, pr),
                 generated=list(store.config().get("judge", {}).get("generated", [])),
                 checkout=checkout,
+                max_diff_chars=int(store.config().get("judge", {}).get("max_diff_chars", judge.MAX_DIFF_CHARS)),
             )
     except judge.JudgeError as err:
         detail, spent = str(err), err.cost_usd
@@ -523,11 +525,15 @@ def judge_job(job_id: str) -> int:
                 actions = [*actions, "gate:judge_error"]
             return j, actions
 
-        return _mutate(job_id, gate)
+        code = _mutate(job_id, gate)
+        with contextlib.suppress(OSError, ValueError, RuntimeError):
+            gates.ensure_card(job_id)  # the watch cycle retries if Plane is down
+        return code
 
     def apply(j: state.Job):
         if j.stage != "review" or j.gate:
             raise state.TransitionError(f"{j.id} changed while judging (stage {j.stage}); verdict dropped")
+        j.history.append({"at": state.now_iso(), "event": "judge_diff", "stage": j.stage, "partial": verdict.partial})
         j, _ = state.apply_event(j, "reviewed", note="judge")
         j, actions = state.apply_event(j, verdict.decision, note=verdict.note())
         j, cost_actions = _judge_cost(j, verdict.cost_usd)
@@ -555,10 +561,23 @@ def _approved_merge_review(job: state.Job) -> bool:
     return False
 
 
+def _judged_partial(job: state.Job) -> bool:
+    """The latest judge verdict was given on a reduced diff: it never auto-merges, whatever the risk rules say."""
+    for h in reversed(job.history):
+        if h["event"] == "judge_diff":
+            return bool(h.get("partial"))
+    return False
+
+
 def _merge_if_low_risk(job: state.Job) -> None:
     """Assess the PR diff: low merges, medium/high opens gate `merge_review` instead. Caller holds the lock."""
     pr_number = job.links["pr"]
     if not _approved_merge_review(job):
+        if _judged_partial(job):
+            detail = "medium: the judge saw a partial diff (too large to show in full)"
+            store.save(state.open_gate(job, "merge_review", detail))
+            print(f"{job.id}  GATE merge_review: {detail}")
+            return
         verdict = risk.assess(
             sync.pr_files(job.repo, pr_number), store.config().get("risk"), risk.repo_config(job.repo)
         )

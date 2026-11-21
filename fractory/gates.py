@@ -21,6 +21,17 @@ WHAT_MOVING_DOES = (
 )
 
 
+RELEASE = {
+    "judge_error": "Fix the cause above (or judge by hand), then move this card to Done: the Judge runs again.",
+    "merge_review": "Review the PR and merge it yourself or move this card to Done to let Fractory merge it.",
+    "cost": "Move this card to Done to add budget and continue.",
+    "judge_rounds": "Move this card to Done to reset the Judge rounds and send the worker back to work.",
+    "launch_failed": "Fix the launch problem, then move this card to Done to try again.",
+    "rework_needed": "Tell the worker what to fix, then move this card to Done.",
+    "merge_conflict": "Resolve the conflict with main, then move this card to Done.",
+}
+
+
 def card_title(job: state.Job, gate: state.Gate) -> str:
     if gate.reason == asks.REASON:
         return f"Needs you: worker asks: {asks.title_for(gate.detail)} · {job.title}"
@@ -51,6 +62,8 @@ def card_body(job: state.Job, gate: state.Gate) -> str:
     if link := pr_link(job):
         parts.append(f"<p><b>PR:</b> {link}</p>")
     parts.append(f"<p><b>Job:</b> <code>{esc(job.id)}</code></p>")
+    if action := RELEASE.get(gate.reason):
+        parts.append(f"<p><b>To release it:</b> {esc(action)}</p>")
     parts.append(f"<p>{WHAT_MOVING_DOES}</p>")
     return "".join(parts)
 
@@ -148,7 +161,12 @@ def close_obsolete(job_id: str, plane_factory=None) -> bool:
     """Close an open merge_review gate whose repo the config no longer reviews (a gate opened under an older rule)."""
     job = store.load(job_id)
     gate = job.gate
-    if gate is None or gate.reason != "merge_review" or risk.reviews_merges(job.repo, store.config().get("risk")):
+    if (
+        gate is None
+        or gate.reason != "merge_review"
+        or "partial diff" in gate.detail  # opened by the judge's size reduction, not by the repo's risk rule
+        or risk.reviews_merges(job.repo, store.config().get("risk"))
+    ):
         return False
     with store.locked(job_id):
         current = store.load(job_id)
