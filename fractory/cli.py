@@ -244,7 +244,7 @@ def cmd_gate_resolve(a: argparse.Namespace) -> int:
         if before.gate.reason == "judge_rounds" and a.decision == "continue":
             rework.resume_after_rounds(a.id, ORCH)
         if before.gate.reason == asks.REASON and a.decision == "continue":
-            asks.deliver_answer(before, before.gate, a.note or "", ORCH)
+            asks.deliver_gate_answer(before, before.gate, a.note or "", ORCH)
     return code
 
 
@@ -633,7 +633,7 @@ def cmd_sync(a: argparse.Namespace) -> int:
     jobs = [store.load(i) for i in a.ids] if a.ids else store.all_jobs()
     auto_merge = bool(store.config().get("auto_merge"))
     auto_judge = bool(store.config().get("auto_judge"))
-    asks.open_gates()
+    asks.open_gates(orch=ORCH)
     failed = gates.sync_gates(a.ids or None)
     jobs = [store.load(j.id) for j in jobs]  # a gate card may just have resolved a job
     for job in jobs:
