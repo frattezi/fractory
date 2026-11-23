@@ -59,7 +59,10 @@ def pr_link(job: state.Job) -> str:
 
 def card_body(job: state.Job, gate: state.Gate) -> str:
     esc = html.escape
-    parts = [f"<p><b>Gate:</b> {esc(gate.reason)}</p>", f"<p>{esc(gate.detail or '(no detail)')}</p>"]
+    parts = [
+        f"<p><b>Gate:</b> {esc(gate.reason)}</p>",
+        f"<p>{esc(gate.detail or '(no detail)').replace(chr(10), '<br>')}</p>",
+    ]
     if link := pr_link(job):
         parts.append(f"<p><b>PR:</b> {link}</p>")
     parts.append(f"<p><b>Job:</b> <code>{esc(job.id)}</code></p>")
@@ -140,7 +143,7 @@ def resolve_from_card(job_id: str, plane_factory=None) -> bool:
     if gate.reason == "judge_rounds" and decision == "continue":
         rework.resume_after_rounds(job_id, cli.ORCH)
     if gate.reason == asks.REASON and decision == "continue":
-        asks.deliver_answer(job, gate, note, cli.ORCH)
+        asks.deliver_gate_answer(job, gate, note, cli.ORCH)
     return True
 
 
