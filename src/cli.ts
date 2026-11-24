@@ -5,7 +5,12 @@ import { readFile, realpath } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { createTicketSource } from './adapters/index.ts';
+import {
+  type CreatedTicket,
+  type NewTicket,
+  createTicket,
+  createTicketSource,
+} from './adapters/index.ts';
 import { cleanup } from './cleanup/cleanup.ts';
 import {
   describeRepoConfig,
@@ -19,6 +24,8 @@ import type { RunRecord } from './contracts/run.ts';
 import { type TicketRef, TicketRefSchema, type TicketSource } from './contracts/ticket.ts';
 import { type Exec, defaultExec } from './github/exec.ts';
 import { type Gh, createGh } from './github/gh.ts';
+import { type InitOptions, initRepo } from './package/init.ts';
+import { installSkills } from './package/install.ts';
 import { RunRegistry } from './registry/registry.ts';
 import { launchRun } from './runner/index.ts';
 import { type Launchctl, installLaunchd, resolveBin, uninstallLaunchd } from './trigger/launchd.ts';
@@ -39,6 +46,11 @@ export interface CliEnv {
   launchctl: Launchctl;
   resolveBin: (name: string) => string | undefined;
   createTicketSource: (config: TicketSourceConfig, mode: Mode) => TicketSource;
+  createTicket: (
+    config: TicketSourceConfig,
+    input: NewTicket,
+    options: { mode: Mode },
+  ) => Promise<CreatedTicket>;
   launchRun: (record: RunRecord, config: RepoConfig) => Promise<void>;
   makeLogger: (factory: FactoryConfig) => Logger;
   now: () => Date;
@@ -67,6 +79,7 @@ export const defaultEnv = (): CliEnv => {
     launchctl: realLaunchctl,
     resolveBin: (name) => resolveBin(name),
     createTicketSource: (config, mode) => createTicketSource(config, { mode }),
+    createTicket,
     launchRun,
     makeLogger: (factory) => createFileLogger(join(factory.logDir, 'tick.log')),
     now: () => new Date(),
@@ -333,25 +346,14 @@ const commands: Record<string, (args: CliArgs, env: CliEnv) => Promise<void>> = 
       ...(num('max-iterations') !== undefined && { maxIterations: num('max-iterations') }),
       force: args.flags.force === true,
     };
-    const mod = await importPart<{ initRepo?: (o: unknown) => Promise<{ path: string }> }>(
-      './package/init.ts',
-      'package part A',
-    );
-    if (!mod.initRepo) throw new Error('./package/init.ts does not export initRepo');
-    const { path } = await mod.initRepo(options);
+    // Flags are untyped strings; InitOptionsSchema inside initRepo is the validation boundary.
+    const { path } = await initRepo(options as InitOptions);
     env.out(`Wrote ${path}`);
   },
 
   async install(args, env) {
     const targetDir = flag(args, 'target');
-    const mod = await importPart<{
-      installSkills?: (o: { targetDir?: string }) => Promise<{
-        installed: string[];
-        skipped: string[];
-      }>;
-    }>('./package/install.ts', 'package part A');
-    if (!mod.installSkills) throw new Error('./package/install.ts does not export installSkills');
-    const result = await mod.installSkills(targetDir ? { targetDir } : {});
+    const result = await installSkills(targetDir ? { targetDir } : {});
     env.out(JSON.stringify(result, null, 2));
   },
 
@@ -364,22 +366,17 @@ const commands: Record<string, (args: CliArgs, env: CliEnv) => Promise<void>> = 
       throw new Error('tickets create needs --title, --body-file and --status backlog|ready');
     }
     const config = await loadRepoConfig(env.cwd);
-    const input = {
+    const parent = flag(args, 'parent');
+    const input: NewTicket = {
       title,
       body: await readFile(resolve(env.cwd, bodyFile), 'utf8'),
       status,
-      blockedBy: (args.flags['blocked-by'] as string[] | undefined) ?? [],
-      ...(flag(args, 'parent') && { parent: flag(args, 'parent') }),
+      blockedBy: ((args.flags['blocked-by'] as string[] | undefined) ?? []).map((r) =>
+        TicketRefSchema.parse(r),
+      ),
+      ...(parent && { parent: TicketRefSchema.parse(parent) }),
     };
-    const mod = await importPart<{
-      createTicket?: (
-        config: TicketSourceConfig,
-        input: typeof input,
-        options: { mode: Mode },
-      ) => Promise<{ ref: string; url: string }>;
-    }>('./adapters/index.ts', 'adapters part B');
-    if (!mod.createTicket) throw new Error('./adapters/index.ts does not export createTicket');
-    const created = await mod.createTicket(config.ticketSource, input, { mode: config.mode });
+    const created = await env.createTicket(config.ticketSource, input, { mode: config.mode });
     env.out(JSON.stringify({ ref: created.ref, url: created.url }));
   },
 };
