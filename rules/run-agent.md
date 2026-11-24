@@ -37,7 +37,7 @@ Do not write your own memory files. Claude Code's built-in auto-memory is off in
 
 ## Final output: RunResult
 
-Your last message must end with exactly one JSON object, validated against this schema. Nothing after it. The `outcome` field selects the shape:
+Finish by printing exactly one JSON object inside `<result>…</result>` tags, then `<promise>COMPLETE</promise>` on its own line (the "How to finish" section at the end of your prompt is authoritative). The JSON is validated against this schema; the `outcome` field selects the shape:
 
 ```json
 { "outcome": "done", "summary": "What changed and how it was verified." }

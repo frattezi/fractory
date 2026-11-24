@@ -1,6 +1,6 @@
 import type { AgentRunOutcome, SandcastleAdapter } from './types.ts';
 
-const DEFAULT_MODEL = 'claude-opus-4-8';
+const DEFAULT_MODEL = 'claude-opus-5-5';
 
 /**
  * The real Sandcastle: Docker sandbox, Claude Code agent, one worktree per Run on its own branch.
