@@ -4,8 +4,12 @@
   "private": true,
   "type": "module",
   "description": "Personal software factory: rules, skills and deterministic flows on top of Sandcastle and Agent Manager.",
-  "bin": { "fractory": "./src/cli.ts" },
-  "engines": { "node": ">=22" },
+  "bin": {
+    "fractory": "./src/cli.ts"
+  },
+  "engines": {
+    "node": ">=22"
+  },
   "scripts": {
     "fractory": "tsx src/cli.ts",
     "typecheck": "tsc --noEmit",
@@ -14,6 +18,7 @@
     "format": "biome format --write ."
   },
   "dependencies": {
+    "@ai-hero/sandcastle": "0.14.0",
     "zod": "3.23.8"
   },
   "devDependencies": {
