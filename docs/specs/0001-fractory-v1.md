@@ -111,9 +111,16 @@ Changing a contract is a change for every part: do it in its own commit, update 
      - New review comment not by the factory → Trigger `review-comment` (key includes comment id).
      - All green, Personal Mode, `hasCi`, `mergeable == MERGEABLE` → `gh pr merge --squash`.
        Never attempt to merge a conflicting PR (v0 lesson).
-  3. Tickets `listReady()` without a Run for key `ticket-ready` → Trigger `ticket-ready`
+  3. Review comments from Agent Manager: for each Run with `<registryDir>/<runId>.comments.json`
+     (`RunCommentsFileSchema`, written atomically by Agent Manager, never modified by Fractory),
+     queue one `review-comment` Trigger batching the comments no earlier Run consumed, keyed by
+     `commentId = am:<newest comment id>`, on the Ticket's latest Run branch, only when no Run on
+     the Ticket is queued/running. Consumption is derived from existing Run keys (idempotent).
+     The executor reads the same file for `am:` ids and feeds path, line and body to the agent.
+     An invalid file is logged and skipped. `RunRegistry.list()` ignores `*.comments.json`.
+  4. Tickets `listReady()` without a Run for key `ticket-ready` → Trigger `ticket-ready`
      (Ticket → `in_progress`).
-  4. Start queued Runs only into free slots: active Runs < `maxConcurrentRuns`, oldest first.
+  5. Start queued Runs only into free slots: active Runs < `maxConcurrentRuns`, oldest first.
      After a reboot this prevents relaunching everything at once (v0 lesson).
   - Each repo and each Run is wrapped so one failure never stops the rest; errors are logged.
   - A per-tick lock file prevents overlapping ticks.
@@ -131,9 +138,10 @@ Changing a contract is a change for every part: do it in its own commit, update 
 - A read-only "Runs" group fed by the registry directory (fsnotify or poll), one row per Run:
   Ticket, status, branch, PR link, needs-human question.
 - Actions: open the Run's log in a terminal tab; open the existing diff review on `worktreePath`;
-  review comments on a Run are written as a file the next `tick` turns into a `review-comment`
-  Trigger (exact handoff format: `<registryDir>/<id>.comments.json`, added to the contract when
-  built).
+  review comments on a Run are written atomically to `<registryDir>/<id>.comments.json`
+  (`{ version: 1, comments: [{ id, path, line, body, createdAt }] }`, `RunCommentsFileSchema` in
+  `src/contracts/run.ts`) and the next `tick` turns them into a `review-comment` Trigger. Agent
+  Manager owns the file; Fractory never rewrites or deletes it.
 - Smallest possible diff against upstream; no change to existing session behaviour.
 
 ## Build order

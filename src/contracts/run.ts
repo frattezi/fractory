@@ -1,3 +1,4 @@
+import { join } from 'node:path';
 import { z } from 'zod';
 import { TicketRefSchema } from './ticket.ts';
 
@@ -81,3 +82,31 @@ export const runKey = (ticketRef: string, trigger: Trigger): string => {
       return `${ticketRef}:manual:${Date.now()}`;
   }
 };
+
+/**
+ * Review comments written by the Agent Manager fork at `<registryDir>/<runId>.comments.json`
+ * (atomic write). Fractory only reads this file; Agent Manager owns it. Consumption is derived
+ * from existing Run keys (`am:<comment id>`), so the file is never rewritten.
+ */
+export const RUN_COMMENTS_VERSION = 1;
+
+export const RunCommentSchema = z.object({
+  id: z.string().min(1),
+  path: z.string(),
+  line: z.number().int(),
+  body: z.string(),
+  createdAt: z.string().datetime(),
+});
+export type RunComment = z.infer<typeof RunCommentSchema>;
+
+export const RunCommentsFileSchema = z.object({
+  version: z.literal(RUN_COMMENTS_VERSION),
+  comments: z.array(RunCommentSchema),
+});
+export type RunCommentsFile = z.infer<typeof RunCommentsFileSchema>;
+
+export const commentsFilePath = (registryDir: string, runId: string): string =>
+  join(registryDir, `${runId}.comments.json`);
+
+/** `commentId` prefix marking a review-comment Trigger that came from Agent Manager. */
+export const AM_COMMENT_PREFIX = 'am:';

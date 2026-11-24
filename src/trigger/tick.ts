@@ -2,9 +2,10 @@ import { join } from 'node:path';
 import type { FactoryConfig } from '../contracts/factory-config.ts';
 import { type Mode, type RepoConfig, requiresPrGate } from '../contracts/repo-config.ts';
 import type { TicketSourceConfig } from '../contracts/repo-config.ts';
-import { type RunRecord, type Trigger, runKey } from '../contracts/run.ts';
+import { AM_COMMENT_PREFIX, type RunRecord, type Trigger, runKey } from '../contracts/run.ts';
 import type { TicketSource } from '../contracts/ticket.ts';
 import { type Gh, feedbackItems, summarizeChecks } from '../github/gh.ts';
+import { consumedCommentIds, pendingComments, readRunComments } from '../registry/comments.ts';
 import type { RunRegistry } from '../registry/registry.ts';
 import { branchFor, queueRun } from './queue.ts';
 import { type Logger, type PidState, acquireLock } from './support.ts';
@@ -35,6 +36,15 @@ export interface TickSummary {
 }
 
 const byCreatedAt = (a: RunRecord, b: RunRecord): number => a.createdAt.localeCompare(b.createdAt);
+/** PR number from the newest Run's `.../pull/<n>` URL; reading it needs no network call. */
+const prNumberOf = (runs: RunRecord[]): number | undefined => {
+  const url = [...runs]
+    .sort(byCreatedAt)
+    .reverse()
+    .find((r) => r.prUrl)?.prUrl;
+  const n = url?.match(/\/pull\/(\d+)/)?.[1];
+  return n ? Number(n) : undefined;
+};
 const message = (error: unknown): string =>
   error instanceof Error ? error.message : String(error);
 
@@ -185,6 +195,46 @@ export const tick = async (deps: TickDeps): Promise<TickSummary> => {
     }
   };
 
+  /**
+   * Review comments Agent Manager wrote for a Run become one batched `review-comment` Trigger per
+   * Ticket. Same rule as PR comments: nothing while a Run on the Ticket is active.
+   */
+  const handleAmComments = async (repoPath: string, source: TicketSource): Promise<void> => {
+    const withComments = (await registry.list())
+      .filter((r) => r.repoPath === repoPath)
+      .sort(byCreatedAt);
+    for (const run of withComments) {
+      try {
+        let comments: Awaited<ReturnType<typeof readRunComments>>;
+        try {
+          comments = await readRunComments(factory.registryDir, run.id);
+        } catch (error) {
+          log.warn(`invalid comments file for Run ${run.id}, skipped: ${message(error)}`);
+          continue;
+        }
+        if (!comments) continue;
+        const ticketRuns = (await registry.list()).filter((r) => r.ticketRef === run.ticketRef);
+        const pending = pendingComments(comments, consumedCommentIds(ticketRuns));
+        const newest = pending.at(-1);
+        if (!newest) continue;
+        if (ticketRuns.some((r) => r.status === 'queued' || r.status === 'running')) continue;
+        const prNumber = prNumberOf(ticketRuns);
+        if (prNumber === undefined) {
+          log.warn(`comments on Run ${run.id} skipped: ${run.ticketRef} has no PR yet`);
+          continue;
+        }
+        const ticketLatest = [...ticketRuns].sort(byCreatedAt).at(-1) ?? run;
+        await queueFollowUp(source, ticketLatest, {
+          kind: 'review-comment',
+          prNumber,
+          commentId: `${AM_COMMENT_PREFIX}${newest.id}`,
+        });
+      } catch (error) {
+        fail(`comments of Run ${run.id}`, error);
+      }
+    }
+  };
+
   const queueReadyTickets = async (
     repoPath: string,
     config: RepoConfig,
@@ -251,6 +301,7 @@ export const tick = async (deps: TickDeps): Promise<TickSummary> => {
         const source = deps.createTicketSource(config.ticketSource, config.mode);
         await markDead(repoPath);
         await handlePrs(repoPath, config, source, me);
+        await handleAmComments(repoPath, source);
         await queueReadyTickets(repoPath, config, source);
       } catch (error) {
         fail(`repo ${repoPath}`, error);

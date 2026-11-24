@@ -3,9 +3,15 @@ import { dirname, join } from 'node:path';
 import { z } from 'zod';
 import { FactoryConfigSchema } from '../contracts/factory-config.ts';
 import { REPO_CONFIG_FILE, type RepoConfig, RepoConfigSchema } from '../contracts/repo-config.ts';
-import type { RunRecord, RunResult } from '../contracts/run.ts';
+import { AM_COMMENT_PREFIX, type RunRecord, type RunResult } from '../contracts/run.ts';
 import type { Ticket, TicketSource } from '../contracts/ticket.ts';
 import { assertOutboundAllowed, forbiddenMatches } from '../policy/outbound.ts';
+import {
+  consumedCommentIds,
+  formatAmComments,
+  pendingComments,
+  readRunComments,
+} from '../registry/comments.ts';
 import { RunRegistry } from '../registry/registry.ts';
 import { type Exec, FRACTORY_ROOT, defaultExec } from './exec.ts';
 import { installPrePushHook } from './hook.ts';
@@ -79,6 +85,24 @@ class Executor {
     return (await this.exec('git', args, { cwd })).stdout.trim();
   }
 
+  /** The comments this Run was queued for: those up to `newestId` no earlier Run consumed. */
+  private async amComments(record: RunRecord, newestId: string): Promise<string | undefined> {
+    try {
+      const ticketRuns = (await this.registry.list()).filter(
+        (r) => r.ticketRef === record.ticketRef && r.id !== record.id,
+      );
+      for (const run of ticketRuns) {
+        const comments = await readRunComments(this.registry.dir, run.id).catch(() => undefined);
+        if (!comments?.some((c) => c.id === newestId)) continue;
+        const pending = pendingComments(comments, consumedCommentIds(ticketRuns), newestId);
+        return pending.length > 0 ? formatAmComments(pending) : undefined;
+      }
+    } catch {
+      // Falls through: the prompt tells the agent the comments could not be read.
+    }
+    return undefined;
+  }
+
   private async followUp(record: RunRecord): Promise<FollowUp | undefined> {
     const { trigger } = record;
     const cwd = record.repoPath;
@@ -113,6 +137,14 @@ class Executor {
         await this.log(record, `could not fetch the CI log: ${message(error)}`);
         return { kind: 'ci-failed', prNumber: trigger.prNumber, log: undefined };
       }
+    }
+    if (trigger.kind === 'review-comment' && trigger.commentId.startsWith(AM_COMMENT_PREFIX)) {
+      const comment = await this.amComments(
+        record,
+        trigger.commentId.slice(AM_COMMENT_PREFIX.length),
+      );
+      if (!comment) await this.log(record, 'could not read the Agent Manager comments');
+      return { kind: 'review-comment', prNumber: trigger.prNumber, comment };
     }
     if (trigger.kind === 'review-comment') {
       for (const kind of ['pulls', 'issues']) {

@@ -7,7 +7,7 @@ import { ACTIVE_STATUSES, type RunRecord, RunRecordSchema } from '../contracts/r
  * (tmp file + rename) so a reader — the Agent Manager fork — never sees a half-written file.
  */
 export class RunRegistry {
-  constructor(private readonly dir: string) {}
+  constructor(readonly dir: string) {}
 
   private path(id: string): string {
     return join(this.dir, `${id}.json`);
@@ -41,7 +41,7 @@ export class RunRegistry {
     }
     const records = await Promise.all(
       names
-        .filter((name) => name.endsWith('.json'))
+        .filter((name) => name.endsWith('.json') && !name.endsWith('.comments.json'))
         .map(async (name) => {
           try {
             return RunRecordSchema.parse(JSON.parse(await readFile(join(this.dir, name), 'utf8')));

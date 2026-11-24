@@ -1,9 +1,15 @@
-import { mkdtemp, readFile } from 'node:fs/promises';
+import { mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { type RepoConfig, RepoConfigSchema } from '../src/contracts/repo-config.ts';
-import { RUN_RECORD_VERSION, type RunRecord, type Trigger, runKey } from '../src/contracts/run.ts';
+import {
+  RUN_RECORD_VERSION,
+  type RunRecord,
+  type Trigger,
+  commentsFilePath,
+  runKey,
+} from '../src/contracts/run.ts';
 import type { Ticket, TicketSource, TicketStatus } from '../src/contracts/ticket.ts';
 import { RunRegistry } from '../src/registry/registry.ts';
 import type { Exec } from '../src/runner/exec.ts';
@@ -176,6 +182,35 @@ describe('executeRun', () => {
     const t = await setup({ trigger: { kind: 'review-comment', prNumber: 9, commentId: '77' } });
     await executeRun('run1', t.deps);
     expect(t.agentRequests[0]?.prompt).toContain('rename it');
+  });
+
+  it('feeds unconsumed Agent Manager comments (path, line, body) to the agent', async () => {
+    const t = await setup({ trigger: { kind: 'review-comment', prNumber: 9, commentId: 'am:c3' } });
+    const earlier = { ...t.record, id: 'run0', key: 'github:me/repo#1:ticket-ready' };
+    await t.registry.write({ ...earlier, trigger: { kind: 'ticket-ready' } });
+    await t.registry.write({
+      ...earlier,
+      id: 'run-mid',
+      key: runKey('github:me/repo#1', { kind: 'review-comment', prNumber: 9, commentId: 'am:c1' }),
+      trigger: { kind: 'review-comment', prNumber: 9, commentId: 'am:c1' },
+    });
+    const c = (id: string, minute: number) => ({
+      id,
+      path: `src/${id}.ts`,
+      line: minute,
+      body: `body of ${id}`,
+      createdAt: `2026-06-01T10:0${minute}:00.000Z`,
+    });
+    await writeFile(
+      commentsFilePath(t.registry.dir, 'run0'),
+      JSON.stringify({ version: 1, comments: [c('c1', 1), c('c2', 2), c('c3', 3), c('c4', 4)] }),
+    );
+    await executeRun('run1', t.deps);
+    const prompt = t.agentRequests[0]?.prompt ?? '';
+    expect(prompt).toContain('src/c2.ts:2\nbody of c2');
+    expect(prompt).toContain('src/c3.ts:3\nbody of c3');
+    expect(prompt).not.toContain('body of c1');
+    expect(prompt).not.toContain('body of c4');
   });
 
   it('fails the Run, without pushing, when the result block is missing', async () => {
