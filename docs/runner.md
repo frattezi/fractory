@@ -40,7 +40,7 @@ The executor forwards only these two variables, plus `CLAUDE_CODE_DISABLE_AUTO_M
 sandbox. They are never written to the log or the registry. `gh` uses its own authentication on
 the host (`gh auth login` or `GH_TOKEN`); the sandbox does not receive it.
 
-`FRACTORY_MODEL` overrides the agent model (default `claude-opus-4-8`).
+`FRACTORY_MODEL` overrides the agent model (default `claude-opus-5-5`).
 
 ## Tests
 
