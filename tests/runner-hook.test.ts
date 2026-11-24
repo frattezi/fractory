@@ -1,0 +1,79 @@
+import { spawnSync } from 'node:child_process';
+import { chmod, mkdtemp, readFile, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { describe, expect, it } from 'vitest';
+import type { Exec } from '../src/runner/exec.ts';
+import { installPrePushHook, renderPrePushHook } from '../src/runner/hook.ts';
+
+const runHook = (script: string, dir: string, stdin: string) => {
+  const file = join(dir, 'hook.sh');
+  return writeFile(file, script)
+    .then(() => chmod(file, 0o755))
+    .then(() => spawnSync('sh', [file, 'origin', 'url'], { input: stdin, encoding: 'utf8' }));
+};
+const line = (remoteRef: string) => `refs/heads/x abc123 ${remoteRef} 000\n`;
+
+describe('pre-push hook', () => {
+  it('refuses pushes to the base branch, main and master', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'hook-'));
+    const script = renderPrePushHook({ baseBranch: 'develop', repoHookPath: join(dir, 'none') });
+    for (const branch of ['develop', 'main', 'master']) {
+      const result = await runHook(script, dir, line(`refs/heads/${branch}`));
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain(branch);
+    }
+  });
+
+  it('allows other branches and chains to the repo hook with args and stdin', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'hook-'));
+    const repoHook = join(dir, 'repo-pre-push');
+    await writeFile(
+      repoHook,
+      `#!/bin/sh\necho "$@" > '${dir}/args'\ncat > '${dir}/stdin'\nexit 3\n`,
+    );
+    await chmod(repoHook, 0o755);
+    const script = renderPrePushHook({ baseBranch: 'main', repoHookPath: repoHook });
+
+    const result = await runHook(script, dir, line('refs/heads/fractory/1'));
+    expect(result.status).toBe(3);
+    expect((await readFile(join(dir, 'args'), 'utf8')).trim()).toBe('origin url');
+    expect((await readFile(join(dir, 'stdin'), 'utf8')).trim()).toBe(
+      line('refs/heads/fractory/1').trim(),
+    );
+  });
+
+  it('passes when there is no repo hook', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'hook-'));
+    const script = renderPrePushHook({ baseBranch: 'main', repoHookPath: join(dir, 'none') });
+    expect((await runHook(script, dir, line('refs/heads/feature'))).status).toBe(0);
+  });
+
+  it('rejects branch names that are not safe to embed in the script', () => {
+    expect(() => renderPrePushHook({ baseBranch: 'a;rm -rf /', repoHookPath: '/x' })).toThrow();
+  });
+
+  it('installs the hook in the worktree git dir and points core.hooksPath at it', async () => {
+    const gitDir = await mkdtemp(join(tmpdir(), 'gitdir-'));
+    const calls: string[][] = [];
+    const exec: Exec = async (_file, args) => {
+      calls.push(args);
+      if (args[0] === 'rev-parse' && args[1] === '--absolute-git-dir')
+        return { stdout: `${gitDir}\n`, stderr: '' };
+      if (args[0] === 'rev-parse') return { stdout: '/repo/.git/hooks/pre-push\n', stderr: '' };
+      return { stdout: '', stderr: '' };
+    };
+
+    const { hooksDir } = await installPrePushHook({
+      worktreePath: '/wt',
+      baseBranch: 'main',
+      exec,
+    });
+
+    expect(hooksDir).toBe(join(gitDir, 'fractory-hooks'));
+    expect(await readFile(join(hooksDir, 'pre-push'), 'utf8')).toContain(
+      "repo_hook='/repo/.git/hooks/pre-push'",
+    );
+    expect(calls).toContainEqual(['config', '--worktree', 'core.hooksPath', hooksDir]);
+  });
+});
