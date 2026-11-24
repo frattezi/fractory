@@ -16,7 +16,11 @@ describe('loadFactoryConfig', () => {
     const dir = await tmp();
     const path = join(dir, 'config.json');
     await writeFile(path, JSON.stringify({ repos: ['/a'], maxConcurrentRuns: 1 }));
-    expect(await loadFactoryConfig(path)).toMatchObject({ repos: ['/a'], maxConcurrentRuns: 1, staleWorktreeDays: 7 });
+    expect(await loadFactoryConfig(path)).toMatchObject({
+      repos: ['/a'],
+      maxConcurrentRuns: 1,
+      staleWorktreeDays: 7,
+    });
     await writeFile(path, JSON.stringify({ maxConcurrentRuns: 0 }));
     await expect(loadFactoryConfig(path)).rejects.toThrow(/Invalid factory config/);
     await writeFile(path, '{nope');
@@ -29,11 +33,18 @@ describe('loadRepoConfig', () => {
     const dir = await tmp();
     await writeFile(
       join(dir, '.fractory.json'),
-      JSON.stringify({ mode: 'personal', ticketSource: { kind: 'github', repo: 'me/app' }, hasCi: true }),
+      JSON.stringify({
+        mode: 'personal',
+        ticketSource: { kind: 'github', repo: 'me/app' },
+        hasCi: true,
+      }),
     );
     const config = await loadRepoConfig(dir);
     expect(config).toMatchObject({ baseBranch: 'main', maxIterations: 10, ticketGate: false });
-    expect(describeRepoConfig(config)).toMatchObject({ requiresPrGate: false, requiresTicketGate: false });
+    expect(describeRepoConfig(config)).toMatchObject({
+      requiresPrGate: false,
+      requiresTicketGate: false,
+    });
     expect(describeRepoConfig({ ...config, mode: 'work' })).toMatchObject({
       requiresPrGate: true,
       requiresTicketGate: true,

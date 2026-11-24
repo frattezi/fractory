@@ -1,12 +1,14 @@
 import { describe, expect, it } from 'vitest';
-import { type Exec } from '../src/github/exec.ts';
+import type { Exec } from '../src/github/exec.ts';
 import { createGh, feedbackItems, summarizeChecks } from '../src/github/gh.ts';
 import { makePr } from './trigger-helpers.ts';
 
 describe('summarizeChecks', () => {
   it('classifies check runs and legacy statuses', () => {
     expect(summarizeChecks([])).toBe('none');
-    expect(summarizeChecks([{ status: 'COMPLETED', conclusion: 'SUCCESS' }, { state: 'SUCCESS' }])).toBe('passing');
+    expect(
+      summarizeChecks([{ status: 'COMPLETED', conclusion: 'SUCCESS' }, { state: 'SUCCESS' }]),
+    ).toBe('passing');
     expect(summarizeChecks([{ status: 'COMPLETED', conclusion: 'SKIPPED' }])).toBe('passing');
     expect(summarizeChecks([{ status: 'IN_PROGRESS', conclusion: '' }])).toBe('pending');
     expect(summarizeChecks([{ state: 'PENDING' }])).toBe('pending');
@@ -71,7 +73,12 @@ describe('createGh', () => {
       args: ['pr', 'merge', 'https://github.com/me/app/pull/7', '--squash'],
       cwd: '/repo',
     });
-    expect(calls[0]?.args).toContain('state,mergeable,statusCheckRollup,reviews,comments,headRefOid'.replace('state,', 'number,state,'));
+    expect(calls[0]?.args).toContain(
+      'state,mergeable,statusCheckRollup,reviews,comments,headRefOid'.replace(
+        'state,',
+        'number,state,',
+      ),
+    );
   });
 
   it('rejects malformed gh output instead of guessing', async () => {

@@ -20,7 +20,11 @@ export const personalRepo: RepoConfig = {
 };
 export const workRepo: RepoConfig = { ...personalRepo, mode: 'work' };
 
-export const makeTicket = (n: number, status: TicketStatus = 'ready', title = `Add thing ${n}`): Ticket => ({
+export const makeTicket = (
+  n: number,
+  status: TicketStatus = 'ready',
+  title = `Add thing ${n}`,
+): Ticket => ({
   ref: `github:me/app#${n}` as TicketRef,
   title,
   body: 'body',

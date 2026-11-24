@@ -125,19 +125,6 @@ const flag = (args: CliArgs, name: string): string | undefined => {
   return typeof value === 'string' ? value : undefined;
 };
 
-// Modules owned by other parts are imported by variable specifier so this file typechecks
-// before they land, and fails with a clear message when one is missing.
-const importPart = async <T>(specifier: string, part: string): Promise<T> => {
-  try {
-    return (await import(specifier)) as T;
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ERR_MODULE_NOT_FOUND') {
-      throw new Error(`${specifier} is not available yet (${part}); this subcommand cannot run`);
-    }
-    throw error;
-  }
-};
-
 const HELP = `Usage: fractory <command>
   tick | cleanup | runs | run <ticketRef> | run-exec <id>
   config show [repoPath]
@@ -264,14 +251,12 @@ const commands: Record<string, (args: CliArgs, env: CliEnv) => Promise<void>> = 
   async 'run-exec'(args, env) {
     const id = args.positionals[0];
     if (!id) throw new Error('Usage: fractory run-exec <id>');
-    const mod = await importPart<{ executeRun?: (runId: string) => Promise<void> }>(
-      './runner/execute.ts',
-      'runner part C',
-    );
-    if (typeof mod.executeRun !== 'function') {
-      throw new Error('./runner/execute.ts does not export executeRun(runId)');
-    }
-    await mod.executeRun(id);
+    // Imported lazily: only run-exec needs the sandbox stack.
+    const { executeRun } = await import('./runner/execute.ts');
+    await executeRun(id, {
+      ticketSource: (repoConfig) =>
+        env.createTicketSource(repoConfig.ticketSource, repoConfig.mode),
+    });
   },
 
   async config(args, env) {

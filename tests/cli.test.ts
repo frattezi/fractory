@@ -20,7 +20,10 @@ const setup = async () => {
     JSON.stringify({ repos: [repo], registryDir, logDir: join(root, 'logs') }),
   );
   await mkdir(join(root, 'launchd'));
-  const template = await readFile(join(process.cwd(), 'launchd', 'com.fractory.tick.plist.template'), 'utf8');
+  const template = await readFile(
+    join(process.cwd(), 'launchd', 'com.fractory.tick.plist.template'),
+    'utf8',
+  );
   await writeFile(join(root, 'launchd', 'com.fractory.tick.plist.template'), template);
 
   const out: string[] = [];
@@ -55,7 +58,19 @@ const setup = async () => {
 
 describe('parseArgs', () => {
   it('handles positionals, --k v, --k=v, booleans and repeatable flags', () => {
-    expect(parseArgs(['x', '--mode', 'work', '--github=a/b', '--ci', '--blocked-by', 'jira:A-1', '--blocked-by', 'jira:A-2'])).toEqual({
+    expect(
+      parseArgs([
+        'x',
+        '--mode',
+        'work',
+        '--github=a/b',
+        '--ci',
+        '--blocked-by',
+        'jira:A-1',
+        '--blocked-by',
+        'jira:A-2',
+      ]),
+    ).toEqual({
       positionals: ['x'],
       flags: { mode: 'work', github: 'a/b', ci: true, 'blocked-by': ['jira:A-1', 'jira:A-2'] },
     });
@@ -79,7 +94,12 @@ describe('fractory CLI', () => {
     const { env, out, registry } = await setup();
     expect(await main(['run', 'github:me/app#5'], env)).toBe(0);
     const [run] = await registry.list();
-    expect(run).toMatchObject({ id: 'manual-1', status: 'queued', trigger: { kind: 'manual' }, branch: 'feat/5-add-thing-5' });
+    expect(run).toMatchObject({
+      id: 'manual-1',
+      status: 'queued',
+      trigger: { kind: 'manual' },
+      branch: 'feat/5-add-thing-5',
+    });
     out.length = 0;
     expect(await main(['runs'], env)).toBe(0);
     expect(out[0]).toContain('manual-1');
@@ -96,7 +116,11 @@ describe('fractory CLI', () => {
   it('tick runs end to end with injected deps', async () => {
     const { env, out, registry } = await setup();
     await main(['tick'], env);
-    expect(JSON.parse(out[0] as string)).toMatchObject({ locked: false, queued: ['manual-1'], launched: ['manual-1'] });
+    expect(JSON.parse(out[0] as string)).toMatchObject({
+      locked: false,
+      queued: ['manual-1'],
+      launched: ['manual-1'],
+    });
     expect((await registry.list())[0]?.ticketRef).toBe('github:me/app#5');
   });
 
@@ -108,7 +132,11 @@ describe('fractory CLI', () => {
     expect(plist).toContain('/opt/tools');
     expect(plist).toContain('<string>tick</string>');
     expect(plist).not.toContain('{{');
-    expect(launchctlCalls.at(-1)).toEqual(['bootstrap', 'gui/501', join(root, 'LaunchAgents', 'com.fractory.tick.plist')]);
+    expect(launchctlCalls.at(-1)).toEqual([
+      'bootstrap',
+      'gui/501',
+      join(root, 'LaunchAgents', 'com.fractory.tick.plist'),
+    ]);
 
     expect(await main(['launchd', 'uninstall'], env)).toBe(0);
     await expect(stat(join(root, 'LaunchAgents', 'com.fractory.tick.plist'))).rejects.toThrow();
@@ -121,7 +149,21 @@ describe('fractory CLI', () => {
     const spy = vi.fn(env.createTicket);
     env.createTicket = spy;
     expect(
-      await main(['tickets', 'create', '--title', 'T', '--body-file', 'body.md', '--status', 'ready', '--blocked-by', 'github:me/app#1'], env),
+      await main(
+        [
+          'tickets',
+          'create',
+          '--title',
+          'T',
+          '--body-file',
+          'body.md',
+          '--status',
+          'ready',
+          '--blocked-by',
+          'github:me/app#1',
+        ],
+        env,
+      ),
     ).toBe(0);
     expect(spy).toHaveBeenCalledWith(
       { kind: 'github', repo: 'me/app' },

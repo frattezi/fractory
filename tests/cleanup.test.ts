@@ -4,8 +4,8 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { cleanup } from '../src/cleanup/cleanup.ts';
 import type { Exec } from '../src/github/exec.ts';
-import { FakeGh, PR_URL, makePr, makeRun, memoryLogger } from './trigger-helpers.ts';
 import { RunRegistry } from '../src/registry/registry.ts';
+import { FakeGh, PR_URL, makePr, makeRun, memoryLogger } from './trigger-helpers.ts';
 
 const setup = async () => {
   const root = await mkdtemp(join(tmpdir(), 'fractory-clean-'));
@@ -74,7 +74,11 @@ describe('cleanup', () => {
   it('removes a failed Run worktree only after staleWorktreeDays', async () => {
     const s = await setup();
     await s.registry.write(
-      makeRun({ worktreePath: s.worktree, status: 'failed', finishedAt: '2026-06-18T00:00:00.000Z' }),
+      makeRun({
+        worktreePath: s.worktree,
+        status: 'failed',
+        finishedAt: '2026-06-18T00:00:00.000Z',
+      }),
     );
     expect((await cleanup(s.deps)).removed).toEqual([]);
     await s.registry.update('r1', { finishedAt: '2026-06-01T00:00:00.000Z' });
@@ -96,10 +100,25 @@ describe('cleanup', () => {
 
   it('refuses a recorded path that is the main checkout and ignores missing paths', async () => {
     const s = await setup();
-    await s.registry.write(makeRun({ worktreePath: s.worktree, repoPath: s.worktree, status: 'failed', finishedAt: '2026-01-01T00:00:00.000Z' }));
+    await s.registry.write(
+      makeRun({
+        worktreePath: s.worktree,
+        repoPath: s.worktree,
+        status: 'failed',
+        finishedAt: '2026-01-01T00:00:00.000Z',
+      }),
+    );
     s.deps.factory.repos = [s.worktree];
     expect((await cleanup(s.deps)).removed).toEqual([]);
-    await s.registry.write(makeRun({ id: 'gone', key: 'kg', worktreePath: '/does/not/exist', status: 'failed', finishedAt: '2026-01-01T00:00:00.000Z' }));
+    await s.registry.write(
+      makeRun({
+        id: 'gone',
+        key: 'kg',
+        worktreePath: '/does/not/exist',
+        status: 'failed',
+        finishedAt: '2026-01-01T00:00:00.000Z',
+      }),
+    );
     expect((await cleanup(s.deps)).removed).toEqual([]);
   });
 });

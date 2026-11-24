@@ -118,7 +118,10 @@ describe('PR handling', () => {
     const h = await withPr();
     h.gh.prs.set(
       PR_URL,
-      makePr({ headRefOid: 'abc', statusCheckRollup: [{ status: 'COMPLETED', conclusion: 'FAILURE' }] }),
+      makePr({
+        headRefOid: 'abc',
+        statusCheckRollup: [{ status: 'COMPLETED', conclusion: 'FAILURE' }],
+      }),
     );
     await tick(h.deps);
     await tick(h.deps);
@@ -154,12 +157,22 @@ describe('PR handling', () => {
     h.gh.user = new Error('network');
     h.gh.prs.set(PR_URL, makePr({ comments: [{ id: 'c1', author: { login: 'x' }, body: 'hi' }] }));
     await tick(h.deps);
-    expect((await h.registry.list()).filter((r) => r.trigger.kind === 'review-comment')).toEqual([]);
+    expect((await h.registry.list()).filter((r) => r.trigger.kind === 'review-comment')).toEqual(
+      [],
+    );
   });
 
   it('does not stack follow-ups while a Run on the Ticket is active', async () => {
     const h = await withPr();
-    await h.registry.write(makeRun({ id: 'live', key: 'k-live', status: 'running', pid: 5, createdAt: '2026-06-01T00:00:00.000Z' }));
+    await h.registry.write(
+      makeRun({
+        id: 'live',
+        key: 'k-live',
+        status: 'running',
+        pid: 5,
+        createdAt: '2026-06-01T00:00:00.000Z',
+      }),
+    );
     h.gh.prs.set(
       PR_URL,
       makePr({ statusCheckRollup: [{ status: 'COMPLETED', conclusion: 'FAILURE' }] }),
@@ -193,8 +206,18 @@ describe('PR handling', () => {
         pr: { statusCheckRollup: [] },
         merges: false,
       },
-      { name: 'CONFLICTING is never merged', config: personalRepo, pr: { mergeable: 'CONFLICTING' }, merges: false },
-      { name: 'UNKNOWN mergeability waits', config: personalRepo, pr: { mergeable: 'UNKNOWN' }, merges: false },
+      {
+        name: 'CONFLICTING is never merged',
+        config: personalRepo,
+        pr: { mergeable: 'CONFLICTING' },
+        merges: false,
+      },
+      {
+        name: 'UNKNOWN mergeability waits',
+        config: personalRepo,
+        pr: { mergeable: 'UNKNOWN' },
+        merges: false,
+      },
       {
         name: 'pending checks wait',
         config: personalRepo,
