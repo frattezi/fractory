@@ -128,8 +128,17 @@ export const tick = async (deps: TickDeps): Promise<TickSummary> => {
       if (run.prUrl) latestByPr.set(run.prUrl, run);
     }
     for (const [prUrl, latest] of latestByPr) {
+      // A merged or closed PR cannot change: stop reading it.
+      if (latest.prState === 'MERGED' || latest.prState === 'CLOSED') continue;
       try {
         const pr = await deps.gh.viewPr(repoPath, prUrl);
+        const recordState = async (): Promise<void> => {
+          for (const run of runs) {
+            if (run.prUrl === prUrl && run.prState !== pr.state) {
+              await registry.update(run.id, { prState: pr.state });
+            }
+          }
+        };
         if (pr.state === 'MERGED') {
           const ticket = await source.get(latest.ticketRef);
           if (ticket.status !== 'done') {
@@ -137,8 +146,9 @@ export const tick = async (deps: TickDeps): Promise<TickSummary> => {
             summary.ticketsDone.push(latest.ticketRef);
             log.info(`${latest.ticketRef} done: ${prUrl} merged`);
           }
-          continue;
         }
+        // Recorded after the Ticket moved: a failure above leaves the PR unrecorded and retried.
+        await recordState();
         if (pr.state !== 'OPEN') continue;
 
         const ticketRuns = (await registry.list()).filter((r) => r.ticketRef === latest.ticketRef);

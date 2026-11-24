@@ -50,6 +50,20 @@ describe('cleanup', () => {
     expect(s.calls.at(-1)).toEqual(['-C', '/repo/app', 'worktree', 'prune']);
   });
 
+  it('sets cleanedAt after removing and never looks at that Run again', async () => {
+    const s = await setup();
+    await s.registry.write(makeRun({ worktreePath: s.worktree, prUrl: PR_URL }));
+    s.gh.prs.set(PR_URL, makePr({ state: 'MERGED' }));
+    await cleanup(s.deps);
+    expect((await s.registry.get('r1'))?.cleanedAt).toBe('2026-06-20T00:00:00.000Z');
+
+    s.gh.prs.set(PR_URL, new Error('must not be read'));
+    const again = await cleanup(s.deps);
+    expect(again.removed).toEqual([]);
+    expect(again.skipped).toEqual([]);
+    expect(s.removals()).toHaveLength(1);
+  });
+
   it('keeps a merged PR worktree that has uncommitted changes and records the skip', async () => {
     const s = await setup();
     await s.registry.write(makeRun({ worktreePath: s.worktree, prUrl: PR_URL }));

@@ -288,3 +288,42 @@ describe('isolation and locking', () => {
     expect(await acquireLock(path)).toBeDefined();
   });
 });
+
+describe('PR state memory', () => {
+  it('records prState and stops reading merged and closed PRs', async () => {
+    const h = await makeHarness();
+    h.source.tickets.set('github:me/app#1', makeTicket(1, 'in_review'));
+    await h.registry.write(makeRun({ id: 'r1', prUrl: PR_URL }));
+    h.gh.prs.set(PR_URL, makePr({ state: 'OPEN' }));
+    await tick(h.deps);
+    expect((await h.registry.get('r1'))?.prState).toBe('OPEN');
+
+    h.gh.prs.set(PR_URL, makePr({ state: 'MERGED' }));
+    await tick(h.deps);
+    expect((await h.registry.get('r1'))?.prState).toBe('MERGED');
+    expect(h.source.tickets.get('github:me/app#1')?.status).toBe('done');
+
+    h.gh.prs.set(PR_URL, new Error('must not be read'));
+    const summary = await tick(h.deps);
+    expect(summary.errors).toBe(0);
+  });
+
+  it('does not record the state when marking the Ticket done failed, so the next tick retries', async () => {
+    const h = await makeHarness();
+    h.source.tickets.set('github:me/app#1', makeTicket(1, 'in_review'));
+    await h.registry.write(makeRun({ id: 'r1', prUrl: PR_URL }));
+    h.gh.prs.set(PR_URL, makePr({ state: 'MERGED' }));
+    h.source.setStatus = async () => {
+      throw new Error('tracker down');
+    };
+    expect((await tick(h.deps)).errors).toBe(1);
+    expect((await h.registry.get('r1'))?.prState).toBeUndefined();
+  });
+
+  it('skips a Run whose prState is CLOSED without calling gh', async () => {
+    const h = await makeHarness();
+    await h.registry.write(makeRun({ id: 'r1', prUrl: PR_URL, prState: 'CLOSED' }));
+    const summary = await tick(h.deps);
+    expect(summary.errors).toBe(0);
+  });
+});

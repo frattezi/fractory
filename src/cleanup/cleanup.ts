@@ -57,6 +57,7 @@ export const cleanup = async (deps: CleanupDeps): Promise<CleanupResult> => {
         log.info(`cleanup skipped ${path}: ${reason}`);
       }
     };
+    if (latest.cleanedAt) continue;
     try {
       if (!(await pathExists(path))) {
         skip('already gone', false);
@@ -110,6 +111,8 @@ export const cleanup = async (deps: CleanupDeps): Promise<CleanupResult> => {
         ...(force ? ['--force'] : []),
         path,
       ]);
+      const stamp = deps.now().toISOString();
+      for (const run of group) await deps.registry.update(run.id, { cleanedAt: stamp });
       result.removed.push(path);
       log.info(`removed worktree ${path} (${merged ? 'PR merged' : 'stale failed Run'})`);
     } catch (error) {

@@ -65,6 +65,10 @@ export const RunRecordSchema = z.object({
   createdAt: z.string().datetime(),
   updatedAt: z.string().datetime(),
   finishedAt: z.string().datetime().optional(),
+  /** Last PR state `tick` read; MERGED/CLOSED PRs are never read again. Optional: still version 1. */
+  prState: z.enum(['OPEN', 'MERGED', 'CLOSED']).optional(),
+  /** When cleanup removed the worktree; cleanup skips Runs that have it. Optional: still version 1. */
+  cleanedAt: z.string().datetime().optional(),
 });
 export type RunRecord = z.infer<typeof RunRecordSchema>;
 

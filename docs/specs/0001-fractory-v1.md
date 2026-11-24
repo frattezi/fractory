@@ -107,6 +107,9 @@ Changing a contract is a change for every part: do it in its own commit, update 
   2. For each Run with a PR, read it in any state (`gh pr view --json
      state,mergeable,statusCheckRollup,reviews,comments,headRefOid`):
      - MERGED → Ticket `done`, Run kept for cleanup.
+     - Every read records `prState` (`OPEN|MERGED|CLOSED`) on the PR's Runs; Runs whose `prState` is
+       `MERGED` or `CLOSED` are not read again (it is recorded only after the Ticket moved to
+       `done`, so a failure is retried).
      - CI failed on head sha → Trigger `ci-failed` (key includes sha).
      - New review comment not by the factory → Trigger `review-comment` (key includes comment id).
      - All green, Personal Mode, `hasCi`, `mergeable == MERGEABLE` → `gh pr merge --squash`.
@@ -127,7 +130,9 @@ Changing a contract is a change for every part: do it in its own commit, update 
 - Follow-up Runs reuse the PR's branch so Sandcastle's `branch` strategy continues it.
 - `fractory cleanup` (also called at the end of `tick`): delete a Run's worktree only when it is
   clean and its PR is merged, or when the Run failed more than `staleWorktreeDays` ago; match by the
-  recorded `worktreePath`, never by name (v0 lesson); prune branches Sandcastle left behind.
+  recorded `worktreePath`, never by name (v0 lesson); prune branches Sandcastle left behind. After removing a worktree, cleanup sets `cleanedAt` on its
+  Runs and skips Runs that have it. `prState` and `cleanedAt` are optional `RunRecord` fields, so
+  the record stays version 1.
 - `fractory runs` lists the registry; `fractory run <ticketRef>` queues a `manual` Run.
 - `launchd/com.fractory.tick.plist` template + `fractory launchd install`: sets PATH to include
   `node`, `claude`, `gh`, `docker`; git over HTTPS via `gh auth setup-git` (v0 lesson: SSH fails
