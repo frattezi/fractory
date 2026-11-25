@@ -46,6 +46,9 @@ export interface QueueInput {
   repoPath: string;
   trigger: Trigger;
   branch: string;
+  /** Snapshot of the repo's Mode and flow, recorded so readers need no config. */
+  mode?: Mode | undefined;
+  flow?: string | undefined;
 }
 
 export interface QueueDeps {
@@ -74,6 +77,8 @@ export const queueRun = async (
     trigger: input.trigger,
     status: 'queued',
     branch: input.branch,
+    ...(input.mode === undefined ? {} : { mode: input.mode }),
+    ...(input.flow === undefined ? {} : { flow: input.flow }),
     logPath: join(deps.factory.logDir, `${id}.log`),
     createdAt: stamp,
     updatedAt: stamp,

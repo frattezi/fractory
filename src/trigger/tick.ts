@@ -84,6 +84,8 @@ export const tick = async (deps: TickDeps): Promise<TickSummary> => {
       repoPath: latest.repoPath,
       trigger,
       branch: latest.branch,
+      mode: latest.mode,
+      flow: latest.flow,
     });
     if (!created) return;
     summary.queued.push(record.id);
@@ -259,6 +261,8 @@ export const tick = async (deps: TickDeps): Promise<TickSummary> => {
           repoPath,
           trigger: { kind: 'ticket-ready' },
           branch,
+          mode: config.mode,
+          flow: config.flow,
         });
         if (!created) continue;
         summary.queued.push(record.id);

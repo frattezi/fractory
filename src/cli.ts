@@ -243,7 +243,14 @@ const commands: Record<string, (args: CliArgs, env: CliEnv) => Promise<void>> = 
       );
     const { record } = await queueRun(
       { registry, factory, now: env.now, newId: env.newId },
-      { ticketRef: ref, repoPath, trigger: { kind: 'manual' }, branch },
+      {
+        ticketRef: ref,
+        repoPath,
+        trigger: { kind: 'manual' },
+        branch,
+        mode: config.mode,
+        flow: config.flow,
+      },
     );
     env.out(`Queued Run ${record.id} on ${record.branch}; the next tick starts it.`);
   },
