@@ -42,6 +42,10 @@ _Avoid_: hotfix, chore
 One agent attempt at one Ticket, from start to finish, without a human in the loop.
 _Avoid_: job, execution, session
 
+**Re-run**:
+A new Run the owner asks for on a Ticket whose latest Run failed or needed a human, continuing on that Ticket's branch. Unlike a follow-up Run, which a Trigger starts, only the owner starts a Re-run.
+_Avoid_: retry, restart
+
 ### Human oversight
 
 **Gate**:
@@ -63,6 +67,14 @@ Fractory merging a Personal Mode change by itself once the Run is done and the c
 **Trigger**:
 A detectable change of state that starts a Run without anyone asking: a Ticket becoming ready, a failed check on a Run's change, or a review comment on it.
 _Avoid_: event, hook
+
+**Host Limits**:
+The ceilings on the machine's CPU and memory, both on the computer itself and in the sandbox where Runs execute, above which no new Run starts. Runs already running are never stopped by them.
+_Avoid_: budget, capacity, quota
+
+**Held**:
+The state of the queue while the machine is over its Host Limits: queued Runs wait and start once it has room again. It describes the machine, not a Run.
+_Avoid_: paused, throttled
 
 ### Agents and flows
 
