@@ -34,6 +34,10 @@ _Avoid_: PRD, design doc
 One slice of a Spec small enough for a single agent to build and ship on its own.
 _Avoid_: task, issue, story
 
+**Quick Ticket**:
+A Ticket written straight from a conversation for a small, settled change, with a short brief in place of a Spec. The owner approving the brief passes the Spec Gate for it.
+_Avoid_: hotfix, chore
+
 **Run**:
 One agent attempt at one Ticket, from start to finish, without a human in the loop.
 _Avoid_: job, execution, session

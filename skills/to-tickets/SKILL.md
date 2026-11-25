@@ -1,6 +1,6 @@
 ---
 name: to-tickets
-description: Break an approved Spec into tracer-bullet Tickets and create them with `fractory tickets create`. Use only after the owner approved the Spec at the Spec Gate. Tickets stay in backlog when the repo's Ticket Gate is on, and are created Ready otherwise.
+description: Break an approved Spec, or an approved Quick Ticket brief from quick-ticket, into tracer-bullet Tickets and create them with `fractory tickets create`. Use only after the owner passed the Spec Gate. Tickets stay in backlog when the repo's Ticket Gate is on, and are created Ready otherwise.
 license: MIT
 metadata:
   source: https://github.com/mattpocock/skills (to-tickets)
@@ -14,7 +14,7 @@ Break an approved **Spec** into **Tickets**: tracer-bullet vertical slices, each
 
 ## Preconditions
 
-- The Spec exists in `docs/specs/` and its status is `accepted`. If it is not, stop: the Spec Gate has not been passed.
+- The Spec exists in `docs/specs/` and its status is `accepted`, or `quick-ticket` handed you a Quick Ticket brief the owner approved in this conversation (ADR 0006). Otherwise stop: the Spec Gate has not been passed.
 - Read the repo's gate. Run `fractory config show` in the repo and read its JSON output: `requiresTicketGate` decides the initial status (`true` means `backlog`, `false` means `ready`), and `mode` tells you whether text will be shared with other developers. If the command fails, stop and report; never guess the gate.
 
 ## Process
@@ -41,7 +41,7 @@ Do not close or modify any parent issue.
 ```md
 ## Spec
 
-Path of the Spec file (docs/specs/NNNN-slug.md).
+Path of the Spec file (docs/specs/NNNN-slug.md), or the approved Quick Ticket brief.
 
 ## What to build
 
@@ -57,4 +57,4 @@ The end-to-end behaviour this Ticket makes work, from the user's perspective, no
 The refs of the blocking Tickets, or "None (can start immediately)".
 ```
 
-Avoid file paths and code snippets other than the Spec path: they go stale. The exception is a type shape or state machine that prose cannot state precisely.
+Avoid file paths and code snippets other than the Spec path or brief: they go stale. The exception is a type shape or state machine that prose cannot state precisely.

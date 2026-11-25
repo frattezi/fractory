@@ -177,6 +177,25 @@ describe('fractory CLI', () => {
     expect(launchctlCalls.at(-1)?.[0]).toBe('bootout');
   });
 
+  it('tickets create refuses Ready while the Ticket Gate is on', async () => {
+    const { env, repo } = await setup();
+    await writeFile(join(repo, 'body.md'), 'Do it');
+    const spy = vi.fn(env.createTicket);
+    env.createTicket = spy;
+    const args = [
+      'tickets',
+      'create',
+      '--title',
+      'T',
+      '--body-file',
+      'body.md',
+      '--status',
+      'ready',
+    ];
+    expect(await main(args, env)).toBe(1);
+    expect(spy).not.toHaveBeenCalled();
+  });
+
   it('tickets create passes the repo mode and relations to the adapter', async () => {
     const { env, out, repo } = await setup();
     await writeFile(join(repo, 'body.md'), 'Do it');
@@ -192,7 +211,7 @@ describe('fractory CLI', () => {
           '--body-file',
           'body.md',
           '--status',
-          'ready',
+          'backlog',
           '--blocked-by',
           'github:me/app#1',
         ],
@@ -201,7 +220,7 @@ describe('fractory CLI', () => {
     ).toBe(0);
     expect(spy).toHaveBeenCalledWith(
       { kind: 'github', repo: 'me/app' },
-      { title: 'T', body: 'Do it', status: 'ready', blockedBy: ['github:me/app#1'] },
+      { title: 'T', body: 'Do it', status: 'backlog', blockedBy: ['github:me/app#1'] },
       { mode: 'work' },
     );
     expect(JSON.parse(out[0] as string)).toMatchObject({ ref: 'github:me/app#99' });

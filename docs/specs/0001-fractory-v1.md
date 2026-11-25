@@ -57,7 +57,8 @@ Changing a contract is a change for every part: do it in its own commit, update 
 1. Skills, adapted to our vocabulary and following the Agent Skills spec: `grill-with-docs`,
    `to-spec` (writes `docs/specs/NNNN-*.md` and stops at the Spec Gate), `to-tickets` (creates
    Tickets through `fractory tickets create`, Ready only when the repo's Ticket Gate is off),
-   `research`, `handoff`. Each skill only routes and phrases; anything deterministic is a
+   `quick-ticket` (a brief from a conversation in place of a Spec, ADR 0006), `fractory` (how
+   interactive agents work next to the factory), `research`, `handoff`. Each skill only routes and phrases; anything deterministic is a
    `fractory` CLI subcommand.
 2. `rules/run-agent.md`: the instructions every Run's agent receives: work only on the Ticket,
    commit to the Run branch, never push to the base branch, end with a `RunResult`, stop with
