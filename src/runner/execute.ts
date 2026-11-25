@@ -49,6 +49,8 @@ export interface ExecuteDeps {
   /** Contents of `rules/run-agent.md`. */
   readRules?: () => Promise<string>;
   pid?: number;
+  /** CPU cap for the Run's container (`FactoryConfig.resources.cpusPerRun`); none when unset. */
+  cpus?: number;
 }
 
 const GhPrListSchema = z.array(z.object({ url: z.string().url() }));
@@ -430,7 +432,7 @@ class Executor {
         followUp,
         rules,
         worktree: tracked,
-        sandbox: sandcastle.sandbox(config.sandboxImage),
+        sandbox: sandcastle.sandbox(config.sandboxImage, this.deps.cpus),
         agents: this.agents(sandcastle, config, usedAgents),
         logPath: record.logPath,
         maxIterations: config.maxIterations,

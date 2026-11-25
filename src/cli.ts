@@ -280,7 +280,9 @@ const commands: Record<string, (args: CliArgs, env: CliEnv) => Promise<void>> = 
     if (!id) throw new Error('Usage: fractory run-exec <id>');
     // Imported lazily: only run-exec needs the sandbox stack.
     const { executeRun } = await import('./runner/execute.ts');
+    const { resources } = await loadFactory(env);
     await executeRun(id, {
+      ...(resources && { cpus: resources.cpusPerRun }),
       ticketSource: (repoConfig) =>
         env.createTicketSource(repoConfig.ticketSource, repoConfig.mode),
     });

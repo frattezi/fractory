@@ -145,7 +145,7 @@ const setup = async (options: Setup = {}) => {
   };
   const sandcastle = {
     createWorktree: async () => worktree,
-    sandbox: (image: string | undefined) => ({ name: 'docker', image }),
+    sandbox: (image: string | undefined, cpus?: number) => ({ name: 'docker', image, cpus }),
     claudeCode: (model: string, o: { env?: Record<string, string> }) => {
       const provider = { name: 'claude', model, env: o.env ?? {} };
       providers.push(provider);
@@ -177,6 +177,15 @@ const pushed = (calls: { file: string; args: string[] }[]) =>
   calls.filter((c) => c.file === 'git' && c.args.includes('push'));
 
 describe('executeRun', () => {
+  it('caps the sandbox CPUs only when asked to', async () => {
+    const capped = await setup();
+    await executeRun('run1', { ...capped.deps, cpus: 4 });
+    expect(capped.agentRequests[0]?.sandbox).toMatchObject({ name: 'docker', cpus: 4 });
+    const open = await setup();
+    await executeRun('run1', open.deps);
+    expect(open.agentRequests[0]?.sandbox).toMatchObject({ cpus: undefined });
+  });
+
   it('pushes, opens the PR, moves the Ticket to in_review and records everything', async () => {
     const t = await setup();
     const record = await executeRun('run1', t.deps);

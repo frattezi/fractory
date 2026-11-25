@@ -13,7 +13,11 @@ export const sandcastleAdapter = async (): Promise<SandcastleAdapter> => {
         cwd: repoPath,
         branchStrategy: { type: 'branch', branch, baseBranch: baseRef },
       }),
-    sandbox: (imageName) => docker(imageName === undefined ? {} : { imageName }),
+    sandbox: (imageName, cpus) =>
+      docker({
+        ...(imageName !== undefined && { imageName }),
+        ...(cpus !== undefined && { cpus }),
+      }),
     claudeCode: (model, options) => sandcastle.claudeCode(model, options),
     opencode: (model, options) => sandcastle.opencode(model, options),
   };
