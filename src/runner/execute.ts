@@ -33,6 +33,7 @@ import {
   formatReviewComment,
   parseRunResult,
 } from './prompt.ts';
+import { remoteFor } from './remote.ts';
 import { sandcastleAdapter } from './sandcastle.ts';
 import type { SandcastleAdapter } from './types.ts';
 
@@ -93,6 +94,12 @@ const trackSessions = (worktree: Worktree, onSession: (id: string) => void): Wor
   });
 
 const ticketKey = (ref: string): string => ref.slice(ref.indexOf(':') + 1);
+
+/** Where a Run's branch goes: the git remote, and the GitHub repo when Tickets live on GitHub. */
+interface PushTarget {
+  remote: string;
+  repo?: string;
+}
 
 class Executor {
   private readonly registry: RunRegistry;
@@ -201,15 +208,33 @@ class Executor {
     return undefined;
   }
 
-  /** `origin/<base>` when it can be fetched, otherwise the local base branch. */
-  private async resolveBaseRef(record: RunRecord, base: string): Promise<string> {
+  /**
+   * The remote a Run fetches from and pushes to. With GitHub Tickets it must point at the
+   * configured repo: in a fork `origin` may be the upstream project, so a Run refuses to start
+   * rather than fail at the push after all its work.
+   */
+  private async resolveRemote(record: RunRecord, config: RepoConfig): Promise<PushTarget> {
+    if (config.ticketSource.kind !== 'github') return { remote: 'origin' };
+    const { repo } = config.ticketSource;
+    const remotes = await this.git(record.repoPath, 'remote', '-v');
+    const remote = remoteFor(remotes, repo);
+    if (!remote) {
+      throw new Error(
+        `no git remote of ${record.repoPath} points at ${repo}; add one with: git remote add origin https://github.com/${repo}.git`,
+      );
+    }
+    return { remote, repo };
+  }
+
+  /** `<remote>/<base>` when it can be fetched, otherwise the local base branch. */
+  private async resolveBaseRef(record: RunRecord, remote: string, base: string): Promise<string> {
     try {
-      await this.exec('git', ['fetch', 'origin', base], { cwd: record.repoPath });
-      return `origin/${base}`;
+      await this.exec('git', ['fetch', remote, base], { cwd: record.repoPath });
+      return `${remote}/${base}`;
     } catch (error) {
       await this.log(
         record,
-        `could not fetch origin/${base}, using the local branch: ${message(error)}`,
+        `could not fetch ${remote}/${base}, using the local branch: ${message(error)}`,
       );
       return base;
     }
@@ -236,7 +261,9 @@ class Executor {
     baseRef: string,
     hooksDir: string,
     summary: string,
+    target: PushTarget,
   ): Promise<string> {
+    const repoArgs = target.repo ? ['--repo', target.repo] : [];
     const ahead = Number(
       await this.git(worktree, 'rev-list', '--count', `${baseRef}..${record.branch}`),
     );
@@ -256,7 +283,7 @@ class Executor {
 
     await this.exec(
       'git',
-      ['-c', `core.hooksPath=${hooksDir}`, 'push', '--set-upstream', 'origin', record.branch],
+      ['-c', `core.hooksPath=${hooksDir}`, 'push', '--set-upstream', target.remote, record.branch],
       { cwd: worktree },
     );
 
@@ -268,6 +295,7 @@ class Executor {
             [
               'pr',
               'list',
+              ...repoArgs,
               '--head',
               record.branch,
               '--state',
@@ -295,6 +323,7 @@ class Executor {
       [
         'pr',
         'create',
+        ...repoArgs,
         '--base',
         config.baseBranch,
         '--head',
@@ -401,7 +430,8 @@ class Executor {
     await this.refuseEnvCredentials(record.repoPath);
     const flow = await (this.deps.loadFlow ?? loadFlow)(config.flow);
 
-    const baseRef = await this.resolveBaseRef(record, config.baseBranch);
+    const target = await this.resolveRemote(record, config);
+    const baseRef = await this.resolveBaseRef(record, target.remote, config.baseBranch);
     const sandcastle = this.deps.sandcastle ?? (await sandcastleAdapter());
     const worktree = await sandcastle.createWorktree({
       repoPath: record.repoPath,
@@ -488,6 +518,7 @@ class Executor {
         baseRef,
         hooksDir,
         result.summary,
+        target,
       );
       record = await this.registry.update(record.id, { prUrl });
       try {

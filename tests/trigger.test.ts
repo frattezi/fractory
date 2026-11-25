@@ -48,6 +48,18 @@ describe('ticket-ready Trigger', () => {
     expect(h.launched).toHaveLength(1);
   });
 
+  it('never queues a ticket-ready Run next to a queued manual Run of the same Ticket', async () => {
+    const h = await makeHarness({ maxConcurrentRuns: 0 });
+    h.source.tickets.set('github:me/app#1', makeTicket(1));
+    await h.registry.write(
+      makeRun({ id: 'manual', status: 'queued', trigger: { kind: 'manual' } }),
+    );
+    await tick(h.deps);
+    const runs = await h.registry.list();
+    expect(runs.map((r) => r.id)).toEqual(['manual']);
+    expect(h.source.statusCalls).toEqual([['github:me/app#1', 'in_progress']]);
+  });
+
   it('uses a feat/ branch in Work Mode and never a fractory-prefixed one', async () => {
     const h = await makeHarness({ config: workRepo });
     h.source.tickets.set('github:me/app#2', makeTicket(2, 'ready', 'Fix login'));
