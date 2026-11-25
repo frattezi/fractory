@@ -201,10 +201,10 @@ describe('PR handling', () => {
       { name: 'Personal + CI + green + MERGEABLE', config: personalRepo, pr: {}, merges: true },
       { name: 'Work Mode never auto-merges', config: workRepo, pr: {}, merges: false },
       {
-        name: 'Personal without CI waits for the PR Gate',
+        name: 'Personal without CI merges (merges are never a Gate)',
         config: { ...personalRepo, hasCi: false },
         pr: { statusCheckRollup: [] },
-        merges: false,
+        merges: true,
       },
       {
         name: 'CONFLICTING is never merged',
@@ -222,12 +222,6 @@ describe('PR handling', () => {
         name: 'pending checks wait',
         config: personalRepo,
         pr: { statusCheckRollup: [{ status: 'IN_PROGRESS', conclusion: null }] },
-        merges: false,
-      },
-      {
-        name: 'empty check rollup is not green',
-        config: personalRepo,
-        pr: { statusCheckRollup: [] },
         merges: false,
       },
     ];

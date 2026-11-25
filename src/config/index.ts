@@ -12,6 +12,7 @@ import {
   requiresPrGate,
   requiresTicketGate,
 } from '../contracts/repo-config.ts';
+import { describeWorkflow } from '../policy/workflow.ts';
 
 export const factoryConfigPath = (home: string = FACTORY_HOME): string => join(home, 'config.json');
 
@@ -54,4 +55,5 @@ export const describeRepoConfig = (config: RepoConfig) => ({
   ...config,
   requiresTicketGate: requiresTicketGate(config),
   requiresPrGate: requiresPrGate(config),
+  workflow: describeWorkflow(config),
 });

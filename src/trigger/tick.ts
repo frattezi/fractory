@@ -1,10 +1,11 @@
 import { join } from 'node:path';
 import type { FactoryConfig } from '../contracts/factory-config.ts';
-import { type Mode, type RepoConfig, requiresPrGate } from '../contracts/repo-config.ts';
+import type { Mode, RepoConfig } from '../contracts/repo-config.ts';
 import type { TicketSourceConfig } from '../contracts/repo-config.ts';
 import { AM_COMMENT_PREFIX, type RunRecord, type Trigger, runKey } from '../contracts/run.ts';
 import type { TicketSource } from '../contracts/ticket.ts';
 import { type Gh, feedbackItems, summarizeChecks } from '../github/gh.ts';
+import { mayAutoMerge } from '../policy/workflow.ts';
 import { consumedCommentIds, pendingComments, readRunComments } from '../registry/comments.ts';
 import type { RunRegistry } from '../registry/registry.ts';
 import { branchFor, queueRun } from './queue.ts';
@@ -189,11 +190,12 @@ export const tick = async (deps: TickDeps): Promise<TickSummary> => {
           }
         }
 
-        const mayMerge =
-          !requiresPrGate(config) &&
-          checks === 'passing' &&
-          pr.mergeable === 'MERGEABLE' &&
-          ticketLatest.status === 'done';
+        const mayMerge = mayAutoMerge({
+          config,
+          checks,
+          mergeable: pr.mergeable,
+          latestRunStatus: ticketLatest.status,
+        });
         if (mayMerge) {
           await deps.gh.mergeSquash(repoPath, prUrl);
           summary.merged.push(prUrl);
