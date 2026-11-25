@@ -112,7 +112,7 @@ worktree is created.
 
 1. `pnpm fractory run <ticket-ref>` queues a manual Run and prints its id.
 2. `pnpm fractory run-exec <id>` runs it in the foreground, in your terminal, with the real
-   Sandcastle and Docker. Follow the log at the path in `~/.fractory` (the Run's `logPath`).
+   Sandcastle and Docker. Follow the log at the Run's `logPath`.
 3. Inspect the result: `mode`, `flow`, `agents` (e.g. `claude@personal`) and `sessionId` are on the
    Run record. Use a throwaway Ticket and a Personal Mode repo.
 
