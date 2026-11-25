@@ -53,3 +53,19 @@ export CLAUDE_CODE_DISABLE_AUTO_MEMORY=1
 The Run executor sets this for the agent process it launches; export it yourself only for sessions
 you run by hand and want to behave like a Run. Your interactive sessions can keep auto-memory on
 if you want it.
+
+## 5. Fractory Manager (the Agent Manager fork)
+
+The Runs view lives in our fork of Agent Manager, `frattezi/agent-manager`, branch
+`fractory/runs-view` (ADR 0002). Build it as its own binary so the upstream `agent-manager` stays
+installed:
+
+```sh
+cd ~/Work/Personal/agent-manager
+make build VERSION=0.50.0-fractory
+install -m 755 agent-manager ~/.local/bin/fractory-manager && rm agent-manager
+```
+
+It reads Runs from `$FRACTORY_HOME/runs` (default `~/.fractory/runs`) and shares Agent Manager's
+config, sessions and tmux namespace, so run one of the two at a time, not both. Review comments
+on a Run are saved to `<id>.comments.json`; the next `tick` turns them into a follow-up Run.
