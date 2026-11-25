@@ -126,6 +126,8 @@ const flag = (args: CliArgs, name: string): string | undefined => {
   return typeof value === 'string' ? value : undefined;
 };
 
+const HELP_NAMES = new Set(['help', '--help', '-h']);
+
 const HELP = `Usage: fractory <command>
   tick | cleanup | runs | run <ticketRef> | run-exec <id>
   config show [repoPath]
@@ -391,10 +393,14 @@ const commands: Record<string, (args: CliArgs, env: CliEnv) => Promise<void>> = 
 
 export const main = async (argv: string[], env: CliEnv = defaultEnv()): Promise<number> => {
   const [name, ...rest] = argv;
+  if (name === undefined || HELP_NAMES.has(name)) {
+    env.out(HELP);
+    return 0;
+  }
   const handler = name ? commands[name] : undefined;
   if (!handler) {
     env.out(HELP);
-    return name ? 1 : 0;
+    return 1;
   }
   try {
     await handler(parseArgs(rest), env);

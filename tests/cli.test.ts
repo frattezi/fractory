@@ -197,6 +197,18 @@ describe('fractory CLI', () => {
     expect(out[0]).toContain('Usage: fractory');
   });
 
+  it.each(['help', '--help', '-h'])('prints help and succeeds on %s', async (spelling) => {
+    const { env, out } = await setup();
+    expect(await main([spelling], env)).toBe(0);
+    expect(out[0]).toContain('Usage: fractory');
+  });
+
+  it('prints help and succeeds with no arguments', async () => {
+    const { env, out } = await setup();
+    expect(await main([], env)).toBe(0);
+    expect(out[0]).toContain('Usage: fractory');
+  });
+
   it('keeps unused fixtures honest', () => {
     expect(makeRun().id).toBe('r1');
   });
