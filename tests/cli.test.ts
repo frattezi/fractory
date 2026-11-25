@@ -106,6 +106,22 @@ describe('fractory CLI', () => {
     expect(JSON.parse(out[0] as string)).toMatchObject({ mode: 'work', account: 'work' });
   });
 
+  it('status reports the Mode and hands-off branches of the current repo, or says it is not one', async () => {
+    const { env, out, registry, root } = await setup();
+    await registry.write(makeRun({ repoPath: env.cwd, status: 'running', pid: 1 }));
+    expect(await main(['status', '--json'], env)).toBe(0);
+    expect(JSON.parse(out[0] as string)).toMatchObject({
+      managed: true,
+      mode: 'work',
+      prGate: true,
+      autoMerge: false,
+      factoryBranches: ['fractory/1-add-thing-1'],
+    });
+    out.length = 0;
+    expect(await main(['status', root], env)).toBe(0);
+    expect(out[0]).toMatch(/not a Fractory repository/);
+  });
+
   it('run queues a manual Run on the Ticket branch and runs lists it', async () => {
     const { env, out, registry } = await setup();
     expect(await main(['run', 'github:me/app#5'], env)).toBe(0);

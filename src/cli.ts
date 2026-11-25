@@ -29,6 +29,7 @@ import { installSkills } from './package/install.ts';
 import { describeWorkflow, formatWorkflow } from './policy/workflow.ts';
 import { RunRegistry } from './registry/registry.ts';
 import { launchRun } from './runner/index.ts';
+import { formatStatus, repoStatus } from './status/status.ts';
 import { type Launchctl, installLaunchd, resolveBin, uninstallLaunchd } from './trigger/launchd.ts';
 import { branchFor, queueRun } from './trigger/queue.ts';
 import { type Logger, checkPid, createFileLogger } from './trigger/support.ts';
@@ -130,6 +131,7 @@ const HELP_NAMES = new Set(['help', '--help', '-h']);
 
 const HELP = `Usage: fractory <command>
   tick | cleanup | runs | run <ticketRef> | run-exec <id>
+  status [repoPath] [--json]
   config show [repoPath]
   rules [repoPath] [--json]
   launchd install|uninstall
@@ -292,6 +294,37 @@ const commands: Record<string, (args: CliArgs, env: CliEnv) => Promise<void>> = 
         all[repoPath] = describeRepoConfig(await loadRepoConfig(repoPath));
       env.out(JSON.stringify(all, null, 2));
     }
+  },
+
+  /** What an interactive agent checks before working in a repo: Mode, Runs, hands-off branches. */
+  async status(args, env) {
+    const factory = await loadFactory(env);
+    const given = args.positionals[0];
+    let repoPath = resolve(env.cwd, given ?? '.');
+    if (!given) {
+      try {
+        const top = (
+          await env.exec('git', ['-C', repoPath, 'rev-parse', '--show-toplevel'])
+        ).trim();
+        if (top) repoPath = top;
+      } catch {
+        // Not a git checkout: use the directory as given.
+      }
+    }
+    // A missing .fractory.json means "not a Fractory repo"; an invalid one is an error.
+    const config = (await readFile(join(repoPath, '.fractory.json')).then(
+      () => true,
+      () => false,
+    ))
+      ? await loadRepoConfig(repoPath)
+      : undefined;
+    const status = repoStatus({
+      repoPath,
+      config,
+      factoryRepos: factory.repos,
+      runs: await new RunRegistry(factory.registryDir).list(),
+    });
+    env.out(args.flags.json === true ? JSON.stringify(status, null, 2) : formatStatus(status));
   },
 
   async rules(args, env) {
