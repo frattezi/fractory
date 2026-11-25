@@ -50,6 +50,35 @@ describe('cleanup', () => {
     expect(s.calls.at(-1)).toEqual(['-C', '/repo/app', 'worktree', 'prune']);
   });
 
+  it('deletes the merged Run branch locally and on origin, never a branch Fractory did not name', async () => {
+    const s = await setup();
+    await s.registry.write(makeRun({ worktreePath: s.worktree, prUrl: PR_URL }));
+    s.gh.prs.set(PR_URL, makePr({ state: 'MERGED' }));
+    await cleanup(s.deps);
+    const branch = 'fractory/1-add-thing-1';
+    expect(s.calls).toContainEqual(['-C', '/repo/app', 'branch', '-D', branch]);
+    expect(s.calls).toContainEqual(['-C', '/repo/app', 'push', 'origin', '--delete', branch]);
+
+    const t = await setup();
+    await t.registry.write(makeRun({ worktreePath: t.worktree, prUrl: PR_URL, branch: 'main' }));
+    t.gh.prs.set(PR_URL, makePr({ state: 'MERGED' }));
+    await cleanup(t.deps);
+    expect(t.calls.some((a) => a.includes('branch') || a.includes('push'))).toBe(false);
+  });
+
+  it('keeps the branch of a stale failed Run', async () => {
+    const s = await setup();
+    await s.registry.write(
+      makeRun({
+        worktreePath: s.worktree,
+        status: 'failed',
+        finishedAt: '2026-01-01T00:00:00.000Z',
+      }),
+    );
+    expect((await cleanup(s.deps)).removed).toEqual([s.worktree]);
+    expect(s.calls.some((a) => a.includes('push') || a.includes('-D'))).toBe(false);
+  });
+
   it('sets cleanedAt after removing and never looks at that Run again', async () => {
     const s = await setup();
     await s.registry.write(makeRun({ worktreePath: s.worktree, prUrl: PR_URL }));
