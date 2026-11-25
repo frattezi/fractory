@@ -20,3 +20,19 @@ pass.
 Show an agent's chat and one of its nested terminals in two panes at once, instead of switching
 between rows. Today the split view is the session list plus a single preview; the workaround is an
 outer terminal split running `tmux attach -t am_<name>`. Could share the multi-pane work with idea 2.
+
+## 4. A hard guard for factory branches
+
+The `fractory` skill asks interactive agents to stay off the branches `fractory status` lists as
+hands-off, but nothing enforces it. Add a `pre-commit` and `pre-push` hook to each managed repo's
+main checkout that calls `fractory status --json` and refuses a commit or push on a factory branch,
+the way Run worktrees already refuse pushes to the base branch.
+
+## 5. Planning views in Fractory Manager
+
+Special views in Fractory Manager for the work before a Run:
+
+- **Grilling:** a `grill-with-docs` session shown as the questions asked, the answers given and the
+  decisions it wrote to the glossary and ADRs, so a Goal's progress toward a Spec is visible.
+- **Tickets:** the repo's Tickets from GitHub Issues or Jira, with their status (backlog, ready, in
+  progress, in review, done), the Spec they came from and the Runs and PRs on each.
