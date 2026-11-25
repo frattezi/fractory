@@ -102,12 +102,7 @@ export const formatReviewComment = (json: string): string | undefined => {
   }
 };
 
-/** Env for the agent in the sandbox. Credentials pass through from the host env, never logged. */
-export const agentEnv = (hostEnv: NodeJS.ProcessEnv): Record<string, string> => {
-  const env: Record<string, string> = { CLAUDE_CODE_DISABLE_AUTO_MEMORY: '1' };
-  for (const key of ['CLAUDE_CODE_OAUTH_TOKEN', 'ANTHROPIC_API_KEY'] as const) {
-    const value = hostEnv[key];
-    if (value) env[key] = value;
-  }
-  return env;
+/** Env every agent gets. Credentials are not here: they come from the Keychain per Mode. */
+export const BASE_AGENT_ENV: Readonly<Record<string, string>> = {
+  CLAUDE_CODE_DISABLE_AUTO_MEMORY: '1',
 };

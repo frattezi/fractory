@@ -28,6 +28,8 @@ describe('ticket-ready Trigger', () => {
       trigger: { kind: 'ticket-ready' },
       branch: 'fractory/1-add-thing-1',
       status: 'running',
+      mode: 'personal',
+      flow: 'build',
     });
     expect(h.source.statusCalls).toEqual([['github:me/app#1', 'in_progress']]);
     expect(summary.launched).toHaveLength(1);

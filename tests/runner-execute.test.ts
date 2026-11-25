@@ -1,7 +1,7 @@
-import { mkdtemp, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { type RepoConfig, RepoConfigSchema } from '../src/contracts/repo-config.ts';
 import {
   RUN_RECORD_VERSION,
@@ -11,10 +11,11 @@ import {
   runKey,
 } from '../src/contracts/run.ts';
 import type { Ticket, TicketSource, TicketStatus } from '../src/contracts/ticket.ts';
+import type { Flow } from '../src/flows/types.ts';
 import { RunRegistry } from '../src/registry/registry.ts';
 import type { Exec } from '../src/runner/exec.ts';
 import { type ExecuteDeps, executeRun } from '../src/runner/execute.ts';
-import type { AgentRunOutcome, AgentRunRequest } from '../src/runner/types.ts';
+import type { SandcastleAdapter } from '../src/runner/types.ts';
 
 const ticket = (overrides: Partial<Ticket> = {}): Ticket => ({
   ref: 'github:me/repo#1',
@@ -26,7 +27,22 @@ const ticket = (overrides: Partial<Ticket> = {}): Ticket => ({
   ...overrides,
 });
 
+const DEFAULT_KEYCHAIN: Record<string, string> = {
+  'fractory.claude.work': 'work-token',
+  'fractory.claude.personal': 'personal-token',
+  'fractory.opencode.personal': 'oc-key',
+};
+
 const done = '<result>{"outcome":"done","summary":"Added it"}</result>';
+
+interface AgentRequest {
+  prompt: string;
+  maxIterations: number;
+  completionSignal: string;
+  logging: { type: string; path: string };
+  agent: { name: string; env: Record<string, string> };
+  sandbox: unknown;
+}
 
 interface Setup {
   mode?: RepoConfig['mode'];
@@ -38,6 +54,10 @@ interface Setup {
   commitBody?: string;
   existingPr?: string;
   failOn?: (file: string, args: string[]) => boolean;
+  /** Keychain items present, by service. Default: the Claude items for both accounts. */
+  keychain?: Record<string, string>;
+  sandcastleEnv?: string;
+  flow?: string;
 }
 
 const setup = async (options: Setup = {}) => {
@@ -66,6 +86,12 @@ const setup = async (options: Setup = {}) => {
     calls.push({ file, args, cwd: opts?.cwd });
     if (options.failOn?.(file, args)) throw new Error(`${file} ${args[0]} failed`);
     const key = `${file} ${args.join(' ')}`;
+    if (file === 'security') {
+      const service = args[args.indexOf('-s') + 1] ?? '';
+      const secret = (options.keychain ?? DEFAULT_KEYCHAIN)[service];
+      if (secret === undefined) throw Object.assign(new Error('security failed'), { code: 44 });
+      return { stdout: `${secret}\n`, stderr: '' };
+    }
     const out = (stdout: string) => ({ stdout, stderr: '' });
     if (key.includes('--absolute-git-dir')) return out(gitDir);
     if (key.includes('--git-path')) return out('/repo/.git/hooks/pre-push');
@@ -94,38 +120,57 @@ const setup = async (options: Setup = {}) => {
     },
   };
 
-  const agentRequests: AgentRunRequest[] = [];
+  const agentRequests: AgentRequest[] = [];
+  const providers: { name: string; model: string; env: Record<string, string> }[] = [];
   const config = RepoConfigSchema.parse({
     mode: options.mode ?? 'personal',
     ticketSource: { kind: 'github', repo: 'me/repo' },
     hasCi: true,
     maxIterations: 4,
+    ...(options.flow ? { flow: options.flow } : {}),
   });
-  const outcome: AgentRunOutcome = {
-    stdout: options.stdout ?? done,
-    iterations: 1,
-    completed: options.completed ?? true,
-    sessionId: 'sess-1',
+  const worktree = {
+    branch: 'fractory/1',
+    worktreePath: join(dir, 'wt'),
+    run: async (request: AgentRequest) => {
+      agentRequests.push(request);
+      return {
+        stdout: options.stdout ?? done,
+        iterations: [{ sessionId: 'sess-1' }],
+        commits: [],
+        branch: 'fractory/1',
+        ...(options.completed === false ? {} : { completionSignal: '<promise>COMPLETE</promise>' }),
+      };
+    },
   };
+  const sandcastle = {
+    createWorktree: async () => worktree,
+    sandbox: (image: string | undefined) => ({ name: 'docker', image }),
+    claudeCode: (model: string, o: { env?: Record<string, string> }) => {
+      const provider = { name: 'claude', model, env: o.env ?? {} };
+      providers.push(provider);
+      return provider;
+    },
+    opencode: (model: string, o: { env?: Record<string, string> }) => {
+      const provider = { name: 'opencode', model, env: o.env ?? {} };
+      providers.push(provider);
+      return provider;
+    },
+  } as unknown as SandcastleAdapter;
+  if (options.sandcastleEnv !== undefined) {
+    await mkdir(join(dir, 'repo', '.sandcastle'), { recursive: true });
+    await writeFile(join(dir, 'repo', '.sandcastle', '.env'), options.sandcastleEnv);
+  }
   const deps: ExecuteDeps = {
     ticketSource: source,
     registry,
     exec,
-    hostEnv: { CLAUDE_CODE_OAUTH_TOKEN: 'secret-token' },
     pid: 99,
     loadRepoConfig: async () => config,
     readRules: async () => 'RULES',
-    sandcastle: {
-      prepareWorktree: async () => ({
-        path: join(dir, 'wt'),
-        runAgent: async (request) => {
-          agentRequests.push(request);
-          return outcome;
-        },
-      }),
-    },
+    sandcastle,
   };
-  return { deps, registry, calls, comments, statuses, agentRequests, record };
+  return { deps, registry, calls, comments, statuses, agentRequests, providers, record, dir };
 };
 
 const pushed = (calls: { file: string; args: string[] }[]) =>
@@ -147,7 +192,9 @@ describe('executeRun', () => {
 
     const request = t.agentRequests[0];
     expect(request?.maxIterations).toBe(4);
-    expect(request?.env.CLAUDE_CODE_DISABLE_AUTO_MEMORY).toBe('1');
+    expect(request?.completionSignal).toBe('<promise>COMPLETE</promise>');
+    expect(request?.logging).toEqual({ type: 'file', path: t.record.logPath });
+    expect(request?.agent.env.CLAUDE_CODE_DISABLE_AUTO_MEMORY).toBe('1');
     expect(request?.prompt).toContain('RULES');
     expect(request?.prompt).toContain('Add a thing');
 
@@ -161,8 +208,9 @@ describe('executeRun', () => {
     const t = await setup();
     await executeRun('run1', t.deps);
     const log = await readFile(t.record.logPath, 'utf8');
-    expect(log).toContain('agent result: done');
-    expect(log).not.toContain('secret-token');
+    expect(log).toContain('flow result: done');
+    expect(log).not.toContain('personal-token');
+    expect(JSON.stringify(await t.registry.get('run1'))).not.toContain('personal-token');
   });
 
   it('reuses the open PR on a follow-up Run and feeds the CI log to the agent', async () => {
@@ -319,5 +367,137 @@ describe('executeRun', () => {
   it('throws for an unknown Run', async () => {
     const t = await setup();
     await expect(executeRun('nope', t.deps)).rejects.toThrow(/not found/);
+  });
+});
+
+const flowOf = (flow: Flow) => async () => flow;
+
+describe('flows, accounts and the executor shell', () => {
+  it('records mode, flow and the agent profile the flow used', async () => {
+    const t = await setup({ mode: 'work' });
+    const record = await executeRun('run1', t.deps);
+    expect(record).toMatchObject({ mode: 'work', flow: 'build', agents: ['claude@work'] });
+    expect(t.providers[0]?.env.CLAUDE_CODE_OAUTH_TOKEN).toBe('work-token');
+  });
+
+  it('uses the personal account in Personal Mode', async () => {
+    const t = await setup();
+    const record = await executeRun('run1', t.deps);
+    expect(record.agents).toEqual(['claude@personal']);
+    expect(t.providers[0]?.env.CLAUDE_CODE_OAUTH_TOKEN).toBe('personal-token');
+  });
+
+  it('ignores credentials in the host environment', async () => {
+    vi.stubEnv('CLAUDE_CODE_OAUTH_TOKEN', 'host-token');
+    vi.stubEnv('ANTHROPIC_API_KEY', 'host-key');
+    try {
+      const t = await setup();
+      await executeRun('run1', t.deps);
+      expect(t.providers[0]?.env).toEqual({
+        CLAUDE_CODE_DISABLE_AUTO_MEMORY: '1',
+        CLAUDE_CODE_OAUTH_TOKEN: 'personal-token',
+      });
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it('lets a flow use OpenCode in Personal Mode and records both profiles', async () => {
+    const t = await setup();
+    t.deps.loadFlow = flowOf(async (ctx) => {
+      await ctx.agents.claude();
+      const agent = await ctx.agents.opencode('opencode-go/some-model');
+      await ctx.worktree.run({ agent, sandbox: ctx.sandbox, prompt: 'x' });
+      return { outcome: 'done', summary: 'ok' };
+    });
+    const record = await executeRun('run1', t.deps);
+    expect(record.status).toBe('done');
+    expect(record.agents).toEqual(['claude@personal', 'opencode@personal']);
+    expect(t.providers[1]).toMatchObject({
+      name: 'opencode',
+      model: 'opencode-go/some-model',
+      env: { OPENCODE_API_KEY: 'oc-key' },
+    });
+    expect(record.sessionId).toBe('sess-1');
+  });
+
+  it('rejects OpenCode in Work Mode and never reads its Keychain item', async () => {
+    const t = await setup({ mode: 'work' });
+    t.deps.loadFlow = flowOf(async (ctx) => {
+      await ctx.agents.opencode();
+      return { outcome: 'done', summary: 'ok' };
+    });
+    const record = await executeRun('run1', t.deps);
+    expect(record.status).toBe('failed');
+    expect(record.result).toMatchObject({ outcome: 'failed' });
+    expect(JSON.stringify(record.result)).toContain('not allowed in work Mode');
+    expect(t.calls.some((c) => c.file === 'security')).toBe(false);
+    expect(pushed(t.calls)).toHaveLength(0);
+  });
+
+  it('ends needs-human/needs-access naming the Keychain service when the item is missing', async () => {
+    const t = await setup({ mode: 'work', keychain: {} });
+    const record = await executeRun('run1', t.deps);
+    expect(record.status).toBe('needs-human');
+    expect(record.result).toMatchObject({ outcome: 'needs-human', reason: 'needs-access' });
+    expect(JSON.stringify(record.result)).toContain('fractory.claude.work');
+    expect(record.agents).toBeUndefined();
+    expect(t.comments).toEqual([]);
+  });
+
+  it('fails the Run for an unknown flow before creating the worktree', async () => {
+    const t = await setup({ flow: 'ghost' });
+    const record = await executeRun('run1', t.deps);
+    expect(record.status).toBe('failed');
+    expect(record.result).toMatchObject({
+      summary: expect.stringContaining('Unknown flow "ghost"'),
+    });
+    expect(t.agentRequests).toHaveLength(0);
+  });
+
+  it('fails the Run when the flow returns something that is not a RunResult', async () => {
+    const t = await setup();
+    t.deps.loadFlow = flowOf((async () => ({ outcome: 'maybe' })) as unknown as Flow);
+    const record = await executeRun('run1', t.deps);
+    expect(record.status).toBe('failed');
+    expect(pushed(t.calls)).toHaveLength(0);
+  });
+
+  it('fails the Run when the flow throws', async () => {
+    const t = await setup();
+    t.deps.loadFlow = flowOf(async () => {
+      throw new Error('kaboom');
+    });
+    const record = await executeRun('run1', t.deps);
+    expect(record.status).toBe('failed');
+    expect(JSON.stringify(record.result)).toContain('kaboom');
+    expect(pushed(t.calls)).toHaveLength(0);
+  });
+
+  it('does not let a flow override the account through agent options', async () => {
+    const t = await setup();
+    t.deps.loadFlow = flowOf(async (ctx) => {
+      await ctx.agents.claude(undefined, { env: { CLAUDE_CODE_OAUTH_TOKEN: 'sneaky' } });
+      return { outcome: 'failed', summary: 'x' };
+    });
+    await executeRun('run1', t.deps);
+    expect(t.providers[0]?.env.CLAUDE_CODE_OAUTH_TOKEN).toBe('personal-token');
+  });
+
+  it.each(['CLAUDE_CODE_OAUTH_TOKEN', 'ANTHROPIC_API_KEY'])(
+    'refuses to run when .sandcastle/.env defines %s',
+    async (key) => {
+      const t = await setup({ sandcastleEnv: `GH_TOKEN=x\n${key}=abc\n` });
+      const record = await executeRun('run1', t.deps);
+      expect(record.status).toBe('failed');
+      expect(JSON.stringify(record.result)).toContain(key);
+      expect(t.agentRequests).toHaveLength(0);
+      expect(JSON.stringify(record)).not.toContain('abc');
+    },
+  );
+
+  it('runs when .sandcastle/.env has only unrelated keys', async () => {
+    const t = await setup({ sandcastleEnv: 'GH_TOKEN=x\n' });
+    expect((await executeRun('run1', t.deps)).status).toBe('done');
   });
 });
