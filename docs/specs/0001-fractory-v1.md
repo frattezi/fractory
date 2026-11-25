@@ -130,7 +130,10 @@ Changing a contract is a change for every part: do it in its own commit, update 
   4. Tickets `listReady()` without a Run for key `ticket-ready` → Trigger `ticket-ready`
      (Ticket → `in_progress`).
   5. Start queued Runs only into free slots: active Runs < `maxConcurrentRuns`, oldest first.
-     After a reboot this prevents relaunching everything at once (v0 lesson).
+     After a reboot this prevents relaunching everything at once (v0 lesson). With
+     `FactoryConfig.resources` set, each launch also needs the host under its limits (1-minute load
+     per core, macOS available memory) and at most `maxLaunchesPerTick` Runs start per tick; held
+     Runs stay queued and `tick` reports why (`held`). An unreadable value never holds Runs.
   - Each repo and each Run is wrapped so one failure never stops the rest; errors are logged.
   - A per-tick lock file prevents overlapping ticks.
 - Follow-up Runs reuse the PR's branch so Sandcastle's `branch` strategy continues it.
