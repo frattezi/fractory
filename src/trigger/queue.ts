@@ -49,6 +49,8 @@ export interface QueueInput {
   /** Snapshot of the repo's Mode and flow, recorded so readers need no config. */
   mode?: Mode | undefined;
   flow?: string | undefined;
+  /** Overrides the key derived from the Trigger (Re-runs need a deterministic manual key). */
+  key?: string | undefined;
 }
 
 export interface QueueDeps {
@@ -63,7 +65,7 @@ export const queueRun = async (
   deps: QueueDeps,
   input: QueueInput,
 ): Promise<{ record: RunRecord; created: boolean }> => {
-  const key = runKey(input.ticketRef, input.trigger);
+  const key = input.key ?? runKey(input.ticketRef, input.trigger);
   const existing = (await deps.registry.list()).find((r) => r.key === key);
   if (existing) return { record: existing, created: false };
   const id = deps.newId();

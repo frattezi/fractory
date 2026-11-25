@@ -1,8 +1,8 @@
-import { mkdir, utimes, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, utimes, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { ResourceLimitsSchema } from '../src/contracts/factory-config.ts';
-import { runKey } from '../src/contracts/run.ts';
+import { type Trigger, rerunRequestPath, runKey } from '../src/contracts/run.ts';
 import type { HostLoad } from '../src/policy/resources.ts';
 import { branchFor } from '../src/trigger/queue.ts';
 import { acquireLock } from '../src/trigger/support.ts';
@@ -15,6 +15,7 @@ import {
   makeTicket,
   personalRepo,
   workRepo,
+  writeJson,
 } from './trigger-helpers.ts';
 
 describe('ticket-ready Trigger', () => {
@@ -79,48 +80,300 @@ describe('concurrency cap', () => {
 
 describe('resource limits', () => {
   const limits = ResourceLimitsSchema.parse({});
-  const roomy = {
+  const roomy: HostLoad = {
     loadPerCore: 0.2,
     hostMemoryFreeGb: 8,
     dockerMemoryFreeGb: 4,
     dockerReachable: true,
   };
-
-  it('starts one Run per tick while the host has room', async () => {
+  const withLimits = async (load: () => Promise<HostLoad> | HostLoad = () => roomy) => {
     const h = await makeHarness();
     h.deps.factory.resources = limits;
-    h.deps.hostLoad = async () => roomy;
-    for (let n = 1; n <= 3; n++) h.source.tickets.set(`github:me/app#${n}`, makeTicket(n));
+    h.deps.hostLoad = async () => load();
+    return h;
+  };
+  const addTickets = (h: Awaited<ReturnType<typeof makeHarness>>, count: number) => {
+    for (let n = 1; n <= count; n++) h.source.tickets.set(`github:me/app#${n}`, makeTicket(n));
+  };
+
+  it('starts one Run per tick while the host has room', async () => {
+    const h = await withLimits();
+    addTickets(h, 3);
     await tick(h.deps);
     expect(h.launched).toEqual(['run-1']);
     await tick(h.deps);
     expect(h.launched).toEqual(['run-1', 'run-2']);
   });
 
-  it('holds queued Runs while a limit is exceeded, and says why', async () => {
-    const h = await makeHarness();
-    h.deps.factory.resources = limits;
-    let load: HostLoad = { ...roomy, loadPerCore: 1.4, hostMemoryFreeGb: 1 };
-    h.deps.hostLoad = async () => load;
-    h.source.tickets.set('github:me/app#1', makeTicket(1));
+  it.each([
+    ['CPU load', { loadPerCore: 0.92 }, 'CPU load 0.92 per core > 0.75'],
+    ['host memory', { hostMemoryFreeGb: 1.5 }, 'host memory 1.5 GB free < 2 GB'],
+    ['Docker memory', { dockerMemoryFreeGb: 0.8 }, 'Docker memory 0.8 GB free < 1 GB'],
+    ['Docker reachability', { dockerReachable: false }, 'Docker is not reachable'],
+  ])('holds the queue on %s and releases it when the host recovers', async (_n, over, reason) => {
+    let load: HostLoad = { ...roomy, ...over };
+    const h = await withLimits(() => load);
+    addTickets(h, 1);
     const summary = await tick(h.deps);
     expect(h.launched).toEqual([]);
-    expect(summary.held).toMatch(/host memory 1.0 GB free < 2 GB; CPU load 1.40 per core > 0.75/);
+    expect(summary.held).toBe(reason);
     expect((await h.registry.list())[0]?.status).toBe('queued');
 
     load = roomy;
-    await tick(h.deps);
+    expect((await tick(h.deps)).held).toBeUndefined();
     expect(h.launched).toEqual(['run-1']);
   });
 
-  it('never checks the host when resources are off', async () => {
-    const h = await makeHarness();
-    h.deps.hostLoad = async () => {
+  it('never holds for a reading that could not be taken', async () => {
+    const unread = await withLimits(() => ({}));
+    addTickets(unread, 1);
+    await tick(unread.deps);
+    expect(unread.launched).toEqual(['run-1']);
+
+    const failing = await withLimits(() => {
+      throw new Error('boom');
+    });
+    addTickets(failing, 1);
+    await tick(failing.deps);
+    expect(failing.launched).toEqual(['run-1']);
+  });
+
+  it('never reads the host when resources are off, or when nothing is queued', async () => {
+    const off = await makeHarness();
+    off.deps.hostLoad = async () => {
       throw new Error('must not be read');
     };
-    for (let n = 1; n <= 2; n++) h.source.tickets.set(`github:me/app#${n}`, makeTicket(n));
+    addTickets(off, 2);
+    await tick(off.deps);
+    expect(off.launched).toEqual(['run-1', 'run-2']);
+
+    let reads = 0;
+    const idle = await withLimits(() => {
+      reads++;
+      return roomy;
+    });
+    await tick(idle.deps);
+    expect(reads).toBe(0);
+  });
+
+  it('honours maxLaunchesPerTick above one', async () => {
+    const h = await withLimits();
+    h.deps.factory.resources = { ...limits, maxLaunchesPerTick: 2 };
+    addTickets(h, 3);
     await tick(h.deps);
     expect(h.launched).toEqual(['run-1', 'run-2']);
+  });
+
+  it('launches manual Runs, then follow-ups, then new Tickets, oldest first', async () => {
+    const h = await withLimits();
+    h.deps.factory.resources = { ...limits, maxLaunchesPerTick: 10 };
+    const queued = (id: string, n: number, trigger: Trigger, createdAt: string) =>
+      h.registry.write(
+        makeRun({
+          id,
+          ticketRef: `github:me/app#${n}`,
+          trigger,
+          key: `k-${id}`,
+          status: 'queued',
+          createdAt,
+          updatedAt: createdAt,
+        }),
+      );
+    await queued('ready-old', 1, { kind: 'ticket-ready' }, '2026-05-31T01:00:00.000Z');
+    await queued(
+      'comment',
+      2,
+      { kind: 'review-comment', prNumber: 7, commentId: 'c' },
+      '2026-05-31T03:00:00.000Z',
+    );
+    await queued('manual-new', 3, { kind: 'manual' }, '2026-05-31T05:00:00.000Z');
+    await queued(
+      'ci',
+      4,
+      { kind: 'ci-failed', prNumber: 7, headSha: 's' },
+      '2026-05-31T02:00:00.000Z',
+    );
+    await queued('manual-old', 5, { kind: 'manual' }, '2026-05-31T04:00:00.000Z');
+    await queued('ready-new', 6, { kind: 'ticket-ready' }, '2026-05-31T06:00:00.000Z');
+    h.deps.factory.maxConcurrentRuns = 10;
+    await tick(h.deps);
+    expect(h.launched).toEqual([
+      'manual-old',
+      'manual-new',
+      'ci',
+      'comment',
+      'ready-old',
+      'ready-new',
+    ]);
+  });
+
+  describe('host.json', () => {
+    const state = async (h: Awaited<ReturnType<typeof makeHarness>>) =>
+      JSON.parse(await readFile(h.factory.hostStatePath, 'utf8'));
+
+    it('is written every tick, not held and without readings when nothing is queued', async () => {
+      const h = await withLimits();
+      await tick(h.deps);
+      expect(await state(h)).toEqual({
+        version: 1,
+        held: false,
+        queued: 0,
+        updatedAt: expect.any(String),
+      });
+      const off = await makeHarness();
+      await tick(off.deps);
+      expect(await state(off)).toMatchObject({ version: 1, held: false, queued: 0 });
+    });
+
+    it('records the readings and the Runs left waiting after a launch', async () => {
+      const h = await withLimits();
+      addTickets(h, 3);
+      await tick(h.deps);
+      expect(await state(h)).toEqual({
+        version: 1,
+        held: false,
+        readings: { ...roomy, checkedAt: expect.any(String) },
+        queued: 2,
+        updatedAt: expect.any(String),
+      });
+    });
+
+    it('keeps heldSince across held ticks and drops the hold when released', async () => {
+      let load: HostLoad = { ...roomy, dockerMemoryFreeGb: 0.8 };
+      const h = await withLimits(() => load);
+      addTickets(h, 1);
+      await tick(h.deps);
+      const first = await state(h);
+      expect(first).toMatchObject({
+        held: true,
+        reason: 'Docker memory 0.8 GB free < 1 GB',
+        queued: 1,
+        readings: { dockerMemoryFreeGb: 0.8, dockerReachable: true },
+      });
+      expect(first.heldSince).toBeDefined();
+
+      h.setNow(new Date('2026-06-01T10:30:00.000Z'));
+      await tick(h.deps);
+      const second = await state(h);
+      expect(second.heldSince).toBe(first.heldSince);
+      expect(second.updatedAt > first.updatedAt).toBe(true);
+
+      load = roomy;
+      await tick(h.deps);
+      const released = await state(h);
+      expect(released.held).toBe(false);
+      expect(released.reason).toBeUndefined();
+      expect(released.heldSince).toBeUndefined();
+    });
+
+    it('starts a new hold with a fresh heldSince', async () => {
+      let load: HostLoad = { ...roomy, loadPerCore: 2 };
+      const h = await withLimits(() => load);
+      addTickets(h, 2);
+      await tick(h.deps);
+      const first = await state(h);
+      load = roomy;
+      await tick(h.deps);
+      load = { ...roomy, loadPerCore: 2 };
+      h.setNow(new Date('2026-06-02T10:00:00.000Z'));
+      await tick(h.deps);
+      expect((await state(h)).heldSince > first.heldSince).toBe(true);
+    });
+  });
+});
+
+describe('Re-run requests', () => {
+  const request = (h: Awaited<ReturnType<typeof makeHarness>>, runId: string) =>
+    writeJson(rerunRequestPath(h.factory.registryDir, runId), {
+      version: 1,
+      requestedAt: '2026-06-01T09:00:00.000Z',
+    });
+  const seed = async (
+    h: Awaited<ReturnType<typeof makeHarness>>,
+    overrides: Parameters<typeof makeRun>[0] = {},
+  ) => {
+    await h.registry.write(makeRun({ id: 'failed-1', status: 'failed', ...overrides }));
+    h.source.tickets.set('github:me/app#1', makeTicket(1, 'in_progress'));
+  };
+
+  it('queues a manual Run on the Ticket branch with the Re-run key, once', async () => {
+    const h = await makeHarness();
+    await seed(h, { branch: 'fractory/1-kept', mode: 'personal', flow: 'build' });
+    await request(h, 'failed-1');
+    const summary = await tick(h.deps);
+    expect(summary.queued).toEqual(['run-1']);
+    const rerun = await h.registry.get('run-1');
+    expect(rerun).toMatchObject({
+      key: 'github:me/app#1:rerun:failed-1',
+      trigger: { kind: 'manual' },
+      branch: 'fractory/1-kept',
+      ticketRef: 'github:me/app#1',
+      flow: 'build',
+    });
+    expect(h.launched).toEqual(['run-1']);
+    expect(h.source.statusCalls).toContainEqual(['github:me/app#1', 'in_progress']);
+
+    await h.registry.update('run-1', { status: 'done' });
+    const again = await tick(h.deps);
+    expect(again.queued).toEqual([]);
+    expect(await h.registry.list()).toHaveLength(2);
+  });
+
+  it('accepts a needs-human Run and leaves the request file untouched', async () => {
+    const h = await makeHarness();
+    await seed(h, {
+      status: 'needs-human',
+      result: { outcome: 'needs-human', reason: 'ambiguous-spec', question: 'Which?' },
+    });
+    await request(h, 'failed-1');
+    const path = rerunRequestPath(h.factory.registryDir, 'failed-1');
+    const before = await readFile(path, 'utf8');
+    await tick(h.deps);
+    expect(await h.registry.get('run-1')).toBeDefined();
+    expect(await readFile(path, 'utf8')).toBe(before);
+  });
+
+  it('skips a Run that is not the latest of its Ticket', async () => {
+    const h = await makeHarness();
+    await seed(h);
+    await h.registry.write(
+      makeRun({
+        id: 'newer',
+        key: 'other',
+        status: 'done',
+        createdAt: '2026-05-31T12:00:00.000Z',
+        updatedAt: '2026-05-31T12:00:00.000Z',
+      }),
+    );
+    await request(h, 'failed-1');
+    expect((await tick(h.deps)).queued).toEqual([]);
+    expect(h.log.lines.join('\n')).toMatch(/not the latest/);
+  });
+
+  it.each(['done', 'running', 'queued'] as const)('skips a %s Run', async (status) => {
+    const h = await makeHarness();
+    await seed(h, { status });
+    await request(h, 'failed-1');
+    const summary = await tick(h.deps);
+    expect(summary.queued).toEqual([]);
+    expect(h.log.lines.join('\n')).toMatch(/Re-run request for Run failed-1 skipped/);
+  });
+
+  it('ignores a request for an unknown Run and an invalid request file', async () => {
+    const h = await makeHarness();
+    await seed(h);
+    await request(h, 'ghost');
+    await writeJson(rerunRequestPath(h.factory.registryDir, 'failed-1'), { version: 2 });
+    const summary = await tick(h.deps);
+    expect(summary.queued).toEqual([]);
+    expect(summary.errors).toBe(0);
+  });
+
+  it('is not listed as a Run by the registry', async () => {
+    const h = await makeHarness();
+    await seed(h);
+    await request(h, 'failed-1');
+    expect((await h.registry.list()).map((r) => r.id)).toEqual(['failed-1']);
   });
 });
 

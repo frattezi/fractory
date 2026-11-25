@@ -24,7 +24,7 @@ export const HostStateSchema = z.object({
       checkedAt: z.string().datetime(),
     })
     .optional(),
-  /** Runs waiting to start when the tick read the host. */
+  /** Runs still waiting to start when the tick ended. */
   queued: z.number().int().min(0),
   updatedAt: z.string().datetime(),
 });
