@@ -118,7 +118,7 @@ Changing a contract is a change for every part: do it in its own commit, update 
      - `mayAutoMerge` (`src/policy/workflow.ts`): Personal Mode, the Ticket's latest Run `done`,
        `mergeable == MERGEABLE`, checks `passing` or `none` (no CI) → `gh pr merge --squash`.
        Never while checks are `pending` or `failing`, never in Work Mode, never a conflicting PR
-       (v0 lesson). Merges are never a Gate in Personal Mode (ADR 0005, Q17).
+       (v0 lesson). Merges are never a Gate in Personal Mode (ADR 0005).
   3. Review comments from Agent Manager: for each Run with `<registryDir>/<runId>.comments.json`
      (`RunCommentsFileSchema`, written atomically by Agent Manager, never modified by Fractory),
      queue one `review-comment` Trigger batching the comments no earlier Run consumed, keyed by
