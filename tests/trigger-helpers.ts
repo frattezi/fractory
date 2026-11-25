@@ -125,6 +125,9 @@ export const makeHarness = async (
     staleWorktreeDays: 7,
     registryDir: join(root, 'runs'),
     logDir: join(root, 'logs'),
+    // Host Limits are off so tests keep their meaning; resource tests switch them on.
+    resources: false,
+    hostStatePath: join(root, 'host.json'),
   };
   const registry = new RunRegistry(factory.registryDir);
   const source = new FakeSource();

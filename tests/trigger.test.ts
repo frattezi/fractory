@@ -1,7 +1,9 @@
 import { mkdir, utimes, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { ResourceLimitsSchema } from '../src/contracts/factory-config.ts';
 import { runKey } from '../src/contracts/run.ts';
+import type { HostLoad } from '../src/policy/resources.ts';
 import { branchFor } from '../src/trigger/queue.ts';
 import { acquireLock } from '../src/trigger/support.ts';
 import { tick } from '../src/trigger/tick.ts';
@@ -76,12 +78,18 @@ describe('concurrency cap', () => {
 });
 
 describe('resource limits', () => {
-  const limits = { maxLoadPerCore: 0.75, minMemoryAvailablePercent: 25, maxLaunchesPerTick: 1 };
+  const limits = ResourceLimitsSchema.parse({});
+  const roomy = {
+    loadPerCore: 0.2,
+    hostMemoryFreeGb: 8,
+    dockerMemoryFreeGb: 4,
+    dockerReachable: true,
+  };
 
   it('starts one Run per tick while the host has room', async () => {
     const h = await makeHarness();
     h.deps.factory.resources = limits;
-    h.deps.hostLoad = async () => ({ loadPerCore: 0.2, memoryAvailablePercent: 60 });
+    h.deps.hostLoad = async () => roomy;
     for (let n = 1; n <= 3; n++) h.source.tickets.set(`github:me/app#${n}`, makeTicket(n));
     await tick(h.deps);
     expect(h.launched).toEqual(['run-1']);
@@ -89,23 +97,23 @@ describe('resource limits', () => {
     expect(h.launched).toEqual(['run-1', 'run-2']);
   });
 
-  it('holds queued Runs while CPU or memory is over its limit, and says why', async () => {
+  it('holds queued Runs while a limit is exceeded, and says why', async () => {
     const h = await makeHarness();
     h.deps.factory.resources = limits;
-    let load = { loadPerCore: 1.4, memoryAvailablePercent: 12 };
+    let load: HostLoad = { ...roomy, loadPerCore: 1.4, hostMemoryFreeGb: 1 };
     h.deps.hostLoad = async () => load;
     h.source.tickets.set('github:me/app#1', makeTicket(1));
     const summary = await tick(h.deps);
     expect(h.launched).toEqual([]);
-    expect(summary.held).toMatch(/CPU load 1.40 per core > 0.75; memory available 12% < 25%/);
+    expect(summary.held).toMatch(/host memory 1.0 GB free < 2 GB; CPU load 1.40 per core > 0.75/);
     expect((await h.registry.list())[0]?.status).toBe('queued');
 
-    load = { loadPerCore: 0.3, memoryAvailablePercent: 50 };
+    load = roomy;
     await tick(h.deps);
     expect(h.launched).toEqual(['run-1']);
   });
 
-  it('never checks the host when no limits are configured', async () => {
+  it('never checks the host when resources are off', async () => {
     const h = await makeHarness();
     h.deps.hostLoad = async () => {
       throw new Error('must not be read');

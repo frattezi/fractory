@@ -17,7 +17,13 @@ const setup = async () => {
   const registryDir = join(root, 'runs');
   await writeFile(
     join(root, 'config.json'),
-    JSON.stringify({ repos: [repo], registryDir, logDir: join(root, 'logs') }),
+    JSON.stringify({
+      repos: [repo],
+      registryDir,
+      logDir: join(root, 'logs'),
+      hostStatePath: join(root, 'host.json'),
+      resources: false,
+    }),
   );
   await mkdir(join(root, 'launchd'));
   const template = await readFile(

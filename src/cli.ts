@@ -195,7 +195,10 @@ const commands: Record<string, (args: CliArgs, env: CliEnv) => Promise<void>> = 
       newId: env.newId,
       log,
       hostLoad: () =>
-        readHostLoad(async (name) => (await env.exec('sysctl', ['-n', name])).toString()),
+        readHostLoad({
+          sysctl: (name) => env.exec('sysctl', ['-n', name]),
+          docker: (dockerArgs) => env.exec('docker', dockerArgs),
+        }),
       afterTick: async () => {
         await cleanup({ factory, registry, gh: env.gh, exec: env.exec, now: env.now, log });
       },

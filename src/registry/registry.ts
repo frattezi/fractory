@@ -1,6 +1,11 @@
 import { mkdir, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { ACTIVE_STATUSES, type RunRecord, RunRecordSchema } from '../contracts/run.ts';
+import {
+  ACTIVE_STATUSES,
+  RERUN_SUFFIX,
+  type RunRecord,
+  RunRecordSchema,
+} from '../contracts/run.ts';
 
 /**
  * File-backed Run registry: one `<id>.json` per Run. Writes are atomic
@@ -41,7 +46,12 @@ export class RunRegistry {
     }
     const records = await Promise.all(
       names
-        .filter((name) => name.endsWith('.json') && !name.endsWith('.comments.json'))
+        .filter(
+          (name) =>
+            name.endsWith('.json') &&
+            !name.endsWith('.comments.json') &&
+            !name.endsWith(RERUN_SUFFIX),
+        )
         .map(async (name) => {
           try {
             return RunRecordSchema.parse(JSON.parse(await readFile(join(this.dir, name), 'utf8')));
