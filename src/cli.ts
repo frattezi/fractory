@@ -255,13 +255,8 @@ const commands: Record<string, (args: CliArgs, env: CliEnv) => Promise<void>> = 
       .filter((r) => r.ticketRef === ref)
       .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
       .at(-1);
-    const branch =
-      previous?.branch ??
-      branchFor(
-        ref,
-        (await env.createTicketSource(config.ticketSource, config.mode).get(ref)).title,
-        config.mode,
-      );
+    const source = env.createTicketSource(config.ticketSource, config.mode);
+    const branch = previous?.branch ?? branchFor(ref, (await source.get(ref)).title, config.mode);
     const { record } = await queueRun(
       { registry, factory, now: env.now, newId: env.newId },
       {
@@ -273,6 +268,8 @@ const commands: Record<string, (args: CliArgs, env: CliEnv) => Promise<void>> = 
         flow: config.flow,
       },
     );
+    // Out of Ready, so the tick does not queue a ticket-ready Run next to this one.
+    await source.setStatus(ref, 'in_progress');
     env.out(`Queued Run ${record.id} on ${record.branch}; the next tick starts it.`);
   },
 

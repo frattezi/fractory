@@ -330,6 +330,17 @@ export const tick = async (deps: TickDeps): Promise<TickSummary> => {
     const ready = await source.listReady();
     for (const ticket of ready) {
       try {
+        // A Ticket still marked Ready may already have a Run (e.g. `fractory run`): never a second.
+        const active = (await registry.list()).find(
+          (r) => r.ticketRef === ticket.ref && (r.status === 'queued' || r.status === 'running'),
+        );
+        if (active) {
+          log.info(
+            `${ticket.ref} already has ${active.status} Run ${active.id}; not queueing another`,
+          );
+          await source.setStatus(ticket.ref, 'in_progress');
+          continue;
+        }
         const branch = branchFor(ticket.ref, ticket.title, config.mode);
         const { record, created } = await queueRun(deps, {
           ticketRef: ticket.ref,

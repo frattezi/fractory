@@ -59,7 +59,7 @@ const setup = async () => {
     now: () => new Date('2026-06-01T00:00:00.000Z'),
     newId: () => 'manual-1',
   };
-  return { root, repo, env, out, launchctlCalls, registry: new RunRegistry(registryDir) };
+  return { root, repo, env, out, source, launchctlCalls, registry: new RunRegistry(registryDir) };
 };
 
 describe('parseArgs', () => {
@@ -219,6 +219,12 @@ describe('fractory CLI', () => {
     expect(out[0]).toContain('queued');
     expect(out[0]).toContain('MODE');
     expect(out[0]).toContain('AGENTS');
+  });
+
+  it('run takes the Ticket out of Ready so the tick does not queue a second Run', async () => {
+    const { env, source } = await setup();
+    expect(await main(['run', 'github:me/app#5'], env)).toBe(0);
+    expect(source.statusCalls).toEqual([['github:me/app#5', 'in_progress']]);
   });
 
   it('run rejects a Ticket no configured repo owns', async () => {
