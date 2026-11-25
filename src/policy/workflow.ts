@@ -20,7 +20,7 @@ export interface AutoMergeInput {
 /**
  * Personal Mode merges a PR when the Ticket's latest Run is done, GitHub says it is MERGEABLE and
  * checks are passing or absent. Never while checks are pending or failing, never when conflicting
- * or unknown, and never in Work Mode (ADR 0006).
+ * or unknown, and never in Work Mode (ADR 0005).
  */
 export const mayAutoMerge = ({
   config,
@@ -106,7 +106,7 @@ export const describeWorkflow = (
       value: work ? 'on' : 'off',
       why: work
         ? 'A human reviews and merges every PR; Fractory never merges.'
-        : `Merges are never a Gate in Personal Mode, ${ci} (ADR 0006).`,
+        : `Merges are never a Gate in Personal Mode, ${ci} (ADR 0005).`,
     },
     {
       id: 'auto-merge',

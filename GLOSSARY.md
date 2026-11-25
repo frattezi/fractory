@@ -18,7 +18,7 @@ _Avoid_: profile, environment
 The Mode for repositories shared with other developers, where every change passes human review before merge.
 
 **Personal Mode**:
-The Mode for repositories only the owner maintains, where changes that pass automated checks merge without human review.
+The Mode for repositories only the owner maintains, where changes merge without human review, with or without automated checks.
 
 ### Units of work
 
@@ -53,9 +53,23 @@ The Gate where the owner approves how a Spec was split into Tickets. Required in
 **PR Gate**:
 The Gate where a human reviews a Run's change before it merges. Applies only in Work Mode.
 
+**Auto-merge**:
+Fractory merging a Personal Mode change by itself once the Run is done and the change is mergeable with passing or no checks. It never happens in Work Mode.
+
 **Trigger**:
 A detectable change of state that starts a Run without anyone asking: a Ticket becoming ready, a failed check on a Run's change, or a review comment on it.
 _Avoid_: event, hook
+
+### Agents and flows
+
+**Agent Profile**:
+One coding agent paired with the Account it runs on, such as Claude on the personal Account.
+
+**Account**:
+Whose subscription pays for and answers for an agent's work: work or personal. It follows the Mode and cannot be overridden.
+
+**Flow**:
+The fixed sequence of steps a Run follows to turn a Ticket into a change. Each repository names the Flow it uses.
 
 ### Knowledge
 
