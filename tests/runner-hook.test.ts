@@ -76,4 +76,50 @@ describe('pre-push hook', () => {
     );
     expect(calls).toContainEqual(['config', '--worktree', 'core.hooksPath', hooksDir]);
   });
+  it('writes the shared worktreeConfig flag only once and retries a busy config lock', async () => {
+    const gitDir = await mkdtemp(join(tmpdir(), 'gitdir-'));
+    const calls: string[][] = [];
+    let locked = 2;
+    const exec: Exec = async (_file, args) => {
+      calls.push(args);
+      if (args[0] === 'rev-parse' && args[1] === '--absolute-git-dir')
+        return { stdout: `${gitDir}\n`, stderr: '' };
+      if (args[0] === 'rev-parse') return { stdout: '/repo/.git/hooks/pre-push\n', stderr: '' };
+      if (args.includes('--get')) return { stdout: 'true\n', stderr: '' };
+      if (args.includes('--worktree') && locked-- > 0) {
+        throw Object.assign(new Error('git failed'), {
+          stderr: 'error: could not lock config file .git/config: File exists',
+        });
+      }
+      return { stdout: '', stderr: '' };
+    };
+    const sleeps: number[] = [];
+    await installPrePushHook({
+      worktreePath: '/wt',
+      baseBranch: 'main',
+      exec,
+      sleep: async (ms) => {
+        sleeps.push(ms);
+      },
+    });
+    expect(calls).not.toContainEqual(['config', 'extensions.worktreeConfig', 'true']);
+    expect(calls.filter((a) => a.includes('--worktree'))).toHaveLength(3);
+    expect(sleeps).toEqual([100, 200]);
+  });
+
+  it('does not retry other git config errors', async () => {
+    const gitDir = await mkdtemp(join(tmpdir(), 'gitdir-'));
+    const exec: Exec = async (_file, args) => {
+      if (args[0] === 'rev-parse' && args[1] === '--absolute-git-dir')
+        return { stdout: `${gitDir}\n`, stderr: '' };
+      if (args[0] === 'rev-parse') return { stdout: '/repo/.git/hooks/pre-push\n', stderr: '' };
+      if (args.includes('--get')) throw new Error('unset');
+      if (args[0] === 'config')
+        throw Object.assign(new Error('boom'), { stderr: 'fatal: bad config' });
+      return { stdout: '', stderr: '' };
+    };
+    await expect(
+      installPrePushHook({ worktreePath: '/wt', baseBranch: 'main', exec, sleep: async () => {} }),
+    ).rejects.toThrow('boom');
+  });
 });

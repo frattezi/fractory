@@ -48,6 +48,30 @@ exit 0
 `;
 };
 
+const CONFIG_LOCKED = /could not lock config file/i;
+
+/**
+ * Concurrent Runs on one repository share its `.git/config`; git refuses a write while another
+ * process holds `config.lock`. The lock is held for milliseconds, so a short retry clears it.
+ */
+const retryConfigLock = async <T>(
+  write: () => Promise<T>,
+  sleep: (ms: number) => Promise<void>,
+  attempts = 6,
+): Promise<T> => {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      return await write();
+    } catch (error) {
+      const stderr = String((error as { stderr?: unknown }).stderr ?? (error as Error).message);
+      if (attempt >= attempts || !CONFIG_LOCKED.test(stderr)) throw error;
+      await sleep(100 * attempt);
+    }
+  }
+};
+
+const defaultSleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
+
 export interface InstalledHook {
   /** Directory used as `core.hooksPath` for the worktree. */
   hooksDir: string;
@@ -61,8 +85,9 @@ export const installPrePushHook = async (options: {
   worktreePath: string;
   baseBranch: string;
   exec: Exec;
+  sleep?: (ms: number) => Promise<void>;
 }): Promise<InstalledHook> => {
-  const { worktreePath, baseBranch, exec } = options;
+  const { worktreePath, baseBranch, exec, sleep = defaultSleep } = options;
   const git = async (...args: string[]): Promise<string> =>
     (await exec('git', args, { cwd: worktreePath })).stdout.trim();
 
@@ -76,7 +101,11 @@ export const installPrePushHook = async (options: {
   await writeFile(hookFile, renderPrePushHook({ baseBranch, repoHookPath }));
   await chmod(hookFile, 0o755);
 
-  await git('config', 'extensions.worktreeConfig', 'true');
-  await git('config', '--worktree', 'core.hooksPath', hooksDir);
+  // Shared by every worktree: write it only once, so parallel Runs rarely touch .git/config.
+  const enabled = await git('config', '--get', 'extensions.worktreeConfig').catch(() => '');
+  if (enabled !== 'true') {
+    await retryConfigLock(() => git('config', 'extensions.worktreeConfig', 'true'), sleep);
+  }
+  await retryConfigLock(() => git('config', '--worktree', 'core.hooksPath', hooksDir), sleep);
   return { hooksDir };
 };
