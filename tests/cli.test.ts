@@ -128,6 +128,81 @@ describe('fractory CLI', () => {
     expect(out[0]).toMatch(/not a Fractory repository/);
   });
 
+  it('status shows the host state from host.json, in text and JSON', async () => {
+    const { env, out, root } = await setup();
+    expect(await main(['status'], env)).toBe(0);
+    expect(out[0]).toContain('no tick has written the host state yet');
+    out.length = 0;
+    expect(await main(['status', '--json'], env)).toBe(0);
+    expect(JSON.parse(out[0] as string).host).toBeNull();
+
+    const host = {
+      version: 1,
+      held: true,
+      reason: 'Docker memory 0.8 GB free < 1 GB',
+      heldSince: '2026-05-31T23:18:00.000Z',
+      readings: {
+        dockerMemoryFreeGb: 0.8,
+        dockerReachable: true,
+        checkedAt: '2026-05-31T23:59:00.000Z',
+      },
+      queued: 2,
+      updatedAt: '2026-05-31T23:59:00.000Z',
+    };
+    await writeFile(join(root, 'host.json'), JSON.stringify(host));
+    out.length = 0;
+    await main(['status'], env);
+    expect(out[0]).toContain('queue Held 42 min: Docker memory 0.8 GB free < 1 GB (2 Runs queued)');
+    out.length = 0;
+    await main(['status', '--json'], env);
+    expect(JSON.parse(out[0] as string).host).toEqual(host);
+  });
+
+  it('tick writes host.json through the injected sysctl and docker, with Host Limits on by default', async () => {
+    const { env, root } = await setup();
+    await writeFile(
+      join(root, 'config.json'),
+      JSON.stringify({
+        repos: [env.cwd],
+        registryDir: join(root, 'runs'),
+        logDir: join(root, 'logs'),
+        hostStatePath: join(root, 'host.json'),
+      }),
+    );
+    const calls: string[] = [];
+    env.exec = async (cmd, args) => {
+      calls.push(`${cmd} ${args[0]}`);
+      if (cmd === 'docker' && args[0] === 'info') throw new Error('daemon down');
+      return '';
+    };
+    await main(['tick'], env);
+    const host = JSON.parse(await readFile(join(root, 'host.json'), 'utf8'));
+    expect(host).toMatchObject({ held: true, reason: 'Docker is not reachable', queued: 1 });
+    expect(calls).toContain('docker info');
+    expect(calls).toContain('sysctl -n');
+  });
+
+  it('config defaults Host Limits on and accepts resources: false', async () => {
+    const { loadFactoryConfig } = await import('../src/config/index.ts');
+    const dir = await mkdtemp(join(tmpdir(), 'fractory-cfg-'));
+    const path = join(dir, 'config.json');
+    expect((await loadFactoryConfig(path)).resources).toEqual({
+      maxLoadPerCore: 0.75,
+      minHostMemoryFreeGb: 2,
+      minDockerMemoryFreeGb: 1,
+      maxLaunchesPerTick: 1,
+      cpusPerRun: 4,
+    });
+    await writeFile(path, JSON.stringify({ resources: { cpusPerRun: 2 } }));
+    expect((await loadFactoryConfig(path)).resources).toMatchObject({
+      cpusPerRun: 2,
+      maxLoadPerCore: 0.75,
+    });
+    await writeFile(path, JSON.stringify({ resources: false }));
+    expect((await loadFactoryConfig(path)).resources).toBe(false);
+    expect((await loadFactoryConfig(path)).hostStatePath).toMatch(/host\.json$/);
+  });
+
   it('run queues a manual Run on the Ticket branch and runs lists it', async () => {
     const { env, out, registry } = await setup();
     expect(await main(['run', 'github:me/app#5'], env)).toBe(0);

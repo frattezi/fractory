@@ -1,4 +1,5 @@
 import { resolve } from 'node:path';
+import type { HostState } from '../contracts/host-state.ts';
 import type { Mode, RepoConfig } from '../contracts/repo-config.ts';
 import { requiresPrGate, requiresTicketGate } from '../contracts/repo-config.ts';
 import { ACTIVE_STATUSES, type NeedsHumanReason, type RunRecord } from '../contracts/run.ts';
@@ -121,5 +122,35 @@ export const formatStatus = (s: RepoStatus): string => {
     s.needsHuman.map((n) => `${n.ticketRef} ${n.reason}: ${n.question}`),
   );
   section('Hands-off branches', s.factoryBranches);
+  return lines.join('\n');
+};
+
+/** Host Limits state from the last tick: Held or not, why, since when, readings, queued Runs. */
+export const formatHost = (host: HostState | undefined, now: Date): string => {
+  if (!host) return 'Host: no tick has written the host state yet.';
+  const queued = `${host.queued} Run${host.queued === 1 ? '' : 's'} queued`;
+  const lines: string[] = [];
+  if (host.held) {
+    const minutes = host.heldSince
+      ? Math.max(0, Math.round((now.getTime() - Date.parse(host.heldSince)) / 60_000))
+      : undefined;
+    lines.push(
+      `Host: queue Held${minutes === undefined ? '' : ` ${minutes} min`}: ${host.reason ?? 'unknown reason'} (${queued}).`,
+    );
+  } else {
+    lines.push(`Host: queue not Held (${queued}).`);
+  }
+  const r = host.readings;
+  if (r) {
+    const parts = [
+      r.loadPerCore !== undefined && `CPU load ${r.loadPerCore.toFixed(2)} per core`,
+      r.hostMemoryFreeGb !== undefined && `host memory ${r.hostMemoryFreeGb.toFixed(1)} GB free`,
+      r.dockerMemoryFreeGb !== undefined &&
+        `Docker memory ${r.dockerMemoryFreeGb.toFixed(1)} GB free`,
+      !r.dockerReachable && 'Docker not reachable',
+    ].filter(Boolean);
+    lines.push(`Readings at ${r.checkedAt}: ${parts.join(', ') || 'none'}.`);
+  }
+  lines.push(`Updated ${host.updatedAt}.`);
   return lines.join('\n');
 };

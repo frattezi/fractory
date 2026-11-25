@@ -33,9 +33,10 @@ import { type InitOptions, initRepo } from './package/init.ts';
 import { installSkills } from './package/install.ts';
 import { readHostLoad } from './policy/resources.ts';
 import { describeWorkflow, formatWorkflow } from './policy/workflow.ts';
+import { readHostState } from './registry/host-state.ts';
 import { RunRegistry } from './registry/registry.ts';
 import { launchRun } from './runner/index.ts';
-import { formatStatus, repoStatus } from './status/status.ts';
+import { formatHost, formatStatus, repoStatus } from './status/status.ts';
 import { type Launchctl, installLaunchd, resolveBin, uninstallLaunchd } from './trigger/launchd.ts';
 import { branchFor, queueRun } from './trigger/queue.ts';
 import { type Logger, checkPid, createFileLogger } from './trigger/support.ts';
@@ -337,7 +338,12 @@ const commands: Record<string, (args: CliArgs, env: CliEnv) => Promise<void>> = 
       factoryRepos: factory.repos,
       runs: await new RunRegistry(factory.registryDir).list(),
     });
-    env.out(args.flags.json === true ? JSON.stringify(status, null, 2) : formatStatus(status));
+    const host = await readHostState(factory.hostStatePath);
+    env.out(
+      args.flags.json === true
+        ? JSON.stringify({ ...status, host: host ?? null }, null, 2)
+        : `${formatStatus(status)}\n${formatHost(host, env.now())}`,
+    );
   },
 
   async rules(args, env) {
