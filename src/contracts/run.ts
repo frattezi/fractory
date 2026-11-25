@@ -115,6 +115,26 @@ export const RunCommentsFileSchema = z.object({
 });
 export type RunCommentsFile = z.infer<typeof RunCommentsFileSchema>;
 
+/**
+ * Re-run requests written by Fractory Manager at `<registryDir>/<runId>.rerun.json` (atomic
+ * write). Fractory only reads them and never modifies or deletes one. The Run a request creates
+ * has key `<ticketRef>:rerun:<runId>`, so one request yields one Run.
+ */
+export const RERUN_REQUEST_VERSION = 1;
+
+export const RerunRequestSchema = z.object({
+  version: z.literal(RERUN_REQUEST_VERSION),
+  requestedAt: z.string().datetime(),
+});
+export type RerunRequest = z.infer<typeof RerunRequestSchema>;
+
+export const RERUN_SUFFIX = '.rerun.json';
+
+export const rerunRequestPath = (registryDir: string, runId: string): string =>
+  join(registryDir, `${runId}${RERUN_SUFFIX}`);
+
+export const rerunKey = (ticketRef: string, runId: string): string => `${ticketRef}:rerun:${runId}`;
+
 export const commentsFilePath = (registryDir: string, runId: string): string =>
   join(registryDir, `${runId}.comments.json`);
 

@@ -1,14 +1,23 @@
 import { join } from 'node:path';
 import type { FactoryConfig } from '../contracts/factory-config.ts';
+import { HOST_STATE_VERSION, type HostState } from '../contracts/host-state.ts';
 import type { Mode, RepoConfig } from '../contracts/repo-config.ts';
 import type { TicketSourceConfig } from '../contracts/repo-config.ts';
-import { AM_COMMENT_PREFIX, type RunRecord, type Trigger, runKey } from '../contracts/run.ts';
+import {
+  AM_COMMENT_PREFIX,
+  type RunRecord,
+  type Trigger,
+  rerunKey,
+  runKey,
+} from '../contracts/run.ts';
 import type { TicketSource } from '../contracts/ticket.ts';
 import { type Gh, feedbackItems, summarizeChecks } from '../github/gh.ts';
 import { type HostLoad, checkResources } from '../policy/resources.ts';
 import { mayAutoMerge } from '../policy/workflow.ts';
 import { consumedCommentIds, pendingComments, readRunComments } from '../registry/comments.ts';
+import { readHostState, writeHostState } from '../registry/host-state.ts';
 import type { RunRegistry } from '../registry/registry.ts';
+import { listRerunRequests } from '../registry/reruns.ts';
 import { branchFor, queueRun } from './queue.ts';
 import { type Logger, type PidState, acquireLock } from './support.ts';
 
@@ -23,7 +32,7 @@ export interface TickDeps {
   now(): Date;
   newId(): string;
   log: Logger;
-  /** Reads CPU and memory before each launch when `factory.resources` is set. */
+  /** Reads the host before each launch when `factory.resources` is on. */
   hostLoad?: () => Promise<HostLoad>;
   /** Runs after the tick while the lock is still held (worktree cleanup). */
   afterTick?: () => Promise<void>;
@@ -40,6 +49,19 @@ export interface TickSummary {
   /** Why queued Runs were held back this tick by the resource limits. */
   held?: string;
 }
+
+/** Launch priority: what the owner asked for, then follow-ups, then newly Ready Tickets. */
+const launchGroup = (run: RunRecord): number => {
+  switch (run.trigger.kind) {
+    case 'manual':
+      return 0;
+    case 'ci-failed':
+    case 'review-comment':
+      return 1;
+    case 'ticket-ready':
+      return 2;
+  }
+};
 
 const byCreatedAt = (a: RunRecord, b: RunRecord): number => a.createdAt.localeCompare(b.createdAt);
 /** PR number from the newest Run's `.../pull/<n>` URL; reading it needs no network call. */
@@ -254,6 +276,52 @@ export const tick = async (deps: TickDeps): Promise<TickSummary> => {
     }
   };
 
+  /**
+   * Re-run requests (`<runId>.rerun.json`, written by Fractory Manager) become a manual Run on the
+   * Ticket's branch, keyed `<ticketRef>:rerun:<runId>` so one request yields one Run. The files are
+   * never modified or deleted.
+   */
+  const handleReruns = async (repoPath: string, source: TicketSource): Promise<void> => {
+    for (const runId of await listRerunRequests(factory.registryDir)) {
+      try {
+        const target = await registry.get(runId);
+        if (!target || target.repoPath !== repoPath) continue;
+        const key = rerunKey(target.ticketRef, runId);
+        const all = await registry.list();
+        if (all.some((r) => r.key === key)) continue;
+        const latest = [...all.filter((r) => r.ticketRef === target.ticketRef)]
+          .sort(byCreatedAt)
+          .at(-1);
+        if (latest?.id !== target.id) {
+          log.info(
+            `Re-run request for Run ${runId} skipped: it is not the latest Run of its Ticket`,
+          );
+          continue;
+        }
+        if (target.status !== 'failed' && target.status !== 'needs-human') {
+          log.info(`Re-run request for Run ${runId} skipped: the Run is ${target.status}`);
+          continue;
+        }
+        const { record } = await queueRun(deps, {
+          ticketRef: target.ticketRef,
+          repoPath,
+          trigger: { kind: 'manual' },
+          key,
+          branch: target.branch,
+          mode: target.mode,
+          flow: target.flow,
+        });
+        summary.queued.push(record.id);
+        log.info(`queued Re-run ${record.id} of Run ${runId} for ${target.ticketRef}`);
+        await source
+          .setStatus(target.ticketRef, 'in_progress')
+          .catch((e) => fail(`status ${target.ticketRef}`, e));
+      } catch (error) {
+        fail(`Re-run request ${runId}`, error);
+      }
+    }
+  };
+
   const queueReadyTickets = async (
     repoPath: string,
     config: RepoConfig,
@@ -286,15 +354,39 @@ export const tick = async (deps: TickDeps): Promise<TickSummary> => {
     let running = all.filter((r) => r.status === 'running').length;
     const queued = all
       .filter((r) => r.status === 'queued' && factory.repos.includes(r.repoPath))
-      .sort(byCreatedAt);
+      .sort((a, b) => launchGroup(a) - launchGroup(b) || byCreatedAt(a, b));
     const limits = factory.resources;
+    let readings: HostState['readings'];
+    let reason: string | undefined;
+
+    const readHost = async (): Promise<HostLoad> => {
+      if (!deps.hostLoad) return {};
+      try {
+        return await deps.hostLoad();
+      } catch (error) {
+        // A failed read proves nothing: it never holds the queue.
+        log.warn(`could not read the host: ${message(error)}`);
+        return {};
+      }
+    };
+
     for (const run of queued) {
       if (running >= factory.maxConcurrentRuns) break;
       if (limits) {
         if (summary.launched.length >= limits.maxLaunchesPerTick) break;
-        const load = deps.hostLoad ? await deps.hostLoad() : {};
+        const load = await readHost();
+        readings = {
+          ...(load.loadPerCore !== undefined && { loadPerCore: load.loadPerCore }),
+          ...(load.hostMemoryFreeGb !== undefined && { hostMemoryFreeGb: load.hostMemoryFreeGb }),
+          ...(load.dockerMemoryFreeGb !== undefined && {
+            dockerMemoryFreeGb: load.dockerMemoryFreeGb,
+          }),
+          dockerReachable: load.dockerReachable !== false,
+          checkedAt: deps.now().toISOString(),
+        };
         const verdict = checkResources(load, limits);
         if (!verdict.ok) {
+          reason = verdict.reason;
           summary.held = verdict.reason;
           log.info(
             `holding ${queued.length - summary.launched.length} queued Run(s): ${verdict.reason}`,
@@ -316,6 +408,36 @@ export const tick = async (deps: TickDeps): Promise<TickSummary> => {
         fail(`launch ${run.id}`, error);
       }
     }
+    await recordHostState({
+      queued: Math.max(0, queued.length - summary.launched.length),
+      readings,
+      reason,
+    });
+  };
+
+  /** Written every tick, atomically; a write failure never stops the tick. */
+  const recordHostState = async (input: {
+    queued: number;
+    readings: HostState['readings'];
+    reason: string | undefined;
+  }): Promise<void> => {
+    try {
+      const stamp = deps.now().toISOString();
+      const previous = await readHostState(factory.hostStatePath);
+      const held = input.reason !== undefined;
+      const heldSince = held ? (previous?.held && previous.heldSince) || stamp : undefined;
+      await writeHostState(factory.hostStatePath, {
+        version: HOST_STATE_VERSION,
+        held,
+        ...(input.reason !== undefined && { reason: input.reason }),
+        ...(heldSince !== undefined && { heldSince }),
+        ...(input.readings && { readings: input.readings }),
+        queued: input.queued,
+        updatedAt: stamp,
+      });
+    } catch (error) {
+      fail('host state', error);
+    }
   };
 
   try {
@@ -334,6 +456,7 @@ export const tick = async (deps: TickDeps): Promise<TickSummary> => {
         repoConfigs.set(repoPath, config);
         const source = deps.createTicketSource(config.ticketSource, config.mode);
         await markDead(repoPath);
+        await handleReruns(repoPath, source);
         await handlePrs(repoPath, config, source, me);
         await handleAmComments(repoPath, source);
         await queueReadyTickets(repoPath, config, source);

@@ -28,6 +28,8 @@ const setup = async () => {
       staleWorktreeDays: 7,
       registryDir: join(root, 'runs'),
       logDir: join(root, 'logs'),
+      resources: false as const,
+      hostStatePath: join(root, 'host.json'),
     },
     registry,
     gh,
