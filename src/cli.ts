@@ -19,7 +19,12 @@ import {
   loadRepoConfig,
 } from './config/index.ts';
 import type { FactoryConfig } from './contracts/factory-config.ts';
-import type { Mode, RepoConfig, TicketSourceConfig } from './contracts/repo-config.ts';
+import {
+  type Mode,
+  type RepoConfig,
+  type TicketSourceConfig,
+  requiresTicketGate,
+} from './contracts/repo-config.ts';
 import type { RunRecord } from './contracts/run.ts';
 import { type TicketRef, TicketRefSchema, type TicketSource } from './contracts/ticket.ts';
 import { type Exec, defaultExec } from './github/exec.ts';
@@ -409,6 +414,12 @@ const commands: Record<string, (args: CliArgs, env: CliEnv) => Promise<void>> = 
       throw new Error('tickets create needs --title, --body-file and --status backlog|ready');
     }
     const config = await loadRepoConfig(env.cwd);
+    // A Ticket becoming Ready starts a Run, so with the Ticket Gate on only the owner makes it Ready.
+    if (status === 'ready' && requiresTicketGate(config)) {
+      throw new Error(
+        'the Ticket Gate is on for this repo: create the Ticket as backlog; the owner moves it to Ready',
+      );
+    }
     const parent = flag(args, 'parent');
     const input: NewTicket = {
       title,
