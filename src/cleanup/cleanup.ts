@@ -24,6 +24,29 @@ export interface CleanupResult {
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
+/** Only branches Fractory named itself are ever deleted. */
+const RUN_BRANCH_PREFIX = 'fractory/';
+
+/**
+ * After a merged PR's worktree is gone, deletes its Run branch locally and on `origin`. A squash
+ * merge leaves the branch unmerged in git's eyes, hence `-D`. Failures only warn: the branch may
+ * already be gone, and nothing depends on it.
+ */
+const deleteRunBranch = async (deps: CleanupDeps, run: RunRecord): Promise<void> => {
+  if (!run.branch.startsWith(RUN_BRANCH_PREFIX)) return;
+  const steps: [string, string[]][] = [
+    ['local', ['-C', run.repoPath, 'branch', '-D', run.branch]],
+    ['remote', ['-C', run.repoPath, 'push', 'origin', '--delete', run.branch]],
+  ];
+  for (const [where, args] of steps) {
+    try {
+      await deps.exec('git', args);
+    } catch (error) {
+      deps.log.warn(`could not delete ${where} branch ${run.branch}: ${(error as Error).message}`);
+    }
+  }
+};
+
 const pathExists = (path: string): Promise<boolean> =>
   access(path).then(
     () => true,
@@ -114,6 +137,7 @@ export const cleanup = async (deps: CleanupDeps): Promise<CleanupResult> => {
       const stamp = deps.now().toISOString();
       for (const run of group) await deps.registry.update(run.id, { cleanedAt: stamp });
       result.removed.push(path);
+      if (merged) await deleteRunBranch(deps, latest);
       log.info(`removed worktree ${path} (${merged ? 'PR merged' : 'stale failed Run'})`);
     } catch (error) {
       skip(`error: ${(error as Error).message}`);
