@@ -31,6 +31,7 @@ import { type Exec, defaultExec } from './github/exec.ts';
 import { type Gh, createGh } from './github/gh.ts';
 import { type InitOptions, initRepo } from './package/init.ts';
 import { installSkills } from './package/install.ts';
+import { readHostLoad } from './policy/resources.ts';
 import { describeWorkflow, formatWorkflow } from './policy/workflow.ts';
 import { RunRegistry } from './registry/registry.ts';
 import { launchRun } from './runner/index.ts';
@@ -193,6 +194,8 @@ const commands: Record<string, (args: CliArgs, env: CliEnv) => Promise<void>> = 
       now: env.now,
       newId: env.newId,
       log,
+      hostLoad: () =>
+        readHostLoad(async (name) => (await env.exec('sysctl', ['-n', name])).toString()),
       afterTick: async () => {
         await cleanup({ factory, registry, gh: env.gh, exec: env.exec, now: env.now, log });
       },

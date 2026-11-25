@@ -75,6 +75,47 @@ describe('concurrency cap', () => {
   });
 });
 
+describe('resource limits', () => {
+  const limits = { maxLoadPerCore: 0.75, minMemoryAvailablePercent: 25, maxLaunchesPerTick: 1 };
+
+  it('starts one Run per tick while the host has room', async () => {
+    const h = await makeHarness();
+    h.deps.factory.resources = limits;
+    h.deps.hostLoad = async () => ({ loadPerCore: 0.2, memoryAvailablePercent: 60 });
+    for (let n = 1; n <= 3; n++) h.source.tickets.set(`github:me/app#${n}`, makeTicket(n));
+    await tick(h.deps);
+    expect(h.launched).toEqual(['run-1']);
+    await tick(h.deps);
+    expect(h.launched).toEqual(['run-1', 'run-2']);
+  });
+
+  it('holds queued Runs while CPU or memory is over its limit, and says why', async () => {
+    const h = await makeHarness();
+    h.deps.factory.resources = limits;
+    let load = { loadPerCore: 1.4, memoryAvailablePercent: 12 };
+    h.deps.hostLoad = async () => load;
+    h.source.tickets.set('github:me/app#1', makeTicket(1));
+    const summary = await tick(h.deps);
+    expect(h.launched).toEqual([]);
+    expect(summary.held).toMatch(/CPU load 1.40 per core > 0.75; memory available 12% < 25%/);
+    expect((await h.registry.list())[0]?.status).toBe('queued');
+
+    load = { loadPerCore: 0.3, memoryAvailablePercent: 50 };
+    await tick(h.deps);
+    expect(h.launched).toEqual(['run-1']);
+  });
+
+  it('never checks the host when no limits are configured', async () => {
+    const h = await makeHarness();
+    h.deps.hostLoad = async () => {
+      throw new Error('must not be read');
+    };
+    for (let n = 1; n <= 2; n++) h.source.tickets.set(`github:me/app#${n}`, makeTicket(n));
+    await tick(h.deps);
+    expect(h.launched).toEqual(['run-1', 'run-2']);
+  });
+});
+
 describe('dead Run detection', () => {
   it('marks a running Run whose pid is gone as failed', async () => {
     const h = await makeHarness();

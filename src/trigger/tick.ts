@@ -5,6 +5,7 @@ import type { TicketSourceConfig } from '../contracts/repo-config.ts';
 import { AM_COMMENT_PREFIX, type RunRecord, type Trigger, runKey } from '../contracts/run.ts';
 import type { TicketSource } from '../contracts/ticket.ts';
 import { type Gh, feedbackItems, summarizeChecks } from '../github/gh.ts';
+import { type HostLoad, checkResources } from '../policy/resources.ts';
 import { mayAutoMerge } from '../policy/workflow.ts';
 import { consumedCommentIds, pendingComments, readRunComments } from '../registry/comments.ts';
 import type { RunRegistry } from '../registry/registry.ts';
@@ -22,6 +23,8 @@ export interface TickDeps {
   now(): Date;
   newId(): string;
   log: Logger;
+  /** Reads CPU and memory before each launch when `factory.resources` is set. */
+  hostLoad?: () => Promise<HostLoad>;
   /** Runs after the tick while the lock is still held (worktree cleanup). */
   afterTick?: () => Promise<void>;
 }
@@ -34,6 +37,8 @@ export interface TickSummary {
   merged: string[];
   ticketsDone: string[];
   errors: number;
+  /** Why queued Runs were held back this tick by the resource limits. */
+  held?: string;
 }
 
 const byCreatedAt = (a: RunRecord, b: RunRecord): number => a.createdAt.localeCompare(b.createdAt);
@@ -282,8 +287,21 @@ export const tick = async (deps: TickDeps): Promise<TickSummary> => {
     const queued = all
       .filter((r) => r.status === 'queued' && factory.repos.includes(r.repoPath))
       .sort(byCreatedAt);
+    const limits = factory.resources;
     for (const run of queued) {
       if (running >= factory.maxConcurrentRuns) break;
+      if (limits) {
+        if (summary.launched.length >= limits.maxLaunchesPerTick) break;
+        const load = deps.hostLoad ? await deps.hostLoad() : {};
+        const verdict = checkResources(load, limits);
+        if (!verdict.ok) {
+          summary.held = verdict.reason;
+          log.info(
+            `holding ${queued.length - summary.launched.length} queued Run(s): ${verdict.reason}`,
+          );
+          break;
+        }
+      }
       try {
         let config = repoConfigs.get(run.repoPath);
         if (!config) {

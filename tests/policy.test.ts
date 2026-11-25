@@ -5,6 +5,7 @@ import {
   requiresTicketGate,
 } from '../src/contracts/repo-config.ts';
 import { OutboundPolicyError, assertOutboundAllowed } from '../src/policy/outbound.ts';
+import { checkResources, readHostLoad } from '../src/policy/resources.ts';
 
 describe('assertOutboundAllowed', () => {
   it('blocks AI-setup mentions in Work Mode', () => {
@@ -41,5 +42,38 @@ describe('gates', () => {
     expect(requiresTicketGate(withCi)).toBe(false);
     expect(requiresPrGate(noCi)).toBe(false);
     expect(requiresTicketGate(noCi)).toBe(true);
+  });
+});
+
+describe('host resources', () => {
+  const limits = { maxLoadPerCore: 0.75, minMemoryAvailablePercent: 25, maxLaunchesPerTick: 1 };
+
+  it('passes a host with room and holds one over either limit', () => {
+    expect(checkResources({ loadPerCore: 0.5, memoryAvailablePercent: 40 }, limits)).toEqual({
+      ok: true,
+    });
+    expect(checkResources({ loadPerCore: 0.9, memoryAvailablePercent: 40 }, limits)).toMatchObject({
+      ok: false,
+    });
+    expect(checkResources({ loadPerCore: 0.1, memoryAvailablePercent: 10 }, limits)).toMatchObject({
+      ok: false,
+    });
+  });
+
+  it('treats an unread value as unknown, never as over the limit', () => {
+    expect(checkResources({}, limits)).toEqual({ ok: true });
+  });
+
+  it('reads load per core and macOS available memory, tolerating a failed sysctl', async () => {
+    const os = { loadavg: () => [5, 4, 3], cores: () => 10 };
+    expect(await readHostLoad(async () => '63\n', os)).toEqual({
+      loadPerCore: 0.5,
+      memoryAvailablePercent: 63,
+    });
+    expect(
+      await readHostLoad(async () => {
+        throw new Error('no sysctl');
+      }, os),
+    ).toEqual({ loadPerCore: 0.5 });
   });
 });
