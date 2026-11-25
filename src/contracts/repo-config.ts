@@ -40,12 +40,19 @@ export const RepoConfigSchema = z.object({
   sandboxImage: z.string().optional(),
   /** Agent iterations before a Run stops with `budget-exhausted`. */
   maxIterations: z.number().int().positive().default(10),
+  /** The flow a Run executes: a file `flows/<flow>.ts` in Fractory. */
+  flow: z
+    .string()
+    .regex(/^[a-z][a-z0-9-]*$/)
+    .default('build'),
 });
 export type RepoConfig = z.infer<typeof RepoConfigSchema>;
 
-/** Work Mode always reviews code; Personal Mode does only when there are no checks to trust. */
-export const requiresPrGate = (config: RepoConfig): boolean =>
-  config.mode === 'work' || !config.hasCi;
+/**
+ * Work Mode always reviews code. Personal Mode never does: the owner decided merges are not a
+ * Gate for personal projects, with or without CI (ADR 0005).
+ */
+export const requiresPrGate = (config: RepoConfig): boolean => config.mode === 'work';
 
 export const requiresTicketGate = (config: RepoConfig): boolean =>
   config.mode === 'work' || config.ticketGate;
