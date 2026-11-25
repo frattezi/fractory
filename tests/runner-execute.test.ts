@@ -45,6 +45,8 @@ interface AgentRequest {
 }
 
 interface Setup {
+  /** `git remote -v` output; default: origin is me/repo. */
+  remotes?: string;
   mode?: RepoConfig['mode'];
   trigger?: Trigger;
   stdout?: string;
@@ -95,6 +97,11 @@ const setup = async (options: Setup = {}) => {
     const out = (stdout: string) => ({ stdout, stderr: '' });
     if (key.includes('--absolute-git-dir')) return out(gitDir);
     if (key.includes('--git-path')) return out('/repo/.git/hooks/pre-push');
+    if (key === 'git remote -v')
+      return out(
+        options.remotes ??
+          'origin\thttps://github.com/me/repo.git (fetch)\norigin\thttps://github.com/me/repo.git (push)\n',
+      );
     if (key.includes('rev-list --count')) return out(options.commitsAhead ?? '2');
     if (key.startsWith('git log'))
       return out(`abc\x1f${options.commitBody ?? 'Add the thing'}\x1e`);
@@ -211,6 +218,27 @@ describe('executeRun', () => {
     expect(push?.args.slice(0, 2)).toEqual(['-c', expect.stringContaining('core.hooksPath=')]);
     expect(push?.args.slice(-3)).toEqual(['--set-upstream', 'origin', 'fractory/1']);
     expect((await t.registry.get('run1'))?.status).toBe('done');
+  });
+
+  it('in a fork, fetches from, pushes to and opens the PR on the remote that points at the repo', async () => {
+    const t = await setup({
+      remotes:
+        'origin\thttps://github.com/upstream/repo.git (push)\nmine\tgit@github.com:Me/Repo.git (push)\n',
+    });
+    expect((await executeRun('run1', t.deps)).status).toBe('done');
+    expect(t.calls.some((c) => c.args.join(' ') === 'fetch mine main')).toBe(true);
+    expect(pushed(t.calls)[0]?.args.slice(-3)).toEqual(['--set-upstream', 'mine', 'fractory/1']);
+    const create = t.calls.find((c) => c.args.slice(0, 2).join(' ') === 'pr create');
+    expect(create?.args.slice(2, 4)).toEqual(['--repo', 'me/repo']);
+  });
+
+  it('fails before any work when no remote points at the repo', async () => {
+    const t = await setup({ remotes: 'origin\thttps://github.com/upstream/repo.git (push)\n' });
+    const record = await executeRun('run1', t.deps);
+    expect(record.status).toBe('failed');
+    expect(record.result).toMatchObject({ summary: expect.stringContaining('no git remote') });
+    expect(t.agentRequests).toHaveLength(0);
+    expect(pushed(t.calls)).toHaveLength(0);
   });
 
   it('never logs the credentials', async () => {

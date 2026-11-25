@@ -7,7 +7,10 @@ import type { Exec } from '../src/github/exec.ts';
 import { RunRegistry } from '../src/registry/registry.ts';
 import { FakeGh, PR_URL, makePr, makeRun, memoryLogger } from './trigger-helpers.ts';
 
-const setup = async () => {
+const ORIGIN_IS_APP =
+  'origin\thttps://github.com/me/app.git (fetch)\norigin\thttps://github.com/me/app.git (push)\n';
+
+const setup = async (remotes = ORIGIN_IS_APP) => {
   const root = await mkdtemp(join(tmpdir(), 'fractory-clean-'));
   const worktree = join(root, 'wt');
   await mkdir(worktree);
@@ -18,6 +21,7 @@ const setup = async () => {
   const exec: Exec = async (_cmd, args) => {
     calls.push(args);
     if (args.includes('status')) return dirty.has(args[1] as string) ? ' M file.ts\n' : '';
+    if (args.includes('remote')) return remotes;
     return '';
   };
   const now = new Date('2026-06-20T00:00:00.000Z');
@@ -68,6 +72,26 @@ describe('cleanup', () => {
     expect(t.calls.some((a) => a.includes('branch') || a.includes('push'))).toBe(false);
   });
 
+  it('deletes the remote branch on the remote that points at the PR repo, not an upstream origin', async () => {
+    const s = await setup(
+      'origin\thttps://github.com/upstream/app.git (push)\nfork\tgit@github.com:me/app.git (push)\n',
+    );
+    await s.registry.write(makeRun({ worktreePath: s.worktree, prUrl: PR_URL }));
+    s.gh.prs.set(PR_URL, makePr({ state: 'MERGED' }));
+    await cleanup(s.deps);
+    const branch = 'fractory/1-add-thing-1';
+    expect(s.calls).toContainEqual(['-C', '/repo/app', 'push', 'fork', '--delete', branch]);
+    expect(s.calls.some((a) => a.includes('origin') && a.includes('--delete'))).toBe(false);
+  });
+
+  it('keeps the remote branch when no remote points at the PR repo', async () => {
+    const s = await setup('origin\thttps://github.com/upstream/app.git (push)\n');
+    await s.registry.write(makeRun({ worktreePath: s.worktree, prUrl: PR_URL }));
+    s.gh.prs.set(PR_URL, makePr({ state: 'MERGED' }));
+    await cleanup(s.deps);
+    expect(s.calls.some((a) => a.includes('--delete'))).toBe(false);
+    expect(s.calls).toContainEqual(['-C', '/repo/app', 'branch', '-D', 'fractory/1-add-thing-1']);
+  });
   it('keeps the branch of a stale failed Run', async () => {
     const s = await setup();
     await s.registry.write(

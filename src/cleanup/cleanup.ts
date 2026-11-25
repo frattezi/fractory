@@ -5,6 +5,7 @@ import type { RunRecord } from '../contracts/run.ts';
 import type { Exec } from '../github/exec.ts';
 import type { Gh } from '../github/gh.ts';
 import type { RunRegistry } from '../registry/registry.ts';
+import { remoteFor, repoOfPrUrl } from '../runner/remote.ts';
 import type { Logger } from '../trigger/support.ts';
 
 export interface CleanupDeps {
@@ -28,16 +29,25 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 const RUN_BRANCH_PREFIX = 'fractory/';
 
 /**
- * After a merged PR's worktree is gone, deletes its Run branch locally and on `origin`. A squash
+ * After a merged PR's worktree is gone, deletes its Run branch locally and on the remote that
+ * points at the PR's repo (in a fork `origin` may be the upstream project). A squash
  * merge leaves the branch unmerged in git's eyes, hence `-D`. Failures only warn: the branch may
  * already be gone, and nothing depends on it.
  */
 const deleteRunBranch = async (deps: CleanupDeps, run: RunRecord): Promise<void> => {
   if (!run.branch.startsWith(RUN_BRANCH_PREFIX)) return;
-  const steps: [string, string[]][] = [
-    ['local', ['-C', run.repoPath, 'branch', '-D', run.branch]],
-    ['remote', ['-C', run.repoPath, 'push', 'origin', '--delete', run.branch]],
-  ];
+  const steps: [string, string[]][] = [['local', ['-C', run.repoPath, 'branch', '-D', run.branch]]];
+  const repo = run.prUrl ? repoOfPrUrl(run.prUrl) : undefined;
+  let remote: string | undefined;
+  try {
+    remote = repo
+      ? remoteFor(await deps.exec('git', ['-C', run.repoPath, 'remote', '-v']), repo)
+      : undefined;
+  } catch (error) {
+    deps.log.warn(`could not list the remotes of ${run.repoPath}: ${(error as Error).message}`);
+  }
+  if (remote) steps.push(['remote', ['-C', run.repoPath, 'push', remote, '--delete', run.branch]]);
+  else deps.log.warn(`no remote points at ${repo ?? 'the PR repo'}; ${run.branch} kept there`);
   for (const [where, args] of steps) {
     try {
       await deps.exec('git', args);
