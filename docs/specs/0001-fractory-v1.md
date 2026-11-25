@@ -25,8 +25,9 @@ Goal ──grill──▶ Spec ──[Spec Gate]──▶ to-tickets ──▶ T
 Ready ──Trigger──▶ Run (Sandcastle, Docker, worktree) ──▶ PR
 PR ──CI red──▶ Trigger ──▶ new Run on the same branch
 PR ──review comment──▶ Trigger ──▶ new Run on the same branch
-PR ──green CI, Personal Mode, CI exists──▶ auto-merge ──▶ Ticket done ──▶ worktree cleanup
-PR ──Work Mode or no CI──▶ [PR Gate] human merges ──▶ Ticket done ──▶ worktree cleanup
+PR ──Personal Mode, Run done, mergeable, checks passing or none──▶ auto-merge ──▶ Ticket done ──▶ worktree cleanup
+PR ──Personal Mode, checks pending──▶ wait (never merge while pending or failing)
+PR ──Work Mode──▶ [PR Gate] human merges ──▶ Ticket done ──▶ worktree cleanup
 ```
 \* Ticket Gate: always in Work Mode, opt-in in Personal Mode. Passing it means moving Tickets to
 Ready; with the Gate off, `to-tickets` creates them Ready.
@@ -34,7 +35,9 @@ Ready; with the Gate off, `to-tickets` creates them Ready.
 ## Shared contracts (done — `src/contracts/`, `src/registry/`, `src/policy/`)
 
 - `RepoConfig` at `<repo>/.fractory.json`: mode, ticket source, `hasCi`, `ticketGate`, base branch,
-  sandbox image, `maxIterations`. `requiresPrGate`, `requiresTicketGate` are the only Gate logic.
+  sandbox image, `maxIterations`, `flow`. `requiresPrGate`, `requiresTicketGate` and
+  `src/policy/workflow.ts` (`mayAutoMerge`, `describeWorkflow`, shown by `fractory rules`) are the
+  only workflow logic.
 - `FactoryConfig` at `~/.fractory/config.json` (`FRACTORY_HOME` overrides): repo paths,
   `maxConcurrentRuns` (3), `staleWorktreeDays` (7), registry and log dirs.
 - `Ticket`, `TicketRef` (`github:owner/name#N` | `jira:KEY-N`), `TicketSource` interface.
@@ -112,8 +115,10 @@ Changing a contract is a change for every part: do it in its own commit, update 
        `done`, so a failure is retried).
      - CI failed on head sha → Trigger `ci-failed` (key includes sha).
      - New review comment not by the factory → Trigger `review-comment` (key includes comment id).
-     - All green, Personal Mode, `hasCi`, `mergeable == MERGEABLE` → `gh pr merge --squash`.
-       Never attempt to merge a conflicting PR (v0 lesson).
+     - `mayAutoMerge` (`src/policy/workflow.ts`): Personal Mode, the Ticket's latest Run `done`,
+       `mergeable == MERGEABLE`, checks `passing` or `none` (no CI) → `gh pr merge --squash`.
+       Never while checks are `pending` or `failing`, never in Work Mode, never a conflicting PR
+       (v0 lesson). Merges are never a Gate in Personal Mode (ADR 0005).
   3. Review comments from Agent Manager: for each Run with `<registryDir>/<runId>.comments.json`
      (`RunCommentsFileSchema`, written atomically by Agent Manager, never modified by Fractory),
      queue one `review-comment` Trigger batching the comments no earlier Run consumed, keyed by

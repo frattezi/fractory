@@ -1,5 +1,6 @@
 import { join } from 'node:path';
 import { z } from 'zod';
+import { ModeSchema } from './repo-config.ts';
 import { TicketRefSchema } from './ticket.ts';
 
 /**
@@ -59,6 +60,11 @@ export const RunRecordSchema = z.object({
   /** Agent conversation id captured by Sandcastle, for resume/fork. */
   sessionId: z.string().optional(),
   logPath: z.string(),
+  /** Snapshot of the repo's Mode and flow when the Run was queued, so readers need no config. */
+  mode: ModeSchema.optional(),
+  flow: z.string().optional(),
+  /** Agent profiles the flow used, as `kind@account` labels (e.g. `claude@personal`). */
+  agents: z.array(z.string()).optional(),
   /** Host process running the Run, to detect dead Runs. */
   pid: z.number().int().optional(),
   result: RunResultSchema.optional(),

@@ -1,0 +1,3 @@
+# Merges are never a Gate in Personal Mode
+
+In Personal Mode a Run's change merges without human review, with or without CI. The merge happens when the Ticket's latest Run is done, the PR is mergeable and its checks are passing or do not exist; while checks are pending Fractory waits, and a failing check starts a new Run instead. Work Mode never auto-merges. This supersedes the part of ADR 0003 that switched the PR Gate back on for a repository without CI. We chose this because the owner is the only maintainer of a personal repository, so a Gate there only adds latency, and the Spec Gate already covers intent. Branch protection and the repository's own checks remain the safety net where the owner wants one.

@@ -29,7 +29,7 @@ describe('gates', () => {
     expect(requiresTicketGate(config)).toBe(true);
   });
 
-  it('Personal Mode gates PRs only without CI, Tickets only on opt-in', () => {
+  it('Personal Mode never gates PRs and gates Tickets only on opt-in', () => {
     const withCi = RepoConfigSchema.parse({ ...base, mode: 'personal', hasCi: true });
     const noCi = RepoConfigSchema.parse({
       ...base,
@@ -39,7 +39,7 @@ describe('gates', () => {
     });
     expect(requiresPrGate(withCi)).toBe(false);
     expect(requiresTicketGate(withCi)).toBe(false);
-    expect(requiresPrGate(noCi)).toBe(true);
+    expect(requiresPrGate(noCi)).toBe(false);
     expect(requiresTicketGate(noCi)).toBe(true);
   });
 });

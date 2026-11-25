@@ -90,6 +90,22 @@ describe('fractory CLI', () => {
     });
   });
 
+  it('config show includes the workflow description', async () => {
+    const { env, out } = await setup();
+    expect(await main(['config', 'show'], env)).toBe(0);
+    expect(JSON.parse(out[0] as string).workflow.rules.length).toBeGreaterThan(5);
+  });
+
+  it('rules prints readable text, or JSON with --json', async () => {
+    const { env, out } = await setup();
+    expect(await main(['rules'], env)).toBe(0);
+    expect(out[0]).toContain('PR Gate');
+    expect(out[0]).toContain('Concurrency');
+    out.length = 0;
+    expect(await main(['rules', '--json'], env)).toBe(0);
+    expect(JSON.parse(out[0] as string)).toMatchObject({ mode: 'work', account: 'work' });
+  });
+
   it('run queues a manual Run on the Ticket branch and runs lists it', async () => {
     const { env, out, registry } = await setup();
     expect(await main(['run', 'github:me/app#5'], env)).toBe(0);
@@ -104,6 +120,8 @@ describe('fractory CLI', () => {
     expect(await main(['runs'], env)).toBe(0);
     expect(out[0]).toContain('manual-1');
     expect(out[0]).toContain('queued');
+    expect(out[0]).toContain('MODE');
+    expect(out[0]).toContain('AGENTS');
   });
 
   it('run rejects a Ticket no configured repo owns', async () => {

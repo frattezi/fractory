@@ -17,6 +17,7 @@ export const personalRepo: RepoConfig = {
   ticketGate: false,
   baseBranch: 'main',
   maxIterations: 10,
+  flow: 'build',
 };
 export const workRepo: RepoConfig = { ...personalRepo, mode: 'work' };
 

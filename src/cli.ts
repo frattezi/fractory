@@ -26,6 +26,7 @@ import { type Exec, defaultExec } from './github/exec.ts';
 import { type Gh, createGh } from './github/gh.ts';
 import { type InitOptions, initRepo } from './package/init.ts';
 import { installSkills } from './package/install.ts';
+import { describeWorkflow, formatWorkflow } from './policy/workflow.ts';
 import { RunRegistry } from './registry/registry.ts';
 import { launchRun } from './runner/index.ts';
 import { type Launchctl, installLaunchd, resolveBin, uninstallLaunchd } from './trigger/launchd.ts';
@@ -92,7 +93,7 @@ export interface CliArgs {
   flags: Record<string, string | boolean | string[]>;
 }
 
-const BOOLEAN_FLAGS = new Set(['ci', 'no-ci', 'ticket-gate', 'force']);
+const BOOLEAN_FLAGS = new Set(['ci', 'no-ci', 'ticket-gate', 'force', 'json']);
 const REPEATABLE_FLAGS = new Set(['blocked-by']);
 
 export const parseArgs = (argv: string[]): CliArgs => {
@@ -128,6 +129,7 @@ const flag = (args: CliArgs, name: string): string | undefined => {
 const HELP = `Usage: fractory <command>
   tick | cleanup | runs | run <ticketRef> | run-exec <id>
   config show [repoPath]
+  rules [repoPath] [--json]
   launchd install|uninstall
   init <repoPath> --mode work|personal --ci|--no-ci (--github owner/name | --jira-url ...) [--force]
   install [--target <dir>]
@@ -210,10 +212,13 @@ const commands: Record<string, (args: CliArgs, env: CliEnv) => Promise<void>> = 
     if (runs.length === 0) return env.out('No Runs.');
     env.out(
       formatTable([
-        ['ID', 'STATUS', 'TICKET', 'TRIGGER', 'BRANCH', 'PR', 'UPDATED'],
+        ['ID', 'STATUS', 'MODE', 'FLOW', 'AGENTS', 'TICKET', 'TRIGGER', 'BRANCH', 'PR', 'UPDATED'],
         ...runs.map((r) => [
           r.id,
           r.status,
+          r.mode ?? '-',
+          r.flow ?? '-',
+          r.agents?.join(',') || '-',
           r.ticketRef,
           r.trigger.kind,
           r.branch,
@@ -243,7 +248,14 @@ const commands: Record<string, (args: CliArgs, env: CliEnv) => Promise<void>> = 
       );
     const { record } = await queueRun(
       { registry, factory, now: env.now, newId: env.newId },
-      { ticketRef: ref, repoPath, trigger: { kind: 'manual' }, branch },
+      {
+        ticketRef: ref,
+        repoPath,
+        trigger: { kind: 'manual' },
+        branch,
+        mode: config.mode,
+        flow: config.flow,
+      },
     );
     env.out(`Queued Run ${record.id} on ${record.branch}; the next tick starts it.`);
   },
@@ -278,6 +290,17 @@ const commands: Record<string, (args: CliArgs, env: CliEnv) => Promise<void>> = 
         all[repoPath] = describeRepoConfig(await loadRepoConfig(repoPath));
       env.out(JSON.stringify(all, null, 2));
     }
+  },
+
+  async rules(args, env) {
+    const factory = await loadFactory(env);
+    const options = { maxConcurrentRuns: factory.maxConcurrentRuns };
+    const given = args.positionals[0];
+    const config = await loadRepoConfig(given ? resolve(env.cwd, given) : env.cwd);
+    const description = describeWorkflow(config, options);
+    env.out(
+      args.flags.json === true ? JSON.stringify(description, null, 2) : formatWorkflow(description),
+    );
   },
 
   async launchd(args, env) {
