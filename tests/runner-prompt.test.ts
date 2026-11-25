@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { Ticket } from '../src/contracts/ticket.ts';
 import {
-  agentEnv,
+  BASE_AGENT_ENV,
   buildPrompt,
   formatReviewComment,
   parseRunResult,
@@ -75,9 +75,8 @@ describe('formatReviewComment', () => {
   });
 });
 
-describe('agentEnv', () => {
-  it('disables auto memory and forwards only the Claude credentials', () => {
-    const env = agentEnv({ CLAUDE_CODE_OAUTH_TOKEN: 't', AWS_SECRET: 's', PATH: '/bin' });
-    expect(env).toEqual({ CLAUDE_CODE_DISABLE_AUTO_MEMORY: '1', CLAUDE_CODE_OAUTH_TOKEN: 't' });
+describe('BASE_AGENT_ENV', () => {
+  it('only disables auto memory: credentials never come from the host env', () => {
+    expect(BASE_AGENT_ENV).toEqual({ CLAUDE_CODE_DISABLE_AUTO_MEMORY: '1' });
   });
 });

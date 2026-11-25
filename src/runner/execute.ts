@@ -1,10 +1,19 @@
 import { appendFile, mkdir, readFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
+import type { Worktree } from '@ai-hero/sandcastle';
 import { z } from 'zod';
+import { type AgentKind, profileFor, profileLabel } from '../contracts/agents.ts';
 import { FactoryConfigSchema } from '../contracts/factory-config.ts';
 import { REPO_CONFIG_FILE, type RepoConfig, RepoConfigSchema } from '../contracts/repo-config.ts';
-import { AM_COMMENT_PREFIX, type RunRecord, type RunResult } from '../contracts/run.ts';
+import {
+  AM_COMMENT_PREFIX,
+  type RunRecord,
+  type RunResult,
+  RunResultSchema,
+} from '../contracts/run.ts';
 import type { Ticket, TicketSource } from '../contracts/ticket.ts';
+import { loadFlow } from '../flows/load.ts';
+import type { Flow, FlowAgents } from '../flows/types.ts';
 import { assertOutboundAllowed, forbiddenMatches } from '../policy/outbound.ts';
 import {
   consumedCommentIds,
@@ -13,12 +22,13 @@ import {
   readRunComments,
 } from '../registry/comments.ts';
 import { RunRegistry } from '../registry/registry.ts';
+import { MissingCredentialError, credentialKeysIn, resolveCredentials } from './credentials.ts';
 import { type Exec, FRACTORY_ROOT, defaultExec } from './exec.ts';
 import { installPrePushHook } from './hook.ts';
 import {
+  BASE_AGENT_ENV,
   COMPLETION_SIGNAL,
   type FollowUp,
-  agentEnv,
   buildPrompt,
   formatReviewComment,
   parseRunResult,
@@ -31,12 +41,13 @@ export interface ExecuteDeps {
   ticketSource: TicketSource | ((config: RepoConfig) => TicketSource);
   registry?: RunRegistry;
   sandcastle?: SandcastleAdapter;
-  /** Runs `git` and `gh`. */
+  /** Replaces the flow loader (tests). */
+  loadFlow?: (name: string) => Promise<Flow>;
+  /** Runs `git`, `gh` and `security` (Keychain reads). */
   exec?: Exec;
   loadRepoConfig?: (repoPath: string) => Promise<RepoConfig>;
   /** Contents of `rules/run-agent.md`. */
   readRules?: () => Promise<string>;
-  hostEnv?: NodeJS.ProcessEnv;
   pid?: number;
 }
 
@@ -49,6 +60,9 @@ const defaultLoadRepoConfig = async (repoPath: string): Promise<RepoConfig> =>
 const defaultReadRules = (): Promise<string> =>
   readFile(join(FRACTORY_ROOT, 'rules', 'run-agent.md'), 'utf8');
 
+const DEFAULT_CLAUDE_MODEL = 'claude-opus-5-5';
+const DEFAULT_OPENCODE_MODEL = 'opencode-go/kimi-k3';
+
 const message = (error: unknown): string =>
   error instanceof Error ? error.message : String(error);
 
@@ -59,17 +73,32 @@ const outboundText = (preferred: string, fallback: string, mode: RepoConfig['mod
   return fallback;
 };
 
+/** The real worktree, except `run` also reports the agent session id of the latest iteration. */
+const trackSessions = (worktree: Worktree, onSession: (id: string) => void): Worktree =>
+  new Proxy(worktree, {
+    get(target, prop) {
+      if (prop === 'run') {
+        return async (options: Parameters<Worktree['run']>[0]) => {
+          const result = await target.run(options);
+          const id = [...result.iterations].reverse().find((i) => i.sessionId)?.sessionId;
+          if (id) onSession(id);
+          return result;
+        };
+      }
+      const value = Reflect.get(target, prop, target);
+      return typeof value === 'function' ? value.bind(target) : value;
+    },
+  });
+
 const ticketKey = (ref: string): string => ref.slice(ref.indexOf(':') + 1);
 
 class Executor {
   private readonly registry: RunRegistry;
   private readonly exec: Exec;
-  private readonly sandcastle: SandcastleAdapter;
 
   constructor(private readonly deps: ExecuteDeps) {
     this.registry = deps.registry ?? new RunRegistry(FactoryConfigSchema.parse({}).registryDir);
     this.exec = deps.exec ?? defaultExec;
-    this.sandcastle = deps.sandcastle ?? sandcastleAdapter();
   }
 
   private async log(record: RunRecord, line: string): Promise<void> {
@@ -279,6 +308,58 @@ class Executor {
     return z.string().url().parse(url);
   }
 
+  /**
+   * Sandcastle merges `.sandcastle/.env` under the agent provider's env, but a credential key
+   * defined there and not set by us (e.g. ANTHROPIC_API_KEY next to a Claude OAuth token) would
+   * still reach the sandbox and could pick the wrong account. So a Run refuses to start.
+   */
+  private async refuseEnvCredentials(repoPath: string): Promise<void> {
+    let content: string;
+    try {
+      content = await readFile(join(repoPath, '.sandcastle', '.env'), 'utf8');
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return;
+      throw new Error(`could not read .sandcastle/.env: ${message(error)}`);
+    }
+    const keys = credentialKeysIn(content);
+    if (keys.length > 0) {
+      throw new Error(
+        `.sandcastle/.env defines ${keys.join(', ')}; remove it: the account comes from the Keychain per Mode`,
+      );
+    }
+  }
+
+  private agents(sandcastle: SandcastleAdapter, config: RepoConfig, used: Set<string>): FlowAgents {
+    const wire = async <O extends { env?: Record<string, string> | undefined }>(
+      kind: AgentKind,
+      options: O | undefined,
+      build: (env: Record<string, string>) => ReturnType<FlowAgents['claude']>,
+    ) => {
+      const profile = profileFor(kind, config.mode);
+      const credentials = await resolveCredentials(profile, this.exec);
+      // Credentials last: a flow cannot override the account.
+      const provider = await build({ ...BASE_AGENT_ENV, ...options?.env, ...credentials });
+      used.add(profileLabel(profile));
+      return provider;
+    };
+    return {
+      claude: (model, options) =>
+        wire('claude', options, async (env) =>
+          sandcastle.claudeCode(model ?? process.env.FRACTORY_MODEL ?? DEFAULT_CLAUDE_MODEL, {
+            ...options,
+            env,
+          }),
+        ),
+      opencode: (model, options) =>
+        wire('opencode', options, async (env) =>
+          sandcastle.opencode(
+            model ?? process.env.FRACTORY_OPENCODE_MODEL ?? DEFAULT_OPENCODE_MODEL,
+            { ...options, env },
+          ),
+        ),
+    };
+  }
+
   async run(runId: string): Promise<RunRecord> {
     const initial = await this.registry.get(runId);
     if (!initial) throw new Error(`Run ${runId} not found`);
@@ -305,6 +386,7 @@ class Executor {
       pid: this.deps.pid ?? process.pid,
     });
     const config = await (this.deps.loadRepoConfig ?? defaultLoadRepoConfig)(record.repoPath);
+    record = await this.registry.update(record.id, { mode: config.mode, flow: config.flow });
     const source =
       typeof this.deps.ticketSource === 'function'
         ? this.deps.ticketSource(config)
@@ -312,45 +394,72 @@ class Executor {
 
     const ticket = await source.get(record.ticketRef);
     const rules = await (this.deps.readRules ?? defaultReadRules)();
-    const prompt = buildPrompt({ rules, ticket, followUp: await this.followUp(record) });
+    const followUp = await this.followUp(record);
+
+    await this.refuseEnvCredentials(record.repoPath);
+    const flow = await (this.deps.loadFlow ?? loadFlow)(config.flow);
 
     const baseRef = await this.resolveBaseRef(record, config.baseBranch);
-    const worktree = await this.sandcastle.prepareWorktree({
+    const sandcastle = this.deps.sandcastle ?? (await sandcastleAdapter());
+    const worktree = await sandcastle.createWorktree({
       repoPath: record.repoPath,
       branch: record.branch,
       baseRef,
-      sandboxImage: config.sandboxImage,
     });
     const { hooksDir } = await installPrePushHook({
-      worktreePath: worktree.path,
+      worktreePath: worktree.worktreePath,
       baseBranch: config.baseBranch,
       exec: this.exec,
     });
-    record = await this.registry.update(record.id, { worktreePath: worktree.path });
-    await this.log(record, `worktree ready at ${worktree.path}; starting the agent`);
+    record = await this.registry.update(record.id, { worktreePath: worktree.worktreePath });
+    await this.log(
+      record,
+      `worktree ready at ${worktree.worktreePath}; running flow ${config.flow}`,
+    );
 
-    const outcome = await worktree.runAgent({
-      prompt,
-      maxIterations: config.maxIterations,
-      completionSignal: COMPLETION_SIGNAL,
-      env: agentEnv(this.deps.hostEnv ?? process.env),
-      logPath: record.logPath,
+    const usedAgents = new Set<string>();
+    let sessionId: string | undefined;
+    const tracked = trackSessions(worktree, (id) => {
+      sessionId = id;
     });
-    if (outcome.sessionId) {
-      record = await this.registry.update(record.id, { sessionId: outcome.sessionId });
+    let flowResult: unknown;
+    try {
+      flowResult = await flow({
+        ticket,
+        repoConfig: config,
+        followUp,
+        rules,
+        worktree: tracked,
+        sandbox: sandcastle.sandbox(config.sandboxImage),
+        agents: this.agents(sandcastle, config, usedAgents),
+        logPath: record.logPath,
+        maxIterations: config.maxIterations,
+        completionSignal: COMPLETION_SIGNAL,
+        buildPrompt,
+        parseRunResult,
+      });
+    } catch (error) {
+      flowResult =
+        error instanceof MissingCredentialError
+          ? { outcome: 'needs-human', reason: 'needs-access', question: error.question }
+          : {
+              outcome: 'failed',
+              summary: `The flow "${config.flow}" failed: ${message(error)}`,
+            };
     }
+    record = await this.registry.update(record.id, {
+      ...(usedAgents.size > 0 ? { agents: [...usedAgents] } : {}),
+      ...(sessionId === undefined ? {} : { sessionId }),
+    });
 
-    const parsed = parseRunResult(outcome.stdout);
-    const result: RunResult =
-      parsed ??
-      (outcome.completed
-        ? { outcome: 'failed', summary: 'The agent finished without a valid result block.' }
-        : {
-            outcome: 'needs-human',
-            reason: 'budget-exhausted',
-            question: `The agent used all ${config.maxIterations} iterations on ${record.ticketRef} without finishing. Raise maxIterations or split the Ticket?`,
-          });
-    await this.log(record, `agent result: ${result.outcome}`);
+    const validated = RunResultSchema.safeParse(flowResult);
+    const result: RunResult = validated.success
+      ? validated.data
+      : {
+          outcome: 'failed',
+          summary: `The flow "${config.flow}" returned an invalid result: ${validated.error.message}`,
+        };
+    await this.log(record, `flow result: ${result.outcome}`);
 
     if (result.outcome === 'needs-human') {
       if (config.mode === 'personal') {
@@ -373,7 +482,7 @@ class Executor {
         record,
         config,
         ticket,
-        worktree.path,
+        worktree.worktreePath,
         baseRef,
         hooksDir,
         result.summary,
