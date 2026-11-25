@@ -1,0 +1,12 @@
+{
+  "mode": "personal",
+  "ticketSource": {
+    "kind": "github",
+    "repo": "frattezi/fractory"
+  },
+  "hasCi": false,
+  "ticketGate": false,
+  "baseBranch": "main",
+  "sandboxImage": "sandcastle:fractory",
+  "maxIterations": 10
+}

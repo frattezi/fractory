@@ -1,387 +1,76 @@
+# Fractory TUI
+
+## Description
+
+I'm Pedro Frattezi, I'm a software engineer and I want to build my own AI Factory, joining open source tech + best practices for it. I will use this document to describe exactly this software shape and architecture
+
+## Use flow
+
+The typical use flow for the Fractory TUI involves interacting with agents, managing tasks, and leveraging the defined skills and external tooling to efficiently run the AI Factory.
+My main challange so far has being deciding good points to insert human on the loop. Also define reliable triggers for automated work, and I need help on this.
+
+In general:
+
+- Start by defining the tasks and goals for the AI Factory.
+- From tasks and definition, agents will be executed with different models, contexts injected and appropriate skills applied to achieve the desired outcomes.
+- Insert human oversight at critical decision points to maintain quality and reliability. Agent Manager should be the main interaction interface for human involvement. or documentation should be used to track and guide human interventions.
+- Document all decisions and changes to maintain a clear record of the AI Factory's operations.
+- Two disctinct behaviors and ways to behave, for work, I have a flow with other devs in the review flow, and a more complex/critical env, personally, I maintain projects which I have no issue on pushing things and moving fast.
+
+
+# Technologies
+
+### UI
+
+The user interface for the AI Factory, allowing interaction with agents and management of tasks.
+
+- [Agent Manager](https://github.com/wainmann/agent-manager)
+
+### Backend
+
+Use sandcastle to securely run untrusted JavaScript code in a sandboxed environment and define flows for executing tasks.
+
+- [SandCastle](https://github.com/mattpocock/sandcastle)
+
+### Harness
+
+- [AI Memory](https://github.com/akitaonrails/ai-memory)
+
+### External tooling
+
+What other software will be used on day to day tasks by me.
+
+- Browser: Chrome
+- Text/Code editor: Vs Code
+- Terminal: [Ghostty](https://ghostty.org/)
+
+### Frameworks and Guidelines
+
+- [Slop Manifesto](https://www.slopmanifesto.com/)
+- [Why Software Factories Fail](https://github.com/humanlayer/advanced-context-engineering-for-coding-agents/blob/main/wsff.md)
+
 <p align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="assets/logo-dark.svg">
-    <img alt="Fractory" src="assets/logo-light.svg" width="460">
-  </picture>
+  <img src="docs/software-factory-leverage-wm-shadow.png" alt="Software factory leverage" width="49%">
+  <img src="docs/software-factory-building-blocks.png" alt="Software factory building blocks" width="49%">
 </p>
 
-# Fractory
+### Skills
 
-Engine and control plane of the agent factory on Orca. Code decides a job's stage, transitions,
-gates and escalation; a model only works inside a stage.
+Skills to base of, write our own implementations related to our fractory, but those are "functionalities" i want when running the factory
 
-Design: [Fractory — design da versão final](https://claude.ai/artifact/MaZLMg6zhgk1niVf49h5Fc).
-This repo is **v0 (engine)**: the job state machine, the CLI, the Plane adapter and the import of open
-specs. Building still runs through `orch.py` (passthrough, behaviour unchanged).
+- [Grill me with docs](https://github.com/mattpocock/skills/blob/main/skills/engineering/grill-with-docs/SKILL.md)
+- [To Spec](https://github.com/mattpocock/skills/blob/main/skills/engineering/to-spec/SKILL.md)
+- [To tickets](https://github.com/mattpocock/skills/blob/main/skills/engineering/to-tickets/SKILL.md)
+- [Research](https://github.com/mattpocock/skills/blob/main/skills/engineering/research/SKILL.md)
+- [Handoff](https://github.com/mattpocock/skills/blob/main/skills/productivity/handoff/SKILL.md)
 
-## Run
+---
 
-```sh
-python3 -m fractory --help          # no install needed, stdlib only (Python 3.12+)
-pipx install -e .                    # optional: a `fractory` command on PATH
-python3 -m unittest discover -s tests -t .
-```
+## My general guidelines
 
-## How the pieces fit today
-
-Everything outside *Planned* runs today (v0). You pick work in Plane and talk to the repo's main chat; the CLI keeps each job's state; `fractory watch` moves jobs on CI and merges and updates Plane.
-
-```mermaid
-flowchart TB
-  you(["You"])
-
-  subgraph track["Plane"]
-    issues["Issues<br/>Cortadas · Esquerda nas Ruas · Fractory"]
-  end
-
-  subgraph orca["Orca"]
-    main["Main chat per repo<br/>Opus · discovery, spec"]
-    orch["orch.py<br/>launch · route · supervise"]
-    workers["Workers in worktrees<br/>claude / pi by profile"]
-    watch["fractory watch<br/>sync every minute · no tokens"]
-  end
-
-  subgraph engine["Fractory engine"]
-    cli["fractory CLI<br/>job · gate · sync · plane · dash"]
-    state[("~/.factory/jobs/ID/state.json")]
-  end
-
-  gh["GitHub · PR + CI"]
-
-  you --> issues
-  you --> main
-  main --> cli
-  main --> orch --> workers --> gh
-  watch --> gh
-  watch --> cli
-  cli <--> state
-  cli --> issues
-
-  subgraph next["Planned · v1 / v2"]
-    judge["Judge + review by risk + holdouts"]
-    dash["Dashboard artifact"]
-    hook["Plane webhook → new job"]
-  end
-
-  cli -.-> judge
-  state -.-> dash
-  issues -.-> hook
-
-  classDef planned stroke-dasharray: 5 5
-  class judge,dash,hook planned
-```
-
-## Using it in Orca
-
-A job's life today, with the manual steps v1 will automate marked *(manual)*.
-
-**Once**
-
-1. Plane token in the Keychain: `security add-generic-password -s fractory-plane -a plane -w`.
-2. `pipx install -e ~/Factory/Fractory` so `fractory` works in every Orca terminal.
-3. `fractory watch --install`: a LaunchAgent keeps `watch` running across reboots (log:
-   `~/.factory/watch.log`). It moves jobs on CI and merge events, keeps the Plane issues in step, and closes what
-   finished PR-review agents and settled workers leave open in Orca (see step 9).
-4. `fractory serve --install`: a LaunchAgent keeps the board up at http://127.0.0.1:8777 (log:
-   `~/.factory/serve.log`; `--port N` to change it).
-   Run both installs from an Orca terminal: they copy `ORCA_USER_DATA_PATH` and `ORCA_CLI_COMMAND` into the
-   agent, without which `orca` answers `runtime_unavailable` under launchd and the rework hook cannot reach
-   workers (the install warns when it is unset).
-5. Optional, for internal repos: `echo 'auto_merge = true' >> ~/.factory/config.toml`. Then `watch` merges
-   the PR of every approved internal job once its CI is green. Able jobs never auto-merge.
-   Only low-risk diffs merge; a sensitive path or a big diff (>400 lines, >12 files) opens the gate `merge_review`. Tune in a `[risk]` table; `no_merge_review = ["~/path/to/repo"]` lets a dev-only repo merge at any risk (still recorded).
-   Repos with a release branch: `[sync_branches]` in `config.toml` makes the factory merge `from` into `into` on GitHub after a PR whose base is `from` merges (`sync` sees the merge, whoever merged it), before the job turns done; the merge commit SHA goes into the job history (`branch_sync`). "Nothing to merge" counts as success; a 409 conflict opens the gate `branch_sync_conflict` naming both branches (merge by hand, then resolve the gate with `continue`; the retry is a no-op). A PR into any other branch triggers nothing, and so does an unlisted repo. Promoting `into` to `from` stays manual.
-   ```toml
-   [sync_branches]
-   "~/Factory/Esquerdalha/esquerda-nas-ruas" = { from = "main", into = "release" }
-   ```
-   A repo can add its own rules in `fractory.toml` at its root (read from the local checkout, so a PR cannot loosen its own limits before merging): `[risk]` `sensitive = ["billing/", "seed"]` extends the defaults (`auth`, `secret`, `migrat`, `schema`, `infra/`, `.github/`, ...), never replaces them; `max_lines` / `max_files` override the limits. No file, no change.
-
-**Per task**, from the repo's main chat in Orca (ask Claude in plain words, e.g. *"start a fractory
-job for the Plane issue X"*; these are the commands it runs):
-
-| Step | Command | Who |
-| --- | --- | --- |
-| 1. Pick the work | an issue in Plane, or `fractory plane add-item --project <id> --title …` | you |
-| 2–4. Job, worktree, worker | `fractory launch --repo . --issue <plane issue> --project <id> --brief FILE` (title from the issue; run id from `orca_run` in `config.toml` or `--run`; `--dry-run` shows the steps; right after the worktree is created and before the worker starts it installs a push guard in that worktree only (`guard.py`, step 4b; `watch` relaunches and profile escalations install it again): a `pre-push` hook that refuses pushes to `refs/heads/main` and `refs/heads/master`, so a worker must push its branch and open a PR; the repo's own hooks still run, and the main checkout's config is never changed; once the worker runs, it adds the owner to the card (keeping other assignees) and sets the start date if empty; first checks the brief against the card and stops if it goes beyond it, unless `--force`; the brief copied to the job ends with a footer giving the job ID and the `job link <id> --branch <branch> --pr <n>` and `job advance <id> built` commands, so a worker never has to ask for them) | main |
-| 1b. Let the factory take it | label the card `fractory` (who) and move it to Todo (when); `fractory intake` launches only Todo cards, Backlog ones are parked | you / intake |
-| 5. Open the PR and link it | `gh pr create`, then `fractory job link <id> --worktree … --pr <n>` and `fractory job advance <id> built` | worker / main |
-| 6. Checks | nothing: `fractory watch` sees CI; red goes back to build, green moves on to review | watch |
-| 6b. Rework | nothing: when a job goes back to `build` (CI red, Judge rejected) the reasons are typed into the worker's terminal (`links.terminal`) through `orch.py nudge`, and the history logs `rework_sent`; when the terminal no longer exists in Orca (`orca terminal list`, e.g. after a reboot) `sync`/`watch` starts a new worker in the job's worktree (same profile, the brief plus a resume note, `links.terminal` updated, `relaunched` event, at most once per hour per job), and a rework nudge to a dead terminal relaunches instead of gating; with no terminal, no relaunch possible or a failed nudge a `rework_needed` gate opens, and `fractory job advance <id> built` closes an open `rework_needed` gate (the worker did the rework) instead of refusing. A rejection that opens `judge_rounds` waits for you; resolving it with `continue` (CLI or card Done) types the last rejected note into the worker's terminal and logs `rework_sent` (no terminal: `rework_needed`). Technical failures retry on their own, only decisions wait for you (`retry.py`): a `judge_error` (model call failed) runs the Judge again, a worker idle at its prompt for `stalled_minutes` with no question and no progress in `build` is nudged to continue from its brief, and a red check whose log shows an infrastructure failure (runner shutdown, network, disk) has its failed jobs rerun once. Each attempt is a `retry` history entry, backoff doubles from `backoff_minutes`, and after `max_attempts` failures one gate (`judge_error` or `worker_stalled`) opens with the attempt history on its card; any progress resets the count. Unknown gate reasons count as decisions. `[retry] max_attempts = 3, backoff_minutes = 2, stalled_minutes = 20` in `config.toml`. A conflicting PR (`mergeable = CONFLICTING`) is never merged: the worker gets a rework message once (merge origin/main, resolve, push) and the history logs `conflict_sent`; with no reachable worker a `merge_conflict` gate opens. A worker that asks its coordinator a question (an Orca inbox `question` or `escalation` from the job's dispatch) gets the answerer first (`answerer.py`, prompt in `answerer_prompt.md`): Opus via `claude -p` reads the question, the card with its comments, the brief, the repo's `AGENTS.md` and the docs the card names by path, and returns `{decision, answer, source, category}`. An `answer` is typed into the worker's terminal through `orch.py nudge`, logged as `worker_answered` in the history and commented on the Plane card ("Answered by the factory: …, source: …"; no comment for work repos); no gate. An `escalate`, a reply whose category is in the escalation list (product or copy with no written source, money, secrets, production data, rubric or risk rules, deleting user data), a malformed reply, a failed model call, an unreadable card or a failed delivery opens one `worker_asks` gate per message (recorded as `worker_ask` in the history, so a cycle never repeats it) whose detail is the question, the worker's options and the recommended default; `[answerer] enabled = true, escalate = ["money", …]` in `config.toml` (the list defaults to the categories above; `enabled = false` sends every question to a gate). Answering the gate (comment on the card, then Done, or `gate resolve … continue --note "…"`) types the answer into the worker's terminal through `orch.py nudge`, and Cancelled sends nothing | watch / judge |
-| 7. Review and verdict | `fractory judge <id>` (Opus vs the Plane issue, fixed rubric; generated files are replaced by a one-line stub before the size limit and listed in the prompt, see [Generated files](#generated-files-in-the-judge); also reads `$FACTORY_HOME/jobs/<id>/brief.md` when present, default `~/.factory`, and a brief over 20,000 chars opens a `judge_error` gate; a diff over `max_diff_chars` (default 600,000) is reduced, not refused, see below); the model runs in a temporary git worktree of the PR head with read-only tools (`Read,Grep,Glob`) so it can read files outside the diff, and the rubric makes a rejection name the file and line it checked; the PR's CI results go into the prompt, and a rejection whose every reason the model also lists as `unverified` becomes `approved` only when all CI checks are green (the guesses stay as notes in the comment), otherwise it stays rejected; with `auto_judge = true` in `config.toml`, `watch` runs it for every job in review. By hand: `fractory job advance <id> reviewed`, then `approved` or `rejected` | judge / you |
-| 8. Merge | an approved, mergeable, open PR the factory does not merge (Able jobs, or no `auto_merge`) opens a `merge_needed` gate ("needs you: merge"), once per job: after you resolve it, `watch` waits for the PR to show as merged; a PR closed without merging opens `pr_closed`; internal with `auto_merge`: nothing, `watch` merges on green CI (not while the PR conflicts with main, see 6b); otherwise merge on GitHub (Able: open the draft PR) | watch / you |
-| 9. Done | nothing: `fractory watch` sees the merge, finishes the job (a merged PR finishes a job in any working stage, build with a dead worker included, and `sync` checks it before `relaunch_dead_workers`, so such a worker is never relaunched) and moves the Plane issue to Done, then cleans up once: stops or releases the worker's dispatch, closes the job worktree's terminals, removes the worktree (only if clean and merged; otherwise keeps it and records `cleanup_skipped`) and deletes the local branch. Each cycle also closes finished PR-review agents (read-only from `~/.harness/pr_triage.db`; finished = state reviewed/done/skipped or PR merged/closed, never `awaiting_input`/`reviewing`): their terminals and worktree, kept with the reason logged when it has uncommitted or unpushed work; and releases the retained terminal of settled Orca workers (succeeded/failed/abandoned) whose worktree is gone or whose job is done. Every action is one line in `watch.log` | watch |
-
-**Day to day**
-
-```sh
-fractory job list            # what is open and where it stands
-fractory gate list           # what waits on you (judge rounds, cost, scope)
-fractory gate resolve <id> continue --note "…"    # or cancel
-```
-
-Every gate on a job with a Plane tracker also becomes a card in the same project; a Jira-tracked job (tracker project `jira`) has no Plane project, so its card goes to `plane_gate_project` (and `plane_url`) from `config.toml`, and with no `plane_gate_project` no card is made and the gate is only in `gate list` (`Needs you: <gate> · <job title>`; a `worker_asks` card reads `Needs you: worker asks: <question> · <job title>`,
-label `humano`, state Todo, assignee `plane_assignee` from `config.toml`), created by `watch`/`sync`. Move the card to
-Done to continue the job or to Cancelled to cancel it; comments on the card are copied into the decision note.
-`gate resolve` on the CLI moves the card to Done.
-
-```sh
-fractory job status <id>     # history, links, next allowed events
-fractory dash                # JSON for the dashboard
-```
-
-## Jobs
-
-State lives outside every repo, in `$FACTORY_HOME/jobs/<id>/` (default `~/.factory`):
-`state.json`, plus `holdout/` for acceptance scenarios the build never sees.
-
-The factory also writes `$FACTORY_HOME/hooks/`: the shared hook scripts that the push guard points each worker worktree at (via `git config --worktree core.hooksPath`). Each one runs the repo's own hook of the same name; `pre-push` first refuses `main`/`master`. They are rewritten on every launch.
-
-```
-discovery --scoped--> spec --planned--> build --built--> checks --green--> review --reviewed--> judge
-                                          ^                 |red                                  |approved
-                                          +-----------------+------------<rejected----------------+
-judge --approved--> ship --merged (internal) | draft_pr (Able)--> done          any --cancel--> cancelled
-```
-
-| Rule | Where |
-| --- | --- |
-| Same check red 2x → `escalate_model` (step up via `orch.py route --escalate-from`) | `state.apply_event` |
-| 2 judge rejections → gate `judge_rounds`; events refused until resolved | `state.apply_event` |
-| Worker question in the Orca inbox → answered from the card, brief, AGENTS.md and docs with no gate, or gate `worker_asks` when a listed category or a failure needs a person; the answer is typed into the worker's terminal | `asks.open_gates`, `answerer.decide`, `asks.deliver_answer` (answerer), `asks.deliver_gate_answer` (gate) |
-| Spend over budget (default US$ 50) → gate `cost` | `state.add_cost` |
-| Able repos (under `~/Factory/Able`) end in `draft_pr`; internal ones in `merged` | `state.apply_event`, `store.repo_kind` |
-| Able repos track work in Jira and nothing they share (Jira, PRs, commits, repo docs) mentions the Fractory or the AI-dev setup | `AGENTS.md` (not enforced in code yet) |
-
-```sh
-fractory job new --repo ~/Factory/Esquerdalha/cortadas --title "Chat no Plane"
-fractory job advance cortadas-0001 scoped   # a stage change also moves the Plane card, like sync does
-fractory job link cortadas-0001 --worktree spec-x --terminal term_… --profile backend
-fractory job advance cortadas-0001 red --check lint
-fractory job cost cortadas-0001 3.20
-fractory gate list
-fractory gate resolve cortadas-0001 continue --note "spec ajustada"
-fractory judge cortadas-0001        # verdict on the PR diff vs the Plane issue; moves the job, comments on PR and issue
-fractory sync                       # advance jobs from their PR and CI, mirror to Plane
-fractory watch                      # sync every 60 s until stopped (--every S, --rounds N); each cycle also moves the Plane card of every done job to Done (cancelled → Cancelled) when it is not there yet, one line per fix, from one cached issue listing per project
-fractory watch --install            # the same, as a LaunchAgent that survives reboots
-fractory cleanup [--job ID] [--dry-run]  # close a finished job's terminals, worktree and branch in Orca (also retries kept ones), finished PR-review agents and settled worker terminals; --dry-run lists them
-                                    # watch and serve exit when main moves, launchd restarts them (watch: --no-reload)
-fractory dash --out /tmp/dash.json
-fractory serve                      # the live board at http://127.0.0.1:8777
-fractory orch alive term_…          # everything orch.py does, unchanged
-```
-
-## Web view
-
-```sh
-fractory serve [--port 8777]          # binds 127.0.0.1 only
-```
-
-The board opens on what needs attention now (the per-stage kanban, detail panel and activity feed are gone
-until DB05). Page text is Portuguese. Seven parts:
-
-- **Health strip:** watch alive or stopped, last cycle (`há 40 s · 12 s`: time since it ended, how long it took),
-  WIP `n / max_parallel_jobs`, open gates, stuck jobs, Plane rate-limit backoffs of the last cycle and the code
-  sha. Problems carry an icon (✕ / ⚠) as well as colour.
-- **Precisa de você:** open gates, oldest first: title, repo, the gate reason in plain Portuguese (e.g.
-  `merge_review` → "Revisar merge: mexe em migração"), age, and links to the Plane card and the PR.
-- **Parado:** jobs stuck in a stage past the `[stuck]` limits, with reason, age, and links to the card and PR plus
-  the worker terminal handle. Gate-stuck jobs are not repeated here.
-- **Em andamento:** open jobs grouped by repo, each with a horizontal build → checks → review → judge → ship
-  timeline (time per stage from `/api/metrics` `stage_minutes`; the current stage is highlighted with its age).
-  Small markers show Judge rework rounds (↺) and conflicts sent to the worker (⚡). Click a job to open the drawer.
-- **Fila:** per Plane project, the next cards with the decision in Portuguese: "vai começar", "espera MC02",
-  "limite de N jobs", "em Backlog", "falhou ao iniciar: …".
-- **Concluídos** (collapsed): the last 20 merged jobs with lead time.
-- **Job drawer:** the Judge verdicts and the full event history (time, event, stage, note) from
-  `GET /api/jobs/<id>`, with links to the card, the PR and the worker terminal.
-
-- **Como estamos trabalhando:** a 7 / 30 day toggle over `/api/metrics?window=`: merges per day (inline SVG stacked
-  bars, repos filterable from the legend), lead time median and p90, median time per stage, Judge first-pass rate,
-  mean rework rounds, CI red rate, conflicts, gates opened by reason with median time to resolve, and cost per repo
-  ("sem dados" when zero). Tap or hover a number for a one-line explanation. Charts carry `<title>`/`<desc>` and
-  print their values as text; colours follow light and dark.
-
-The page reads `GET /api/health` (strip), `GET /api/metrics` (`stuck`, each with `reason` and its Portuguese `reason_pt`; `stage_minutes` for the timelines), `GET /api/queue` (Fila), `GET /api/jobs/<id>` (drawer) and `GET /api/jobs`, and follows
-`state.json` changes through Server-Sent Events (`/api/events`). `/api/jobs` carries, per job, `pr_url`,
-`tracker_url`, `stuck`, `terminal`, `gate_detail` (raw, shown behind a "detalhe" toggle), `gate_text` (the Portuguese sentence from `fractory/pt.py`), `gate_opened_at`, `gate_card_url`, `stage_age_min` (minutes in the current stage), `conflicts` (conflict_sent events), `merged_at` and `lead_min` (creation to merge; null until merged), plus a top-level
-`wip {open, max}` (`max` is `max_parallel_jobs`, default 3). Read-only, one self-contained HTML file, no
-build step. `GET /api/activity?limit=50` (clamped to 1..200) still exists for a later board part.
-
-Factory health and the intake queue come from two snapshots the watch leaves in `$FACTORY_HOME`, so the
-board never calls Plane: `heartbeat.json` (written atomically at the end of every watch cycle: cycle start,
-end and duration, cycle count, pid, start time, code sha, error counts, Plane rate-limit backoffs, last 10
-error lines) and `queue.json` (written by every intake run: per project, each labelled card with its
-decision: `launched`, `waits_for` (unmet dependencies), `max_parallel`, `parked`, `has_job` or
-`launch_failed` with the error). `GET /api/health` serves the heartbeat plus `alive` (the last cycle ended
-less than 3× `--every` ago) and `GET /api/queue` serves the queue with a Portuguese `decision_text` on each card (cards already `has_job` are dropped); both answer 200 `{"missing": true}` until
-the file exists.
-
-`GET /api/metrics?window=7|30` (default 7) computes, from the job histories (`fractory/metrics.py`): time per
-stage and current stage age per job, `stuck` items (each with a one-line reason), flow (lead time median and
-p90 per repo and overall, throughput per day, `merged_per_day` rows for the chart, WIP), `stage_summary` (median minutes per stage), quality (Judge first-pass rate, mean rework rounds, CI red
-rate, conflicts sent, gates opened by reason with median time to resolve) and cost per repo. Each item of
-`/api/jobs` also carries `stuck` (`null` when the job is moving). A job is stuck when its current stage is
-older than a per-stage limit, or when it has an open gate (any age, "waiting on you"). Limits in minutes,
-overridable in `config.toml`:
-
-```toml
-[stuck]   # defaults
-build = 60
-checks = 30
-review = 20
-judge = 20
-ship = 15
-```
-
-## Plane
-
-API key: `$PLANE_API_KEY`, or the Keychain item `fractory-plane`
-(`security add-generic-password -s fractory-plane -a plane -w`). Create the key in Plane under
-Profile settings → Personal access tokens.
-
-```sh
-fractory plane projects
-fractory plane import-specs --repo ~/Factory/Esquerdalha/cortadas --project <id>           # dry run
-fractory plane import-specs --repo ~/Factory/Esquerdalha/cortadas --project <id> --apply   # create
-```
-
-```sh
-fractory plane create-project --name Fractory --identifier FRACTORY
-fractory plane add-item --project <id> --title "…" --body "markdown" --status ready [--assign-me] [--label fractory ...] [--depends-on CORT-3,CORT-4]
-fractory plane items --project <id> [--status backlog|ready|in_progress|done|cancelled] [--label NAME]
-fractory plane show --project <id> --ref <id or key>
-fractory plane move --project <id> --ref <id or key> --status ready [--add-label fractory]
-fractory plane comment --project <id> --ref <id or key> --body "markdown"     # or --body-file F
-fractory job new --repo DIR --title T --tracker plane --project <id> --ref <issue id>
-```
-
-`--project` takes the UUID or the project identifier (`CUIDADO`); `--ref` takes a card id or a key (`CUIDADO-12`).
-`--label` and `--add-label` use the standard labels (created if missing); `--depends-on` appends the final
-`Depends on: <refs>` line that intake parses. Convention: label = who (`fractory`, `humano`, `design`), state =
-when (Backlog = not ready, Todo = go).
-
-`create-project` also applies the standard labels and turns on the project's Views feature. For existing
-projects: `fractory plane setup-project --project <id>` (or `--all`). It is idempotent: it creates missing
-labels and resets the colour/description of existing ones. If the API refuses the Views toggle, it prints the
-manual step (Project settings → Features → Views).
-
-| Label | Colour | Meaning |
-|---|---|---|
-| `fractory` | `#1f6f78` | the factory executes this card (intake trigger) |
-| `humano` | `#e3a35f` | needs a person: decision, access, account or review |
-| `design` | `#a83b5a` | comes from a design decision |
-
-Saved views cannot be created with an API key (Plane's views endpoints accept only a browser session), so
-`create-project` and `setup-project` end by printing the command for that step:
-
-```sh
-fractory plane views-script --project <id or key>    # prints a JavaScript snippet
-```
-
-Run the snippet in a logged-in Plane tab (paste it in the console, or send it through a browser tool). It reads
-the CSRF token from `/auth/get-csrf-token/` and, for the project, creates the three standard views, or updates
-them in place when one with the same name exists, and returns a JSON summary (`created`/`updated` per view).
-The label ids are resolved by the CLI and baked into the snippet.
-
-| View | Filter | Layout |
-|---|---|---|
-| 👤 Precisa de você | label `humano` and state group `unstarted`/`started` | list |
-| 🤖 Fábrica | label `fractory` | kanban |
-| 🧭 Planejamento | state group `backlog` | list |
-
-`setup-project` never deletes labels, so an existing `automação` stays until removed by hand.
-
-Only open specs (`draft`, `blocked`, `ready`, `in-progress`, `in-review`) are imported; done ones stay in
-the repo as frozen history. Each issue carries `external_id` = the spec id, so a second run reports
-`exists` instead of duplicating.
-
-## Intake
-
-The label says who does a card (`fractory` = the factory, `humano` = a person, `design` = informative); the state
-says when: Backlog = not ready (nobody picks it), Todo = ready, In Progress = being worked on. So a `fractory`
-card in Backlog waits, and moving it to Todo is the "go".
-
-A Plane card labelled `fractory` in state Todo starts a job: `fractory intake` launches it
-like `fractory launch`, with the card title and description as the brief plus a fixed footer (link the PR,
-advance to built, worker_done), then moves the card to In Progress. A card that already has a job (any
-stage, cancelled included) is never launched twice. A launch that fails prints one line and the next card
-still goes.
-
-```toml
-# $FACTORY_HOME/config.toml
-intake_repos = { "<plane project id>" = "~/Factory/Fractory" }   # Plane project -> repo
-intake_label = "fractory"        # default
-max_parallel_jobs = 3            # default; counts jobs not done or cancelled
-auto_intake = true               # `fractory watch` runs intake once per round, after sync
-plane_gate_project = "<plane project id>"   # where gate cards of Jira-tracked jobs go; unset: no card for them
-plane_assignee = "<plane user id>"   # owner added to cards by launch and `add-item --assign-me`; default: the API key's owner (Plane /users/me/)
-```
-
-A card whose text has a line `Depends on: <refs>` (case-insensitive, bold allowed; `none` or empty means no
-dependency) launches only when every ref is a card in a completed state. A ref is a Plane key
-(`CUIDADO-12`) or a title prefix (`07` matches `07 ...` or `07 · ...` in the same project), comma-separated.
-Until then the card waits; a ref that matches no card keeps it waiting and prints
-`intake: <title>: unknown dependency <ref>` once per run. Cards without the line behave as before.
-
-### Which model works a card
-
-Intake picks the worker profile (`~/.agents/workers.toml`) per card, first match wins:
-
-1. a `Worker: <profile>` line in the card text (bold allowed), e.g. `Worker: backend`. If `orch.py quota` shows
-   the profile's provider signed out (`off`), over quota (`FULL`) or without data, intake falls back to
-   `orch.py route --escalate-from <profile>` (or `strong`), logs the reason and comments it once on the card.
-   A failing quota command keeps the line as written;
-2. config: `[intake.profiles]` maps a repo path to a profile, `[intake] default_profile` is the global one;
-3. `orch.py route --spec <brief> --repo <repo>`, with the card's labels (other than `fractory`, `humano`, `design`)
-   and a `Tags: a, b` line as tags. It never uses `--ignore-quota`, so a provider that is signed out or over
-   quota falls to the next candidate;
-4. `strong` when route fails or answers nothing.
-
-```toml
-# $FACTORY_HOME/config.toml
-[intake]
-default_profile = "default"                  # optional
-[intake.profiles]
-"~/Factory/Fractory" = "strong"              # optional, per repo
-```
-
-The profile and the reason are printed at launch and logged as a `profile_chosen` event in the job history.
-After a first Judge rejection on a job whose profile has `escalate_to`, the factory starts a worker of that
-profile (`orch.py route --escalate-from`) in the same worktree and branch and logs `profile_escalated`; it
-happens once per job.
-
-pi workers are for personal projects only: whatever picked the profile (card line, config, route, quota
-fallback, escalation, relaunch), a job of kind `able` whose profile has `agent = "pi"` in `workers.toml` (or the
-repo's override) starts on `strong` instead, and the job history logs `profile_chosen` with
-`pi is personal-only: <profile> -> strong`.
-
-`fractory intake --dry-run` lists what would launch (which cards wait, with `waits for <refs>`, and which labelled
-Backlog cards are `parked (backlog)`) and changes nothing. A job that reaches done sets the card's target date to today if empty.
-
-## Generated files in the Judge
-
-Before the size limit, `fractory judge` replaces the diff of generated files with a stub line
-(`# <path>: generated file, N lines changed, not shown`) and lists the dropped paths in the prompt. Default list:
-`pnpm-lock.yaml`, `package-lock.json`, `yarn.lock`, `poetry.lock`, `uv.lock`, `Cargo.lock`, `go.sum`, `*.min.js`,
-`*.min.css`, `*.snap`, `*.svg` over 200 changed lines, and anything under a `dist/`, `build/` or `coverage/`
-directory at any depth (so a source directory named `build/` is hidden too). Add patterns (matched against the file
-name or full path) in `config.toml`:
-
-```toml
-[judge]
-generated = ["*.generated.ts", "api/openapi.json"]
-```
-
-A diff still over `[judge] max_diff_chars` (default 600,000, Opus has a 1M-token context) is reduced instead of
-refused: binary files become stubs, each remaining file is cut to an equal share with a `truncated` note, and the
-prompt tells the Judge it saw a partial diff. Such a verdict is marked partial: the PR never auto-merges and opens a
-`merge_review` gate, even in a repo listed in `no_merge_review`. Every gate, `judge_error` included, gets a
-"Needs you" card in Plane with the reason and how to release it.
-
-## Next (v1)
-
-Holdout verifier, risk score and review by risk, `fractory watch` under
-launchd, Orca native gates, and retiring the always-on orchestrator. The roadmap lives in the Plane
-project FRACTORY.
+- Follow best practices for software factories.
+- Do not integrate Agent Manager into the Fractory, but i want to modify and specialize agent manager for my own needs and fractory views.
+- Always based on zero token architecture.
+- Worktrees are heavy, we should keep cleanups and manage them efficiently.
+- Always document architectural decisions and changes to maintain clarity and traceability.
+- In general, I should be able to use this software factory by acessing claude on a terminal, and loading my config.

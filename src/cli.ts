@@ -1,0 +1,397 @@
+#!/usr/bin/env -S npx tsx
+import { execFile } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
+import { readFile, realpath } from 'node:fs/promises';
+import { homedir } from 'node:os';
+import { join, resolve } from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+import {
+  type CreatedTicket,
+  type NewTicket,
+  createTicket,
+  createTicketSource,
+} from './adapters/index.ts';
+import { cleanup } from './cleanup/cleanup.ts';
+import {
+  describeRepoConfig,
+  factoryConfigPath,
+  loadFactoryConfig,
+  loadRepoConfig,
+} from './config/index.ts';
+import type { FactoryConfig } from './contracts/factory-config.ts';
+import type { Mode, RepoConfig, TicketSourceConfig } from './contracts/repo-config.ts';
+import type { RunRecord } from './contracts/run.ts';
+import { type TicketRef, TicketRefSchema, type TicketSource } from './contracts/ticket.ts';
+import { type Exec, defaultExec } from './github/exec.ts';
+import { type Gh, createGh } from './github/gh.ts';
+import { type InitOptions, initRepo } from './package/init.ts';
+import { installSkills } from './package/install.ts';
+import { RunRegistry } from './registry/registry.ts';
+import { launchRun } from './runner/index.ts';
+import { type Launchctl, installLaunchd, resolveBin, uninstallLaunchd } from './trigger/launchd.ts';
+import { branchFor, queueRun } from './trigger/queue.ts';
+import { type Logger, checkPid, createFileLogger } from './trigger/support.ts';
+import { tick } from './trigger/tick.ts';
+
+export interface CliEnv {
+  out: (line: string) => void;
+  cwd: string;
+  factoryConfigPath: string;
+  rootDir: string;
+  home: string;
+  launchAgentsDir: string;
+  uid: number;
+  exec: Exec;
+  gh: Gh;
+  launchctl: Launchctl;
+  resolveBin: (name: string) => string | undefined;
+  createTicketSource: (config: TicketSourceConfig, mode: Mode) => TicketSource;
+  createTicket: (
+    config: TicketSourceConfig,
+    input: NewTicket,
+    options: { mode: Mode },
+  ) => Promise<CreatedTicket>;
+  launchRun: (record: RunRecord, config: RepoConfig) => Promise<void>;
+  makeLogger: (factory: FactoryConfig) => Logger;
+  now: () => Date;
+  newId: () => string;
+}
+
+const realLaunchctl: Launchctl = (args) =>
+  new Promise((done, fail) => {
+    execFile('launchctl', args, (error, _stdout, stderr) =>
+      error ? fail(new Error(stderr.trim() || error.message)) : done(),
+    );
+  });
+
+export const defaultEnv = (): CliEnv => {
+  const home = homedir();
+  return {
+    out: (line) => console.log(line),
+    cwd: process.cwd(),
+    factoryConfigPath: factoryConfigPath(),
+    rootDir: fileURLToPath(new URL('..', import.meta.url)),
+    home,
+    launchAgentsDir: join(home, 'Library', 'LaunchAgents'),
+    uid: process.getuid?.() ?? 0,
+    exec: defaultExec,
+    gh: createGh(defaultExec),
+    launchctl: realLaunchctl,
+    resolveBin: (name) => resolveBin(name),
+    createTicketSource: (config, mode) => createTicketSource(config, { mode }),
+    createTicket,
+    launchRun,
+    makeLogger: (factory) => createFileLogger(join(factory.logDir, 'tick.log')),
+    now: () => new Date(),
+    newId: () => randomUUID(),
+  };
+};
+
+export interface CliArgs {
+  positionals: string[];
+  flags: Record<string, string | boolean | string[]>;
+}
+
+const BOOLEAN_FLAGS = new Set(['ci', 'no-ci', 'ticket-gate', 'force']);
+const REPEATABLE_FLAGS = new Set(['blocked-by']);
+
+export const parseArgs = (argv: string[]): CliArgs => {
+  const args: CliArgs = { positionals: [], flags: {} };
+  for (let i = 0; i < argv.length; i++) {
+    const arg = argv[i] as string;
+    if (!arg.startsWith('--')) {
+      args.positionals.push(arg);
+      continue;
+    }
+    const eq = arg.indexOf('=');
+    const name = arg.slice(2, eq === -1 ? undefined : eq);
+    if (BOOLEAN_FLAGS.has(name)) {
+      args.flags[name] = true;
+      continue;
+    }
+    const value = eq === -1 ? argv[++i] : arg.slice(eq + 1);
+    if (value === undefined) throw new Error(`Flag --${name} needs a value`);
+    if (REPEATABLE_FLAGS.has(name)) {
+      args.flags[name] = [...((args.flags[name] as string[] | undefined) ?? []), value];
+    } else {
+      args.flags[name] = value;
+    }
+  }
+  return args;
+};
+
+const flag = (args: CliArgs, name: string): string | undefined => {
+  const value = args.flags[name];
+  return typeof value === 'string' ? value : undefined;
+};
+
+const HELP = `Usage: fractory <command>
+  tick | cleanup | runs | run <ticketRef> | run-exec <id>
+  config show [repoPath]
+  launchd install|uninstall
+  init <repoPath> --mode work|personal --ci|--no-ci (--github owner/name | --jira-url ...) [--force]
+  install [--target <dir>]
+  tickets create --title <t> --body-file <path> --status backlog|ready [--blocked-by <ref>]... [--parent <ref>]`;
+
+const loadFactory = (env: CliEnv): Promise<FactoryConfig> =>
+  loadFactoryConfig(env.factoryConfigPath);
+
+const formatTable = (rows: string[][]): string => {
+  const widths =
+    rows[0]?.map((_, col) => Math.max(...rows.map((r) => (r[col] ?? '').length))) ?? [];
+  return rows
+    .map((r) =>
+      r
+        .map((cell, col) => cell.padEnd(widths[col] ?? 0))
+        .join('  ')
+        .trimEnd(),
+    )
+    .join('\n');
+};
+
+const findRepoForTicket = async (
+  env: CliEnv,
+  factory: FactoryConfig,
+  ref: TicketRef,
+): Promise<{ repoPath: string; config: RepoConfig }> => {
+  for (const repoPath of factory.repos) {
+    const config = await loadRepoConfig(repoPath);
+    const source = config.ticketSource;
+    const matches =
+      source.kind === 'github'
+        ? ref.startsWith(`github:${source.repo}#`)
+        : ref.startsWith(`jira:${source.projectKey}-`);
+    if (matches) return { repoPath, config };
+  }
+  throw new Error(`No configured repo owns ${ref}`);
+};
+
+const commands: Record<string, (args: CliArgs, env: CliEnv) => Promise<void>> = {
+  async tick(_args, env) {
+    const factory = await loadFactory(env);
+    const log = env.makeLogger(factory);
+    const registry = new RunRegistry(factory.registryDir);
+    const summary = await tick({
+      factory,
+      registry,
+      loadRepoConfig,
+      createTicketSource: env.createTicketSource,
+      gh: env.gh,
+      launchRun: env.launchRun,
+      checkPid,
+      now: env.now,
+      newId: env.newId,
+      log,
+      afterTick: async () => {
+        await cleanup({ factory, registry, gh: env.gh, exec: env.exec, now: env.now, log });
+      },
+    });
+    env.out(JSON.stringify(summary));
+  },
+
+  async cleanup(_args, env) {
+    const factory = await loadFactory(env);
+    const result = await cleanup({
+      factory,
+      registry: new RunRegistry(factory.registryDir),
+      gh: env.gh,
+      exec: env.exec,
+      now: env.now,
+      log: env.makeLogger(factory),
+    });
+    env.out(JSON.stringify(result, null, 2));
+  },
+
+  async runs(_args, env) {
+    const factory = await loadFactory(env);
+    const runs = (await new RunRegistry(factory.registryDir).list()).sort((a, b) =>
+      a.createdAt.localeCompare(b.createdAt),
+    );
+    if (runs.length === 0) return env.out('No Runs.');
+    env.out(
+      formatTable([
+        ['ID', 'STATUS', 'TICKET', 'TRIGGER', 'BRANCH', 'PR', 'UPDATED'],
+        ...runs.map((r) => [
+          r.id,
+          r.status,
+          r.ticketRef,
+          r.trigger.kind,
+          r.branch,
+          r.prUrl ?? '-',
+          r.updatedAt,
+        ]),
+      ]),
+    );
+  },
+
+  async run(args, env) {
+    const ref = TicketRefSchema.parse(args.positionals[0]);
+    const factory = await loadFactory(env);
+    const { repoPath, config } = await findRepoForTicket(env, factory, ref);
+    const registry = new RunRegistry(factory.registryDir);
+    // Reuse the Ticket's branch when it already has Runs, so a manual Run continues the PR.
+    const previous = (await registry.list())
+      .filter((r) => r.ticketRef === ref)
+      .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
+      .at(-1);
+    const branch =
+      previous?.branch ??
+      branchFor(
+        ref,
+        (await env.createTicketSource(config.ticketSource, config.mode).get(ref)).title,
+        config.mode,
+      );
+    const { record } = await queueRun(
+      { registry, factory, now: env.now, newId: env.newId },
+      { ticketRef: ref, repoPath, trigger: { kind: 'manual' }, branch },
+    );
+    env.out(`Queued Run ${record.id} on ${record.branch}; the next tick starts it.`);
+  },
+
+  async 'run-exec'(args, env) {
+    const id = args.positionals[0];
+    if (!id) throw new Error('Usage: fractory run-exec <id>');
+    // Imported lazily: only run-exec needs the sandbox stack.
+    const { executeRun } = await import('./runner/execute.ts');
+    await executeRun(id, {
+      ticketSource: (repoConfig) =>
+        env.createTicketSource(repoConfig.ticketSource, repoConfig.mode),
+    });
+  },
+
+  async config(args, env) {
+    if (args.positionals[0] !== 'show') throw new Error('Usage: fractory config show [repoPath]');
+    const given = args.positionals[1];
+    if (given) {
+      return env.out(
+        JSON.stringify(describeRepoConfig(await loadRepoConfig(resolve(env.cwd, given))), null, 2),
+      );
+    }
+    // No path: the repo in the current directory, else every configured repo.
+    try {
+      return env.out(JSON.stringify(describeRepoConfig(await loadRepoConfig(env.cwd)), null, 2));
+    } catch (error) {
+      const factory = await loadFactory(env);
+      if (factory.repos.length === 0) throw error;
+      const all: Record<string, unknown> = {};
+      for (const repoPath of factory.repos)
+        all[repoPath] = describeRepoConfig(await loadRepoConfig(repoPath));
+      env.out(JSON.stringify(all, null, 2));
+    }
+  },
+
+  async launchd(args, env) {
+    const factory = await loadFactory(env);
+    const deps = {
+      rootDir: env.rootDir,
+      launchAgentsDir: env.launchAgentsDir,
+      home: env.home,
+      uid: env.uid,
+      logDir: factory.logDir,
+      nodePath: process.execPath,
+      resolveBin: env.resolveBin,
+      launchctl: env.launchctl,
+      exec: env.exec,
+      out: env.out,
+    };
+    const action = args.positionals[0];
+    if (action === 'install') env.out(`Installed ${await installLaunchd(deps)}`);
+    else if (action === 'uninstall') env.out(`Removed ${await uninstallLaunchd(deps)}`);
+    else throw new Error('Usage: fractory launchd install|uninstall');
+  },
+
+  async init(args, env) {
+    const repoPath = resolve(env.cwd, args.positionals[0] ?? '.');
+    const jiraUrl = flag(args, 'jira-url');
+    const num = (name: string): number | undefined => {
+      const v = flag(args, name);
+      return v === undefined ? undefined : Number(v);
+    };
+    const ci = args.flags.ci === true ? true : args.flags['no-ci'] === true ? false : undefined;
+    const options = {
+      repoPath,
+      mode: flag(args, 'mode'),
+      ...(ci !== undefined && { hasCi: ci }),
+      ...(flag(args, 'github') && { github: flag(args, 'github') }),
+      ...(jiraUrl && {
+        jira: {
+          baseUrl: jiraUrl,
+          projectKey: flag(args, 'jira-project'),
+          statuses: {
+            ready: flag(args, 'jira-status-ready'),
+            inProgress: flag(args, 'jira-status-in-progress'),
+            inReview: flag(args, 'jira-status-in-review'),
+            done: flag(args, 'jira-status-done'),
+          },
+        },
+      }),
+      ...(args.flags['ticket-gate'] === true && { ticketGate: true }),
+      ...(flag(args, 'base-branch') && { baseBranch: flag(args, 'base-branch') }),
+      ...(flag(args, 'sandbox-image') && { sandboxImage: flag(args, 'sandbox-image') }),
+      ...(num('max-iterations') !== undefined && { maxIterations: num('max-iterations') }),
+      force: args.flags.force === true,
+    };
+    // Flags are untyped strings; InitOptionsSchema inside initRepo is the validation boundary.
+    const { path } = await initRepo(options as InitOptions);
+    env.out(`Wrote ${path}`);
+  },
+
+  async install(args, env) {
+    const targetDir = flag(args, 'target');
+    const result = await installSkills(targetDir ? { targetDir } : {});
+    env.out(JSON.stringify(result, null, 2));
+  },
+
+  async tickets(args, env) {
+    if (args.positionals[0] !== 'create') throw new Error('Usage: fractory tickets create ...');
+    const title = flag(args, 'title');
+    const bodyFile = flag(args, 'body-file');
+    const status = flag(args, 'status');
+    if (!title || !bodyFile || (status !== 'backlog' && status !== 'ready')) {
+      throw new Error('tickets create needs --title, --body-file and --status backlog|ready');
+    }
+    const config = await loadRepoConfig(env.cwd);
+    const parent = flag(args, 'parent');
+    const input: NewTicket = {
+      title,
+      body: await readFile(resolve(env.cwd, bodyFile), 'utf8'),
+      status,
+      blockedBy: ((args.flags['blocked-by'] as string[] | undefined) ?? []).map((r) =>
+        TicketRefSchema.parse(r),
+      ),
+      ...(parent && { parent: TicketRefSchema.parse(parent) }),
+    };
+    const created = await env.createTicket(config.ticketSource, input, { mode: config.mode });
+    env.out(JSON.stringify({ ref: created.ref, url: created.url }));
+  },
+};
+
+export const main = async (argv: string[], env: CliEnv = defaultEnv()): Promise<number> => {
+  const [name, ...rest] = argv;
+  const handler = name ? commands[name] : undefined;
+  if (!handler) {
+    env.out(HELP);
+    return name ? 1 : 0;
+  }
+  try {
+    await handler(parseArgs(rest), env);
+    return 0;
+  } catch (error) {
+    console.error(`fractory ${name}: ${error instanceof Error ? error.message : String(error)}`);
+    return 1;
+  }
+};
+
+const isEntrypoint = async (): Promise<boolean> => {
+  const entry = process.argv[1];
+  if (!entry) return false;
+  try {
+    return pathToFileURL(await realpath(entry)).href === import.meta.url;
+  } catch {
+    return false;
+  }
+};
+
+if (await isEntrypoint()) {
+  process.exitCode = await main(process.argv.slice(2));
+}

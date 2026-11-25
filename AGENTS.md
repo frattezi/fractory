@@ -1,23 +1,23 @@
-# Fractory — agent instructions
+# Fractory: agent rules
 
-- Python 3.12, standard library only. No runtime dependencies.
-- Decisions with a right answer (stages, transitions, gates, escalation, risk) live in tested code in
-  `fractory/`, never in prompts.
-- `state.py` stays pure (no I/O); persistence is `store.py`; trackers implement `trackers/base.Tracker`.
-- Tests: `python3 -m unittest discover -s tests -t .`. Integration tests through `cli.main` with a temp
-  `FACTORY_HOME`; external APIs are faked over real HTTP (see `tests/test_plane_import.py`).
-- Never read secrets: the Plane key is read by the code from `$PLANE_API_KEY` or the Keychain.
-- Design doc: https://claude.ai/artifact/MaZLMg6zhgk1niVf49h5Fc
+Read [GLOSSARY.md](GLOSSARY.md) for vocabulary, [docs/adr/](docs/adr/) for decisions and
+[docs/specs/0001-fractory-v1.md](docs/specs/0001-fractory-v1.md) for the v1 plan.
 
-## Work repos (Able / Caring)
+## Stack
 
-Pedro's employer is Caring. Its repos live under `~/Factory/Able` (`store.repo_kind` → `able`): modular-monolith,
-portal, HubSpot extensions, DIR and any other Caring repo.
+- TypeScript, strict, ESM, Node ≥ 22, run with `tsx` (no build step). pnpm.
+- `zod` validates every boundary: config files, registry files, tracker and `gh` responses,
+  agent structured output.
+- Tests: vitest in `tests/`, named `<area>.test.ts`. Stub external processes (`gh`, `git`,
+  `docker`, Sandcastle) and `fetch`; no network in tests.
+- Before committing: `pnpm typecheck && pnpm test && pnpm lint`.
 
-- Tracker is **Jira** (`caring.atlassian.net`), never Plane.
-- Nothing shared with the employer may mention the Fractory or the AI-dev setup (agents, workers, Judge, Orca,
-  briefs, profiles, models, cost): Jira issues and comments, PR titles, bodies and comments, commit messages,
-  repo docs, Confluence. They read as if a developer wrote them.
-- Personal notes, Plane, `~/.factory` and this repo are fine.
-- Code that posts outside (Judge PR comments, tracker comments, briefs that end up in PR bodies) must strip or
-  skip those mentions for `able` jobs, enforced in code with a test, not left to the prompt.
+## Rules
+
+- No Token Architecture: anything with a right answer is code with a test. Prompts route and phrase.
+- Contracts in `src/contracts/` are shared by every part. Change them in their own commit and
+  update every caller.
+- External calls go through small injected functions so tests can replace them.
+- A failed read of external state proves nothing: never treat it as "dead", "failed" or "absent".
+- Work Mode text sent outside (tracker, PR, commit, branch) passes `assertOutboundAllowed`.
+- Never log secrets. Credentials come from the environment.
