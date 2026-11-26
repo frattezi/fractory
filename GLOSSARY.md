@@ -46,6 +46,22 @@ _Avoid_: job, execution, session
 A new Run the owner asks for on a Ticket whose latest Run failed or needed a human, continuing on that Ticket's branch. Unlike a follow-up Run, which a Trigger starts, only the owner starts a Re-run.
 _Avoid_: retry, restart
 
+**Blocker**:
+A Ticket another Ticket declares it depends on, written in the Relations section of its body. A blocker is satisfied once its Ticket is done.
+_Avoid_: dependency, parent, prerequisite
+
+**Stack**:
+A dependent Ticket's branch started from its blocker's branch rather than the repository's base branch, so it builds on work that is pushed but not yet merged. Its pull request is based on the blocker's branch and can never merge before it.
+_Avoid_: chain, stacked diff
+
+**Restack**:
+A Run that only rebases a stacked branch onto its blocker's new tip and pushes it, started when a follow-up Run moved the branch underneath it. It implements nothing and opens no pull request.
+_Avoid_: rebase Run, sync
+
+**Held Ticket**:
+A Ticket that is Ready but deliberately not queued, because a blocker is not built yet, it has several unmerged blockers, or its dependencies are invalid. It describes the Ticket, unlike Held, which describes the machine.
+_Avoid_: blocked Run, waiting Run
+
 ### Human oversight
 
 **Gate**:
