@@ -2,7 +2,14 @@ import { mkdtemp, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { RUN_RECORD_VERSION, type RunRecord, runBaseBranch, runKey } from '../src/contracts/run.ts';
+import {
+  RUN_RECORD_VERSION,
+  type RunRecord,
+  TriggerSchema,
+  answerKey,
+  runBaseBranch,
+  runKey,
+} from '../src/contracts/run.ts';
 import { RunRegistry, isActive } from '../src/registry/registry.ts';
 
 const now = new Date().toISOString();
@@ -67,6 +74,22 @@ describe('RunRegistry', () => {
     const registry = new RunRegistry(await mkdtemp(join(tmpdir(), 'reg-')));
     await expect(registry.write({ ...record('x'), status: 'weird' } as never)).rejects.toThrow();
   });
+
+  it('keys an answer Trigger by the Run it answers', () => {
+    const ref = 'github:me/repo#1';
+    expect(runKey(ref, { kind: 'answer', runId: 'r1' })).toBe('github:me/repo#1:answer:r1');
+    expect(runKey(ref, { kind: 'answer', runId: 'r1' })).toBe(answerKey(ref, 'r1'));
+  });
+});
+
+describe('TriggerSchema', () => {
+  it('accepts the answer kind with a Run id', () => {
+    expect(TriggerSchema.parse({ kind: 'answer', runId: 'r1' })).toEqual({
+      kind: 'answer',
+      runId: 'r1',
+    });
+    expect(TriggerSchema.safeParse({ kind: 'answer' }).success).toBe(false);
+  });
 });
 
 describe('runKey', () => {
@@ -78,5 +101,21 @@ describe('runKey', () => {
     expect(runKey(ref, { kind: 'ci-failed', prNumber: 3, headSha: 's1' })).not.toBe(
       runKey(ref, { kind: 'ci-failed', prNumber: 3, headSha: 's2' }),
     );
+  });
+
+  it('keys an answer Trigger by the Run it answers', () => {
+    const ref = 'github:me/repo#1';
+    expect(runKey(ref, { kind: 'answer', runId: 'r1' })).toBe('github:me/repo#1:answer:r1');
+    expect(runKey(ref, { kind: 'answer', runId: 'r1' })).toBe(answerKey(ref, 'r1'));
+  });
+});
+
+describe('TriggerSchema', () => {
+  it('accepts the answer kind with a Run id', () => {
+    expect(TriggerSchema.parse({ kind: 'answer', runId: 'r1' })).toEqual({
+      kind: 'answer',
+      runId: 'r1',
+    });
+    expect(TriggerSchema.safeParse({ kind: 'answer' }).success).toBe(false);
   });
 });
