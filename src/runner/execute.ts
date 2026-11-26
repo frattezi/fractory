@@ -16,6 +16,7 @@ import type { Ticket, TicketSource } from '../contracts/ticket.ts';
 import { loadFlow } from '../flows/load.ts';
 import type { Flow, FlowAgents } from '../flows/types.ts';
 import { assertOutboundAllowed, forbiddenMatches } from '../policy/outbound.ts';
+import { readAnswerRequest } from '../registry/answers.ts';
 import {
   consumedCommentIds,
   formatAmComments,
@@ -142,9 +143,29 @@ class Executor {
     return undefined;
   }
 
+  /**
+   * The answered Run's question and the owner's answer, both read from the registry. A part that
+   * cannot be read is left undefined: the prompt then points the agent at the Ticket's comments.
+   */
+  private async answerFollowUp(record: RunRecord, runId: string): Promise<FollowUp> {
+    const request = await readAnswerRequest(this.registry.dir, runId);
+    if (!request) await this.log(record, `could not read the answer request of Run ${runId}`);
+    const answered = await this.registry.get(runId).catch(() => undefined);
+    const result = answered?.result;
+    const asked = result?.outcome === 'needs-human' ? result : undefined;
+    if (!asked) await this.log(record, `could not read the needs-human question of Run ${runId}`);
+    return {
+      kind: 'answer',
+      reason: asked?.reason,
+      question: asked?.question,
+      answer: request?.answer,
+    };
+  }
+
   private async followUp(record: RunRecord): Promise<FollowUp | undefined> {
     const { trigger } = record;
     const cwd = record.repoPath;
+    if (trigger.kind === 'answer') return this.answerFollowUp(record, trigger.runId);
     if (trigger.kind === 'ci-failed') {
       try {
         const list = GhRunListSchema.parse(

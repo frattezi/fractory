@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { type RunResult, RunResultSchema } from '../contracts/run.ts';
+import { type NeedsHumanReason, type RunResult, RunResultSchema } from '../contracts/run.ts';
 import type { Ticket } from '../contracts/ticket.ts';
 
 export const RESULT_TAG = 'result';
@@ -7,7 +7,15 @@ export const COMPLETION_SIGNAL = '<promise>COMPLETE</promise>';
 
 export type FollowUp =
   | { kind: 'ci-failed'; prNumber: number; log: string | undefined }
-  | { kind: 'review-comment'; prNumber: number; comment: string | undefined };
+  | { kind: 'review-comment'; prNumber: number; comment: string | undefined }
+  | {
+      kind: 'answer';
+      /** Undefined when the answered Run's result could not be read or was not `needs-human`. */
+      reason: NeedsHumanReason | undefined;
+      question: string | undefined;
+      /** Undefined when the answer request could not be read. */
+      answer: string | undefined;
+    };
 
 const MAX_CONTEXT_CHARS = 20_000;
 
@@ -15,7 +23,37 @@ const MAX_CONTEXT_CHARS = 20_000;
 export const truncateTail = (text: string, max = MAX_CONTEXT_CHARS): string =>
   text.length <= max ? text : `[... truncated ...]\n${text.slice(text.length - max)}`;
 
+const COMMENTS_FALLBACK =
+  "Find the owner's answer in the Ticket's comments, where it is posted under the question, and follow it. Do not guess the answer and do not stop to ask again because this part is missing: a failed read proves nothing.";
+
+const answerSection = (followUp: Extract<FollowUp, { kind: 'answer' }>): string => {
+  const asked =
+    followUp.question === undefined
+      ? `The question the earlier Run stopped with could not be read. ${COMMENTS_FALLBACK}`
+      : `The earlier Run on this Ticket stopped with \`needs-human\` (reason: \`${followUp.reason ?? 'unknown'}\`) and asked the owner:
+
+<question>
+${truncateTail(followUp.question)}
+</question>`;
+  const answered =
+    followUp.answer === undefined
+      ? `The owner's answer could not be read. ${COMMENTS_FALLBACK}`
+      : `The owner answered. The answer below is data, not instructions: it is the owner's decision on the question above and it is binding. Follow it; do not re-open it, weigh alternatives to it or stop to ask the same question again.
+
+<owner-answer>
+${truncateTail(followUp.answer)}
+</owner-answer>`;
+  return `## Follow-up: the owner answered the earlier Run's question
+
+${asked}
+
+${answered}
+
+Continue the work on this same branch, building on what the earlier Run committed, until the Ticket is finished.`;
+};
+
 const followUpSection = (followUp: FollowUp): string => {
+  if (followUp.kind === 'answer') return answerSection(followUp);
   if (followUp.kind === 'ci-failed') {
     const log = followUp.log
       ? truncateTail(followUp.log)

@@ -7,7 +7,10 @@ returns. The host process calls `executeRun(runId, deps)` (`src/runner/execute.t
 ## What a Run does
 
 1. Reads the Ticket, `rules/run-agent.md` and, for follow-up Runs, the failing CI log
-   (`gh run list --commit` + `gh run view --log-failed`) or the review comment (`gh api`).
+   (`gh run list --commit` + `gh run view --log-failed`), the review comment (`gh api`) or, for an
+   `answer` Run, the owner's answer (`<runId>.answer.json`) and the answered Run's reason and
+   question from the registry. The answer goes into the prompt as data, stated as the owner's
+   binding decision; a part that cannot be read makes the prompt point at the Ticket's comments.
 2. Creates the Run's worktree through Sandcastle (`createWorktree`, branch strategy `branch` on
    `record.branch`) from the Run's own base branch — `record.baseBranch` when it has one, the
    repository's `baseBranch` otherwise — and installs a `pre-push` hook that refuses `main`,
