@@ -72,6 +72,7 @@ export interface TickSummary {
 const launchGroup = (run: RunRecord): number => {
   switch (run.trigger.kind) {
     case 'manual':
+    case 'answer':
       return 0;
     case 'ci-failed':
     case 'review-comment':
