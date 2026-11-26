@@ -7,6 +7,7 @@ import {
   RUN_RECORD_VERSION,
   type RunRecord,
   type Trigger,
+  answerRequestPath,
   commentsFilePath,
   runKey,
 } from '../src/contracts/run.ts';
@@ -403,6 +404,39 @@ describe('executeRun', () => {
     expect(prompt).toContain('src/c3.ts:3\nbody of c3');
     expect(prompt).not.toContain('body of c1');
     expect(prompt).not.toContain('body of c4');
+  });
+
+  it('builds an answer follow-up from the answer file and the answered Run result', async () => {
+    const t = await setup({ trigger: { kind: 'answer', runId: 'run0' } });
+    await t.registry.write({
+      ...t.record,
+      id: 'run0',
+      key: 'github:me/repo#1:ticket-ready',
+      trigger: { kind: 'ticket-ready' },
+      status: 'needs-human',
+      result: { outcome: 'needs-human', reason: 'ambiguous-spec', question: 'Seconds or ms?' },
+    });
+    await writeFile(
+      answerRequestPath(t.registry.dir, 'run0'),
+      JSON.stringify({ version: 1, answeredAt: new Date().toISOString(), answer: 'Use ms.' }),
+    );
+    const record = await executeRun('run1', t.deps);
+    const prompt = t.agentRequests[0]?.prompt ?? '';
+    expect(record.status).toBe('done');
+    expect(prompt).toContain('`ambiguous-spec`');
+    expect(prompt).toContain('<question>\nSeconds or ms?\n</question>');
+    expect(prompt).toContain('<owner-answer>\nUse ms.\n</owner-answer>');
+    expect(prompt).not.toContain('could not be read');
+  });
+
+  it('runs an answer Run whose answer file and answered Run are missing', async () => {
+    const t = await setup({ trigger: { kind: 'answer', runId: 'gone' } });
+    const record = await executeRun('run1', t.deps);
+    const prompt = t.agentRequests[0]?.prompt ?? '';
+    expect(record.status).toBe('done');
+    expect(prompt).toContain("The owner's answer could not be read");
+    expect(prompt).toContain('question the earlier Run stopped with could not be read');
+    expect(prompt).toContain("Ticket's comments");
   });
 
   it('records a follow-up Run as done when the agent named the result tag in prose', async () => {
