@@ -34,6 +34,7 @@ import { type InitOptions, initRepo } from './package/init.ts';
 import { installSkills } from './package/install.ts';
 import { readHostLoad } from './policy/resources.ts';
 import { describeWorkflow, formatWorkflow } from './policy/workflow.ts';
+import { type RunShell, defaultRunShell, rebuild } from './rebuild/rebuild.ts';
 import { AutomationStore } from './registry/automations.ts';
 import { readHostState } from './registry/host-state.ts';
 import { RunRegistry } from './registry/registry.ts';
@@ -55,6 +56,7 @@ export interface CliEnv {
   launchAgentsDir: string;
   uid: number;
   exec: Exec;
+  runShell: RunShell;
   gh: Gh;
   launchctl: Launchctl;
   resolveBin: (name: string) => string | undefined;
@@ -89,6 +91,7 @@ export const defaultEnv = (): CliEnv => {
     launchAgentsDir: join(home, 'Library', 'LaunchAgents'),
     uid: process.getuid?.() ?? 0,
     exec: defaultExec,
+    runShell: defaultRunShell,
     gh: createGh(defaultExec),
     launchctl: realLaunchctl,
     resolveBin: (name) => resolveBin(name),
@@ -149,6 +152,7 @@ const HELP = `Usage: fractory <command>
   automation-exec <automationId> <runId>
   status [repoPath] [--json]
   config show [repoPath]
+  rebuild [repoPath...]
   rules [repoPath] [--json]
   launchd install|uninstall
   init <repoPath> --mode work|personal --ci|--no-ci (--github owner/name | --jira-url ...) [--force]
@@ -379,6 +383,15 @@ const commands: Record<string, (args: CliArgs, env: CliEnv) => Promise<void>> = 
         all[repoPath] = describeRepoConfig(await loadRepoConfig(repoPath));
       env.out(JSON.stringify(all, null, 2));
     }
+  },
+
+  /** Runs each configured repo's `rebuild` list, or only the named repos'. Never touches git. */
+  async rebuild(args, env) {
+    const factory = await loadFactory(env);
+    await rebuild(
+      { repos: factory.repos, loadRepoConfig, runShell: env.runShell, out: env.out },
+      args.positionals.map((p) => resolve(env.cwd, p)),
+    );
   },
 
   /** What an interactive agent checks before working in a repo: Mode, Runs, hands-off branches. */
