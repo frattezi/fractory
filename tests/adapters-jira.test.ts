@@ -273,6 +273,67 @@ describe('jira adapter', () => {
       expect(calls.some((c) => c.path.endsWith('/transitions') && c.method === 'POST')).toBe(true);
     });
 
+    it('writes a Relations section with full refs that reads back as the same relations', async () => {
+      let description: unknown;
+      const { fetch } = fakeFetch((call) => {
+        if (call.method === 'POST' && call.path === '/rest/api/3/issue') {
+          description = (call.body as { fields: { description: unknown } }).fields.description;
+          return json({ key: 'ABC-12' }, 201);
+        }
+        return json(jiraIssue({ description }));
+      });
+      const options = { fetch, sleep, env, mode: 'personal' } as const;
+      const created = await createTicket(
+        config,
+        {
+          title: 'T',
+          body: 'B',
+          status: 'backlog',
+          parent: 'jira:ABC-1',
+          blockedBy: ['jira:ABC-2', 'github:acme/app#3'],
+        },
+        options,
+      );
+      expect(flattenAdf(description as never)).toBe(
+        'B\n\n## Relations\n\nBlocked by: jira:ABC-2\nBlocked by: github:acme/app#3\nParent: jira:ABC-1',
+      );
+
+      const ticket = await createTicketSource(config, options).get(created.ref);
+      expect(ticket).toMatchObject({
+        blockedBy: ['jira:ABC-2', 'github:acme/app#3'],
+        parent: 'jira:ABC-1',
+        relationErrors: [],
+      });
+    });
+
+    it('reads blockers from the older prose form against its own project', async () => {
+      const description = doc(
+        para(text('B')),
+        para(text('Parent: ABC-1'), { type: 'hardBreak' }, text('Blocked by ABC-2')),
+      );
+      const { fetch } = fakeFetch(() => json({ issues: [jiraIssue({ description })] }));
+      const [ticket] = await source(fetch).listReady();
+      expect(ticket).toMatchObject({
+        blockedBy: ['jira:ABC-2'],
+        parent: 'jira:ABC-1',
+        relationErrors: [],
+      });
+    });
+
+    it('reads no blockers without a Relations section and reports a malformed ref', async () => {
+      const plain = fakeFetch(() => json(jiraIssue({ description: null })));
+      const none = await source(plain.fetch).get(ref);
+      expect(none.blockedBy).toEqual([]);
+      expect(none.relationErrors).toEqual([]);
+
+      const bad = fakeFetch(() =>
+        json(jiraIssue({ description: 'B\n\n## Relations\n\nBlocked by: abc-2, jira:ABC-3' })),
+      );
+      const ticket = await source(bad.fetch).get(ref);
+      expect(ticket.blockedBy).toEqual(['jira:ABC-3']);
+      expect(ticket.relationErrors).toEqual(['Blocked by: "abc-2" is not a Ticket ref']);
+    });
+
     it('applies the outbound policy to title and body', async () => {
       const { fetch, calls } = fakeFetch(() => json({}));
       const options = { fetch, sleep, env, mode: 'work' } as const;

@@ -15,6 +15,8 @@ const ticket: Ticket = {
   url: 'https://github.com/me/repo/issues/1',
   status: 'ready',
   updatedAt: new Date().toISOString(),
+  blockedBy: [],
+  relationErrors: [],
 };
 
 describe('buildPrompt', () => {

@@ -34,6 +34,8 @@ export const makeTicket = (
   url: `https://github.com/me/app/issues/${n}`,
   status,
   updatedAt: '2026-01-01T00:00:00.000Z',
+  blockedBy: [],
+  relationErrors: [],
 });
 
 export class FakeSource implements TicketSource {
