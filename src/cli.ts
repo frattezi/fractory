@@ -18,6 +18,7 @@ import {
   loadFactoryConfig,
   loadRepoConfig,
 } from './config/index.ts';
+import type { AutomationRunRecord } from './contracts/automation.ts';
 import type { FactoryConfig } from './contracts/factory-config.ts';
 import {
   type Mode,
@@ -33,8 +34,10 @@ import { type InitOptions, initRepo } from './package/init.ts';
 import { installSkills } from './package/install.ts';
 import { readHostLoad } from './policy/resources.ts';
 import { describeWorkflow, formatWorkflow } from './policy/workflow.ts';
+import { AutomationStore } from './registry/automations.ts';
 import { readHostState } from './registry/host-state.ts';
 import { RunRegistry } from './registry/registry.ts';
+import { launchAutomationRun } from './runner/automation.ts';
 import { launchRun } from './runner/index.ts';
 import { formatHost, formatStatus, repoStatus } from './status/status.ts';
 import { type Launchctl, installLaunchd, resolveBin, uninstallLaunchd } from './trigger/launchd.ts';
@@ -61,6 +64,7 @@ export interface CliEnv {
     options: { mode: Mode },
   ) => Promise<CreatedTicket>;
   launchRun: (record: RunRecord, config: RepoConfig) => Promise<void>;
+  launchAutomationRun: (record: AutomationRunRecord, factory: FactoryConfig) => Promise<void>;
   makeLogger: (factory: FactoryConfig) => Logger;
   now: () => Date;
   newId: () => string;
@@ -90,6 +94,8 @@ export const defaultEnv = (): CliEnv => {
     createTicketSource: (config, mode) => createTicketSource(config, { mode }),
     createTicket,
     launchRun,
+    launchAutomationRun: (record, factory) =>
+      launchAutomationRun(record, { store: new AutomationStore(factory.automationsDir) }),
     makeLogger: (factory) => createFileLogger(join(factory.logDir, 'tick.log')),
     now: () => new Date(),
     newId: () => randomUUID(),
@@ -138,6 +144,7 @@ const HELP_NAMES = new Set(['help', '--help', '-h']);
 
 const HELP = `Usage: fractory <command>
   tick | cleanup | runs | run <ticketRef> | run-exec <id>
+  automation-exec <automationId> <runId>
   status [repoPath] [--json]
   config show [repoPath]
   rules [repoPath] [--json]
@@ -191,6 +198,7 @@ const commands: Record<string, (args: CliArgs, env: CliEnv) => Promise<void>> = 
       createTicketSource: env.createTicketSource,
       gh: env.gh,
       launchRun: env.launchRun,
+      launchAutomationRun: (record) => env.launchAutomationRun(record, factory),
       checkPid,
       now: env.now,
       newId: env.newId,
@@ -284,6 +292,18 @@ const commands: Record<string, (args: CliArgs, env: CliEnv) => Promise<void>> = 
       ticketSource: (repoConfig) =>
         env.createTicketSource(repoConfig.ticketSource, repoConfig.mode),
     });
+  },
+
+  /**
+   * The host process of a launched Automation Run. Executing the Automation's work is not built
+   * yet, so it exits without a result and a later tick marks the Run failed.
+   */
+  async 'automation-exec'(args) {
+    const [automationId, runId] = args.positionals;
+    if (!automationId || !runId) {
+      throw new Error('Usage: fractory automation-exec <automationId> <runId>');
+    }
+    throw new Error(`Automation Run ${runId}: executing Automation Runs is not supported yet`);
   },
 
   async config(args, env) {

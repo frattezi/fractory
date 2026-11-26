@@ -117,6 +117,8 @@ export const AutomationRunRecordSchema = z.object({
   updatedAt: z.string().datetime(),
   logPath: z.string().min(1),
   outputPath: z.string().min(1),
+  /** The host process running this Automation Run, recorded when it launches. */
+  pid: z.number().int().optional(),
   /** Set once the Run finishes. */
   result: RunResultSchema.optional(),
 });

@@ -203,6 +203,12 @@ describe('Automation Run record', () => {
     expect(parseAutomationRunRecord(running).ok).toBe(true);
   });
 
+  it('keeps the pid of a launched Automation Run and refuses a non-integer one', () => {
+    const running = { ...record(), status: 'running', pid: 4242 };
+    expect(parseAutomationRunRecord(running)).toMatchObject({ ok: true, value: { pid: 4242 } });
+    expect(refusal(parseAutomationRunRecord({ ...running, pid: 1.5 }))).toMatch(/pid:/);
+  });
+
   it('refuses a wrong version and says so', () => {
     expect(refusal(parseAutomationRunRecord({ ...record(), version: 0 }))).toMatch(
       /Unsupported Automation Run record version 0/,

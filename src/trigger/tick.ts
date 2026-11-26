@@ -1,4 +1,5 @@
 import { join } from 'node:path';
+import type { AutomationRunRecord } from '../contracts/automation.ts';
 import type { FactoryConfig } from '../contracts/factory-config.ts';
 import { HOST_STATE_VERSION, type HostState } from '../contracts/host-state.ts';
 import type { Mode, RepoConfig } from '../contracts/repo-config.ts';
@@ -14,6 +15,7 @@ import type { TicketSource } from '../contracts/ticket.ts';
 import { type Gh, feedbackItems, summarizeChecks } from '../github/gh.ts';
 import { type HostLoad, checkResources } from '../policy/resources.ts';
 import { mayAutoMerge } from '../policy/workflow.ts';
+import { AutomationStore } from '../registry/automations.ts';
 import { consumedCommentIds, pendingComments, readRunComments } from '../registry/comments.ts';
 import { readHostState, writeHostState } from '../registry/host-state.ts';
 import type { RunRegistry } from '../registry/registry.ts';
@@ -29,6 +31,8 @@ export interface TickDeps {
   createTicketSource(config: TicketSourceConfig, mode: Mode): TicketSource;
   gh: Gh;
   launchRun(record: RunRecord, config: RepoConfig): Promise<void>;
+  /** Starts a queued Automation Run's host process, recording its pid and `running`. */
+  launchAutomationRun(record: AutomationRunRecord): Promise<void>;
   checkPid(pid: number): PidState;
   now(): Date;
   newId(): string;
@@ -50,7 +54,15 @@ export interface TickSummary {
   /** Why queued Runs were held back this tick by the resource limits. */
   held?: string;
   /** Automation requests read this tick (Spec 0003). */
-  automations: { queued: string[]; refused: string[]; discarded: string[] };
+  automations: {
+    queued: string[];
+    refused: string[];
+    discarded: string[];
+    /** Automation Run ids launched this tick. */
+    launched: string[];
+    /** Automation Run ids marked failed because their host process is gone. */
+    markedDead: string[];
+  };
 }
 
 /** Launch priority: what the owner asked for, then follow-ups, then newly Ready Tickets. */
@@ -65,6 +77,10 @@ const launchGroup = (run: RunRecord): number => {
       return 2;
   }
 };
+
+type Launchable =
+  | { kind: 'run'; run: RunRecord }
+  | { kind: 'automation'; run: AutomationRunRecord };
 
 const byCreatedAt = (a: RunRecord, b: RunRecord): number => a.createdAt.localeCompare(b.createdAt);
 /** PR number from the newest Run's `.../pull/<n>` URL; reading it needs no network call. */
@@ -88,7 +104,7 @@ export const tick = async (deps: TickDeps): Promise<TickSummary> => {
     merged: [],
     ticketsDone: [],
     errors: 0,
-    automations: { queued: [], refused: [], discarded: [] },
+    automations: { queued: [], refused: [], discarded: [], launched: [], markedDead: [] },
   };
   const { log, registry, factory } = deps;
   const lock = await acquireLock(join(factory.logDir, 'tick.lock'), deps.now);
@@ -125,6 +141,41 @@ export const tick = async (deps: TickDeps): Promise<TickSummary> => {
     await source
       .setStatus(latest.ticketRef, 'in_progress')
       .catch((e) => fail(`status ${latest.ticketRef}`, e));
+  };
+
+  const automationStore = new AutomationStore(factory.automationsDir);
+
+  /** Automation Run records; a failed listing is reported and treated as none this tick. */
+  const listAutomationRuns = async (): Promise<AutomationRunRecord[]> => {
+    try {
+      return await automationStore.listAllRuns();
+    } catch (error) {
+      fail('Automation Runs', error);
+      return [];
+    }
+  };
+
+  /** Same rule as Runs: only a conclusive `dead` marks an Automation Run failed. */
+  const markDeadAutomations = async (): Promise<void> => {
+    for (const run of await listAutomationRuns()) {
+      if (run.status !== 'running' || run.pid === undefined) continue;
+      try {
+        if (deps.checkPid(run.pid) !== 'dead') continue;
+        // Re-read: the Run may have finished between our listing and the pid check.
+        const fresh = await automationStore.getRun(run.automationId, run.id);
+        if (!fresh || fresh.status !== 'running' || fresh.pid !== run.pid) continue;
+        await automationStore.writeRun({
+          ...fresh,
+          status: 'failed',
+          updatedAt: deps.now().toISOString(),
+          result: { outcome: 'failed', summary: 'Host process exited without recording a result.' },
+        });
+        summary.automations.markedDead.push(run.id);
+        log.warn(`Automation Run ${run.id} marked failed: pid ${run.pid} is gone`);
+      } catch (error) {
+        fail(`dead-run check of Automation Run ${run.id}`, error);
+      }
+    }
   };
 
   const markDead = async (repoPath: string): Promise<void> => {
@@ -364,12 +415,28 @@ export const tick = async (deps: TickDeps): Promise<TickSummary> => {
     }
   };
 
+  /**
+   * Runs and Automation Runs share one launch gate: the Host Limits, the per-tick launch cap and
+   * the in-flight limit. Automation Runs go last, behind every Trigger kind, so a chore never
+   * delays a Ticket.
+   */
   const startQueued = async (): Promise<void> => {
     const all = await registry.list();
-    let running = all.filter((r) => r.status === 'running').length;
-    const queued = all
-      .filter((r) => r.status === 'queued' && factory.repos.includes(r.repoPath))
-      .sort((a, b) => launchGroup(a) - launchGroup(b) || byCreatedAt(a, b));
+    const automationRuns = await listAutomationRuns();
+    let running =
+      all.filter((r) => r.status === 'running').length +
+      automationRuns.filter((r) => r.status === 'running').length;
+    const queued: Launchable[] = [
+      ...all
+        .filter((r) => r.status === 'queued' && factory.repos.includes(r.repoPath))
+        .sort((a, b) => launchGroup(a) - launchGroup(b) || byCreatedAt(a, b))
+        .map((run) => ({ kind: 'run' as const, run })),
+      ...automationRuns
+        .filter((r) => r.status === 'queued')
+        .sort((a, b) => a.startedAt.localeCompare(b.startedAt) || a.id.localeCompare(b.id))
+        .map((run) => ({ kind: 'automation' as const, run })),
+    ];
+    let launchedCount = 0;
     const limits = factory.resources;
     let readings: HostState['readings'];
     let reason: string | undefined;
@@ -385,10 +452,10 @@ export const tick = async (deps: TickDeps): Promise<TickSummary> => {
       }
     };
 
-    for (const run of queued) {
+    for (const item of queued) {
       if (running >= factory.maxConcurrentRuns) break;
       if (limits) {
-        if (summary.launched.length >= limits.maxLaunchesPerTick) break;
+        if (launchedCount >= limits.maxLaunchesPerTick) break;
         const load = await readHost();
         readings = {
           ...(load.loadPerCore !== undefined && { loadPerCore: load.loadPerCore }),
@@ -403,12 +470,23 @@ export const tick = async (deps: TickDeps): Promise<TickSummary> => {
         if (!verdict.ok) {
           reason = verdict.reason;
           summary.held = verdict.reason;
-          log.info(
-            `holding ${queued.length - summary.launched.length} queued Run(s): ${verdict.reason}`,
-          );
+          log.info(`holding ${queued.length - launchedCount} queued Run(s): ${verdict.reason}`);
           break;
         }
       }
+      if (item.kind === 'automation') {
+        try {
+          await deps.launchAutomationRun(item.run);
+          running++;
+          launchedCount++;
+          summary.automations.launched.push(item.run.id);
+          log.info(`launched Automation Run ${item.run.id}`);
+        } catch (error) {
+          fail(`launch of Automation Run ${item.run.id}`, error);
+        }
+        continue;
+      }
+      const { run } = item;
       try {
         let config = repoConfigs.get(run.repoPath);
         if (!config) {
@@ -417,6 +495,7 @@ export const tick = async (deps: TickDeps): Promise<TickSummary> => {
         }
         await deps.launchRun(run, config);
         running++;
+        launchedCount++;
         summary.launched.push(run.id);
         log.info(`launched Run ${run.id}`);
       } catch (error) {
@@ -424,7 +503,7 @@ export const tick = async (deps: TickDeps): Promise<TickSummary> => {
       }
     }
     await recordHostState({
-      queued: Math.max(0, queued.length - summary.launched.length),
+      queued: Math.max(0, queued.length - launchedCount),
       readings,
       reason,
     });
@@ -479,11 +558,12 @@ export const tick = async (deps: TickDeps): Promise<TickSummary> => {
         fail(`repo ${repoPath}`, error);
       }
     }
+    await markDeadAutomations();
     // After Re-runs, before launches. Automation Runs live apart from the Run registry, so they
     // never set a Ticket status and never reach the pull-request path.
     const { errors, ...automations } = await acceptAutomationRequests(deps);
     summary.errors += errors;
-    summary.automations = automations;
+    summary.automations = { ...summary.automations, ...automations };
     await startQueued();
     if (deps.afterTick) {
       try {
@@ -496,7 +576,7 @@ export const tick = async (deps: TickDeps): Promise<TickSummary> => {
     await lock.release();
   }
   log.info(
-    `tick done: dead=${summary.markedDead.length} queued=${summary.queued.length} launched=${summary.launched.length} merged=${summary.merged.length} automations=${summary.automations.queued.length} errors=${summary.errors}`,
+    `tick done: dead=${summary.markedDead.length} queued=${summary.queued.length} launched=${summary.launched.length} merged=${summary.merged.length} automations=${summary.automations.queued.length} automationsLaunched=${summary.automations.launched.length} errors=${summary.errors}`,
   );
   return summary;
 };

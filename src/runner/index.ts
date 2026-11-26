@@ -29,7 +29,10 @@ export const defaultCommand = (record: RunRecord): SpawnCommand => ({
   cwd: FRACTORY_ROOT,
 });
 
-const defaultSpawnDetached = (command: SpawnCommand, logPath: string): number | undefined => {
+export const defaultSpawnDetached = (
+  command: SpawnCommand,
+  logPath: string,
+): number | undefined => {
   mkdirSync(dirname(logPath), { recursive: true });
   const fd = openSync(logPath, 'a');
   try {
