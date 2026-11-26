@@ -30,6 +30,10 @@ Break an approved **Spec** into **Tickets**: tracer-bullet vertical slices, each
    ```
 
    It prints the created Ticket as JSON (`{"ref": "...", "url": "..."}`); use `ref` in later `--blocked-by` flags. `--status` is `backlog` when the Ticket Gate is on and `ready` when it is off. Never create a Ticket as `ready` when the gate is on: a Ticket becoming Ready is what starts a Run.
+
+   `--blocked-by` and `--parent` are written into a `## Relations` section at the end of the body, as full Ticket refs, and read back from there: a blocker is data the factory can act on, not a note for the reader. Edit that section in the tracker and the factory sees the change.
+
+   **What the factory does with a blocker today** (Spec 0004 is landing in slices): Ready Tickets are queued blockers first, by ascending Ticket order, so a chain never starts backwards. Holding a Ticket whose blocker is not finished is **not live yet** — until it is, a chain created Ready all at once still runs in parallel and the later Tickets can meet work that has not merged. Create a chain with the first Ticket `ready` and the rest `backlog`, and release each as its blocker merges.
 6. **Report.** Tell the owner how many Tickets were created and their refs. When the Ticket Gate is on, say that they are in backlog and that moving them to Ready is the owner's approval at the Ticket Gate. Do not do it for them.
 
 In a Work Mode repo, Ticket titles and bodies go to a shared tracker: write them as a developer would, with no mention of Fractory, agents, Claude or AI tooling. The CLI rejects text that does.
