@@ -288,6 +288,7 @@ export const tick = async (deps: TickDeps): Promise<TickSummary> => {
           config,
           checks,
           mergeable: pr.mergeable,
+          baseBranch: pr.baseRefName,
           latestRunStatus: ticketLatest.status,
         });
         if (mayMerge) {

@@ -14,6 +14,8 @@ export const PrViewSchema = z.object({
   number: z.number().int(),
   state: z.enum(['OPEN', 'MERGED', 'CLOSED']),
   mergeable: z.string().default('UNKNOWN'),
+  /** The branch the PR merges into. */
+  baseRefName: z.string(),
   headRefOid: z.string(),
   statusCheckRollup: z
     .array(CheckSchema)
@@ -96,7 +98,7 @@ export const createGh = (exec: Exec = defaultExec): Gh => ({
         'view',
         pr,
         '--json',
-        'number,state,mergeable,statusCheckRollup,reviews,comments,headRefOid',
+        'number,state,mergeable,baseRefName,statusCheckRollup,reviews,comments,headRefOid',
       ],
       { cwd },
     );

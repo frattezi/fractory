@@ -54,6 +54,7 @@ describe('createGh', () => {
           number: 7,
           state: 'OPEN',
           mergeable: 'MERGEABLE',
+          baseRefName: 'main',
           headRefOid: 'abc',
           statusCheckRollup: null,
           reviews: [],
@@ -65,7 +66,7 @@ describe('createGh', () => {
     };
     const gh = createGh(exec);
     const pr = await gh.viewPr('/repo', 'https://github.com/me/app/pull/7');
-    expect(pr).toMatchObject({ number: 7, statusCheckRollup: [] });
+    expect(pr).toMatchObject({ number: 7, baseRefName: 'main', statusCheckRollup: [] });
     expect(await gh.currentUser()).toBe('factory-bot');
     await gh.mergeSquash('/repo', 'https://github.com/me/app/pull/7');
     expect(calls.at(-1)).toEqual({
@@ -74,11 +75,15 @@ describe('createGh', () => {
       cwd: '/repo',
     });
     expect(calls[0]?.args).toContain(
-      'state,mergeable,statusCheckRollup,reviews,comments,headRefOid'.replace(
-        'state,',
-        'number,state,',
-      ),
+      'number,state,mergeable,baseRefName,statusCheckRollup,reviews,comments,headRefOid',
     );
+  });
+
+  it('rejects a PR view without its base branch instead of guessing', async () => {
+    const gh = createGh(async () =>
+      JSON.stringify({ number: 7, state: 'OPEN', mergeable: 'MERGEABLE', headRefOid: 'abc' }),
+    );
+    await expect(gh.viewPr('/r', 'u')).rejects.toThrow();
   });
 
   it('rejects malformed gh output instead of guessing', async () => {

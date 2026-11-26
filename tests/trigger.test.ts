@@ -535,6 +535,12 @@ describe('PR handling', () => {
         merges: false,
       },
       {
+        name: 'a PR based on another branch is never merged',
+        config: personalRepo,
+        pr: { baseRefName: 'fractory/1-blocker' },
+        merges: false,
+      },
+      {
         name: 'pending checks wait',
         config: personalRepo,
         pr: { statusCheckRollup: [{ status: 'IN_PROGRESS', conclusion: null }] },
