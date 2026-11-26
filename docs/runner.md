@@ -28,6 +28,20 @@ returns. The host process calls `executeRun(runId, deps)` (`src/runner/execute.t
    one, moves the Ticket to `in_review`. Auto-merge refuses any PR whose base is not the
    repository's base branch, so a Run built on another Run's branch cannot land before it. `failed` and `needs-human` never push or open a PR.
 6. `needs-human`: Personal Mode comments the question on the Ticket; Work Mode never posts it.
+   The owner answers it in Fractory Manager (`A` on the Run's row), which writes
+   `<registryDir>/<runId>.answer.json`. Until the next tick picks it up, `fractory status` lists
+   the question as `(answered, waiting for the next tick)`.
+
+## Answer Runs
+
+`handleAnswers` in the tick (`src/trigger/tick.ts`) turns each answer file into a Run with the
+`answer` Trigger (`{ kind: 'answer', runId }`), keyed `<ticketRef>:answer:<runId>`, on the Ticket's
+branch. It skips, and logs why, an Answer whose key already has a Run, whose Run is not the
+Ticket's latest or is not `needs-human`; it waits silently while a Run on the Ticket is queued or
+running. Before queueing it posts the Answer on the Ticket (through `assertOutboundAllowed` in Work
+Mode); a comment that cannot be posted is logged and the Run is queued anyway. Answer Runs launch
+first, with Re-runs, before follow-ups and new Tickets. Fractory only reads answer files: Fractory
+Manager is their only writer.
 
 Structured output uses our own tag parsing rather than Sandcastle's `Output.object`, because
 Sandcastle requires `maxIterations: 1` with it.

@@ -42,7 +42,7 @@ to work this out yourself.
 | One small change, as a Ticket | `fractory tickets create --title … --body-file … --status backlog`; `ready` only if the owner says so |
 | A Ticket built now | `fractory run <ticketRef>` (only when asked; the next tick starts it) |
 | A Run's change adjusted | a review comment on the PR, or the owner's comments in Fractory Manager; never a hand commit on its branch |
-| A Run that stopped with needs-human unblocked | show the `question`; help the owner fix the Ticket, access or budget; then `fractory run <ticketRef>` |
+| A Run that stopped with needs-human unblocked | show the `question` and help the owner decide; they answer it in Fractory Manager (`A` on the Run's row), and the next tick starts a Run on the Ticket's branch with the Answer. An entry marked `answered` is already waiting: do not ask again |
 | To know what happened | `fractory runs`; the Run's log is its `logPath` |
 | The installed tools refreshed after merges | `fractory rebuild` (see below) |
 

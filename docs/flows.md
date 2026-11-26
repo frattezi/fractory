@@ -19,7 +19,7 @@ type Flow = (ctx: FlowContext) => Promise<RunResult>;
 | --- | --- |
 | `ticket` | The Ticket (`ref`, `title`, `body`, `url`, ...) |
 | `repoConfig` | The repository's `.fractory.json`, parsed (`mode`, `baseBranch`, ...) |
-| `followUp` | CI log or review comment for a follow-up Run, already loaded; `undefined` otherwise |
+| `followUp` | CI log, review comment or Answer for a follow-up Run, already loaded; `undefined` otherwise (see below) |
 | `rules` | Text of `rules/run-agent.md` |
 | `worktree` | The real Sandcastle `Worktree` Fractory created. Call `worktree.run(...)` or `worktree.createSandbox(...)` |
 | `sandbox` | The Docker sandbox provider for the repo's `sandboxImage`. Pass it as `sandbox` |
@@ -40,6 +40,27 @@ The return value is a `RunResult` (`src/contracts/run.ts`):
   `ambiguous-spec`, `needs-access`, `destructive-op`, `budget-exhausted`.
 
 Fractory validates the result with `RunResultSchema`. A throw or an invalid value fails the Run.
+
+## Follow-up context
+
+`ctx.followUp` follows the Run's Trigger (`FollowUp` in `src/runner/prompt.ts`). Pass it to
+`buildPrompt`, which turns it into a section after the Ticket:
+
+| Trigger | `followUp` | Prompt section |
+| --- | --- | --- |
+| `ticket-ready`, `manual` | `undefined` | none |
+| `ci-failed` | `{ kind: 'ci-failed', prNumber, log }` | the failing CI log, as data |
+| `review-comment` | `{ kind: 'review-comment', prNumber, comment }` | the review comment, as data |
+| `answer` | `{ kind: 'answer', reason, question, answer }` | the question and the owner's Answer |
+
+An `answer` Run starts when the owner answers a `needs-human` Run's question in Fractory Manager
+(`<registryDir>/<runId>.answer.json`). The tick queues one Run per Answer on the Ticket's branch,
+keyed `<ticketRef>:answer:<runId>`, once no other Run on the Ticket is queued or running, and posts
+the Answer on the Ticket first. Its section gives the earlier Run's reason and question as context
+and the Answer wrapped as data, stated as the owner's decision and binding, and tells the agent to
+continue on this branch until the Ticket is finished. A field that could not be read is
+`undefined`; the section then says so and points the agent at the Ticket's comments, where the
+Answer is posted under the question.
 
 ## Rules
 

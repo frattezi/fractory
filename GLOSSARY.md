@@ -80,8 +80,12 @@ The Gate where a human reviews a Run's change before it merges. Applies only in 
 **Auto-merge**:
 Fractory merging a Personal Mode change by itself once the Run is done and the change is mergeable with passing or no checks. It never happens in Work Mode.
 
+**Answer**:
+The owner's reply to the question a Run stopped with when it needed a human. It starts a new Run on the Ticket's branch, with the question and the Answer in its prompt as the owner's binding decision, and it is posted on the Ticket so later Runs read it too. It never resumes the Run that asked.
+_Avoid_: reply, response, input
+
 **Trigger**:
-A detectable change of state that starts a Run without anyone asking: a Ticket becoming ready, a failed check on a Run's change, or a review comment on it.
+A detectable change of state that starts a Run without anyone asking: a Ticket becoming ready, a failed check on a Run's change, a review comment on it, or an Answer to a Run's question.
 _Avoid_: event, hook
 
 **Host Limits**:
