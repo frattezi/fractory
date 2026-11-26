@@ -2,6 +2,7 @@ import { mkdir, readFile, readdir, rename, rm, writeFile } from 'node:fs/promise
 import { join } from 'node:path';
 import {
   ACTIVE_STATUSES,
+  ANSWER_SUFFIX,
   RERUN_SUFFIX,
   type RunRecord,
   RunRecordSchema,
@@ -50,7 +51,8 @@ export class RunRegistry {
           (name) =>
             name.endsWith('.json') &&
             !name.endsWith('.comments.json') &&
-            !name.endsWith(RERUN_SUFFIX),
+            !name.endsWith(RERUN_SUFFIX) &&
+            !name.endsWith(ANSWER_SUFFIX),
         )
         .map(async (name) => {
           try {
