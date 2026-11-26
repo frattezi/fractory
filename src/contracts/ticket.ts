@@ -19,6 +19,11 @@ export const TicketSchema = z.object({
   url: z.string().url(),
   status: TicketStatusSchema,
   updatedAt: z.string().datetime(),
+  /** Tickets this one depends on, read from the Relations section of its body. */
+  blockedBy: z.array(TicketRefSchema).default([]),
+  parent: TicketRefSchema.optional(),
+  /** Relations the body declares but that could not be read, so they are never silently lost. */
+  relationErrors: z.array(z.string()).default([]),
 });
 export type Ticket = z.infer<typeof TicketSchema>;
 

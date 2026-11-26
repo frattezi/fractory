@@ -24,6 +24,8 @@ const ticket = (overrides: Partial<Ticket> = {}): Ticket => ({
   url: 'https://github.com/me/repo/issues/1',
   status: 'in_progress',
   updatedAt: new Date().toISOString(),
+  blockedBy: [],
+  relationErrors: [],
   ...overrides,
 });
 
