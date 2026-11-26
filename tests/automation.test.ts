@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  AUTOMATION_NAME_MAX_LENGTH,
   AUTOMATION_REQUEST_VERSION,
   AUTOMATION_RUN_RECORD_VERSION,
   AUTOMATION_VERSION,
@@ -73,9 +74,42 @@ describe('Automation configuration', () => {
     expect(refusal(parseAutomation({ ...automation(), id: '../x' }))).toMatch(/id:/);
   });
 
-  it('still requires a file-name-safe name', () => {
+  it('requires a name', () => {
     const { name: _, ...noName } = automation();
     expect(refusal(parseAutomation(noName))).toMatch(/name: Required/);
+  });
+
+  it('accepts a name with spaces, accents and punctuation, trimmed', () => {
+    for (const name of ['Monthly invoices', 'Relatório de faturas (mensal)!', '../etc']) {
+      const parsed = parseAutomation({ ...automation(), name });
+      expect(parsed).toEqual({ ok: true, value: { ...automation(), name } });
+    }
+    const padded = parseAutomation({ ...automation(), name: '  Faturas do mês  ' });
+    expect(padded).toEqual({ ok: true, value: { ...automation(), name: 'Faturas do mês' } });
+  });
+
+  it('refuses an empty or whitespace-only name with a reason', () => {
+    for (const name of ['', '   ', '\t\n']) {
+      expect(refusal(parseAutomation({ ...automation(), name }))).toMatch(
+        /name: Expected a non-empty name/,
+      );
+    }
+  });
+
+  it('refuses a name past the maximum length with a reason', () => {
+    const atMax = 'é'.repeat(AUTOMATION_NAME_MAX_LENGTH);
+    expect(parseAutomation({ ...automation(), name: atMax }).ok).toBe(true);
+    expect(refusal(parseAutomation({ ...automation(), name: `${atMax}x` }))).toMatch(
+      new RegExp(`name: Expected a name of at most ${AUTOMATION_NAME_MAX_LENGTH} characters`),
+    );
+  });
+
+  it('keeps the id file-name safe', () => {
+    for (const id of ['Monthly invoices', 'faturas-mês', '-leading', 'a/b']) {
+      expect(refusal(parseAutomation({ ...automation(), id }))).toMatch(
+        /id: Expected letters, digits, "-" or "_" only/,
+      );
+    }
   });
 
   it('keeps the id when the name is edited', () => {
@@ -96,7 +130,6 @@ describe('Automation configuration', () => {
     );
     expect(refusal(parseAutomation({ ...automation(), cron: '0 3 *' }))).toMatch(/cron:/);
     expect(refusal(parseAutomation({ ...automation(), keepRuns: 0 }))).toMatch(/keepRuns:/);
-    expect(refusal(parseAutomation({ ...automation(), name: '../etc' }))).toMatch(/name:/);
   });
 
   it('ignores an unknown field', () => {

@@ -50,14 +50,32 @@ const FileNameSafeSchema = z
 export const AutomationIdSchema = FileNameSafeSchema;
 export type AutomationId = z.infer<typeof AutomationIdSchema>;
 
+/** The longest Automation name accepted, in characters, after trimming. */
+export const AUTOMATION_NAME_MAX_LENGTH = 100;
+
+/**
+ * An Automation's name: a label shown to the owner, e.g. "Monthly invoices". Any text the owner
+ * can type, trimmed. It never reaches the filesystem (the id does), so it need not be file-name
+ * safe.
+ */
+export const AutomationNameSchema = z
+  .string()
+  .trim()
+  .min(1, 'Expected a non-empty name')
+  .max(
+    AUTOMATION_NAME_MAX_LENGTH,
+    `Expected a name of at most ${AUTOMATION_NAME_MAX_LENGTH} characters`,
+  );
+export type AutomationName = z.infer<typeof AutomationNameSchema>;
+
 export const AutomationSchema = z.object({
   version: z.literal(AUTOMATION_VERSION),
   id: AutomationIdSchema,
   /**
    * A label the owner may edit at any time; not the identity, so nothing resolves an Automation by
-   * it. File-name safe, so a file name may carry it for readability.
+   * it. Free text; never used to name a file or directory.
    */
-  name: FileNameSafeSchema,
+  name: AutomationNameSchema,
   kind: AutomationKindSchema,
   repoPath: z.string().min(1),
   cron: CronSchema,
