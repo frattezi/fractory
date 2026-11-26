@@ -24,6 +24,20 @@ export const HostStateSchema = z.object({
       checkedAt: z.string().datetime(),
     })
     .optional(),
+  /**
+   * Held Tickets: Ready Tickets the tick did not queue because a blocker is unresolved. Each
+   * names its repository and the blockers holding it (refs, or the label as written when no
+   * configured repo owns it). Optional: still version 1.
+   */
+  heldTickets: z
+    .array(
+      z.object({
+        repoPath: z.string(),
+        ticketRef: z.string(),
+        blockers: z.array(z.string()).min(1),
+      }),
+    )
+    .optional(),
   /** Runs still waiting to start when the tick ended. */
   queued: z.number().int().min(0),
   updatedAt: z.string().datetime(),
