@@ -15,7 +15,8 @@ is tested TypeScript, runnable without a model.
 - A UI of Fractory's own (ADR 0001).
 - An LLM judge or diff risk scoring (v0 had both; revisit after v1 runs for real).
 - Answering a Run's questions automatically from written sources (v0 `answerer`; revisit).
-- Scheduled Triggers, cost tracking, release-branch sync, Ticket dependency ordering.
+- Scheduled Triggers, cost tracking, release-branch sync.
+- Ticket dependency ordering: deferred in v1, specified and in progress in [Spec 0004](0004-ticket-dependencies.md).
 - Cloud sandboxes.
 
 ## Flow

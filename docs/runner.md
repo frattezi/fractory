@@ -9,8 +9,10 @@ returns. The host process calls `executeRun(runId, deps)` (`src/runner/execute.t
 1. Reads the Ticket, `rules/run-agent.md` and, for follow-up Runs, the failing CI log
    (`gh run list --commit` + `gh run view --log-failed`) or the review comment (`gh api`).
 2. Creates the Run's worktree through Sandcastle (`createWorktree`, branch strategy `branch` on
-   `record.branch`) and installs a `pre-push` hook that refuses `main`, `master` and the base
-   branch, then chains to the repository's own `pre-push` hook.
+   `record.branch`) from the Run's own base branch — `record.baseBranch` when it has one, the
+   repository's `baseBranch` otherwise — and installs a `pre-push` hook that refuses `main`,
+   `master` and that base branch, then chains to the repository's own `pre-push` hook. A Run that
+   names no base of its own behaves exactly as one on the repository's base branch.
 3. Loads the flow named by `.fractory.json` (`flow`, default `build`) from `flows/<name>.ts` and
    calls it with the worktree, the Docker sandbox and Mode-wired agents (see `docs/flows.md`). The
    flow decides how agents work and returns a `RunResult`.
@@ -19,8 +21,9 @@ returns. The host process calls `executeRun(runId, deps)` (`src/runner/execute.t
    completion signal before the iterations ran out is `needs-human` / `budget-exhausted`. The Run
    record gets `mode`, `flow`, `agents` (e.g. `claude@work`) and `sessionId`.
 5. On `done`: checks the branch has commits, (Work Mode) checks every commit message with
-   `assertOutboundAllowed`, pushes, opens the PR or reuses the open one, moves the Ticket to
-   `in_review`. `failed` and `needs-human` never push or open a PR.
+   `assertOutboundAllowed`, pushes, opens the PR against the Run's base branch or reuses the open
+   one, moves the Ticket to `in_review`. Auto-merge refuses any PR whose base is not the
+   repository's base branch, so a Run built on another Run's branch cannot land before it. `failed` and `needs-human` never push or open a PR.
 6. `needs-human`: Personal Mode comments the question on the Ticket; Work Mode never posts it.
 
 Structured output uses our own tag parsing rather than Sandcastle's `Output.object`, because
