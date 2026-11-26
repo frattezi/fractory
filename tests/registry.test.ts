@@ -2,7 +2,7 @@ import { mkdtemp, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { RUN_RECORD_VERSION, type RunRecord, runKey } from '../src/contracts/run.ts';
+import { RUN_RECORD_VERSION, type RunRecord, runBaseBranch, runKey } from '../src/contracts/run.ts';
 import { RunRegistry, isActive } from '../src/registry/registry.ts';
 
 const now = new Date().toISOString();
@@ -44,6 +44,23 @@ describe('RunRegistry', () => {
     await registry.write(record('ok'));
     await writeFile(join(dir, 'broken.json'), '{not json');
     expect((await registry.list()).map((r) => r.id)).toEqual(['ok']);
+  });
+
+  it('round-trips an optional base branch and tip at the same version', async () => {
+    const registry = new RunRegistry(await mkdtemp(join(tmpdir(), 'reg-')));
+    await registry.write(record('plain'));
+    await registry.write(record('stacked', { baseBranch: 'fractory/4-astro', baseSha: 'abc123' }));
+
+    const plain = await registry.get('plain');
+    const stacked = await registry.get('stacked');
+    expect(plain?.baseBranch).toBeUndefined();
+    expect(stacked).toMatchObject({
+      version: RUN_RECORD_VERSION,
+      baseBranch: 'fractory/4-astro',
+      baseSha: 'abc123',
+    });
+    expect(runBaseBranch(plain as RunRecord, 'develop')).toBe('develop');
+    expect(runBaseBranch(stacked as RunRecord, 'develop')).toBe('fractory/4-astro');
   });
 
   it('rejects invalid records', async () => {

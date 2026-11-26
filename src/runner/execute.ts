@@ -10,6 +10,7 @@ import {
   type RunRecord,
   type RunResult,
   RunResultSchema,
+  runBaseBranch,
 } from '../contracts/run.ts';
 import type { Ticket, TicketSource } from '../contracts/ticket.ts';
 import { loadFlow } from '../flows/load.ts';
@@ -341,7 +342,8 @@ class Executor {
     );
     if (existing[0]) return existing[0].url; // pushing the branch updated it
 
-    await this.assertBaseOnRemote(record, worktree, target.remote, config.baseBranch);
+    const base = runBaseBranch(record, config.baseBranch);
+    await this.assertBaseOnRemote(record, worktree, target.remote, base);
 
     const key = ticketKey(ticket.ref);
     const title = outboundText(ticket.title, `Work on ${key}`, config.mode);
@@ -356,7 +358,7 @@ class Executor {
         'create',
         ...repoArgs,
         '--base',
-        config.baseBranch,
+        base,
         '--head',
         record.branch,
         '--title',
@@ -441,7 +443,11 @@ class Executor {
     const flow = await (this.deps.loadFlow ?? loadFlow)(config.flow);
 
     const target = await this.resolveRemote(record, config);
-    const baseRef = await this.resolveBaseRef(record, target.remote, config.baseBranch);
+    const baseRef = await this.resolveBaseRef(
+      record,
+      target.remote,
+      runBaseBranch(record, config.baseBranch),
+    );
     const sandcastle = this.deps.sandcastle ?? (await sandcastleAdapter());
     const worktree = await sandcastle.createWorktree({
       repoPath: record.repoPath,
@@ -451,6 +457,7 @@ class Executor {
     const { hooksDir } = await installPrePushHook({
       worktreePath: worktree.worktreePath,
       baseBranch: config.baseBranch,
+      runBaseBranch: record.baseBranch,
       exec: this.exec,
     });
     record = await this.registry.update(record.id, { worktreePath: worktree.worktreePath });

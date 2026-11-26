@@ -4,30 +4,34 @@ import type { Exec } from './exec.ts';
 
 const SAFE_BRANCH = /^\w[\w./-]*$/;
 
-/** Branches no Run may ever push to, whatever the repository's base branch is. */
-export const protectedBranches = (baseBranch: string): string[] => [
-  ...new Set([baseBranch, 'main', 'master']),
+/**
+ * Branches no Run may ever push to: the repository's base branch, the branch the Run is built on
+ * (when it names one), `main` and `master`.
+ */
+export const protectedBranches = (baseBranch: string, runBaseBranch?: string): string[] => [
+  ...new Set([baseBranch, ...(runBaseBranch ? [runBaseBranch] : []), 'main', 'master']),
 ];
 
 /**
- * A `pre-push` hook that refuses pushes to the base branch, `main` and `master`, then hands the
+ * A `pre-push` hook that refuses pushes to the protected branches, then hands the
  * same arguments and stdin to the repository's own `pre-push` hook (when it has one).
  */
 export const renderPrePushHook = (options: {
   baseBranch: string;
+  /** The branch the Run is built on, when it is not the repository's base branch. */
+  runBaseBranch?: string | undefined;
   repoHookPath: string;
 }): string => {
-  const { baseBranch, repoHookPath } = options;
-  for (const name of protectedBranches(baseBranch)) {
+  const { baseBranch, runBaseBranch, repoHookPath } = options;
+  const branches = protectedBranches(baseBranch, runBaseBranch);
+  for (const name of branches) {
     // The names are embedded in a shell script: refuse anything that is not a plain branch name.
     if (!SAFE_BRANCH.test(name)) throw new Error(`Unsafe branch name for hook: ${name}`);
   }
   if (repoHookPath.includes("'")) throw new Error(`Unsafe hook path: ${repoHookPath}`);
-  const cases = protectedBranches(baseBranch)
-    .map((name) => `refs/heads/${name}`)
-    .join('|');
+  const cases = branches.map((name) => `refs/heads/${name}`).join('|');
   return `#!/bin/sh
-# Installed for a Run: it must never push to the base branch, main or master.
+# Installed for a Run: it must never push to its base branch, main or master.
 input=$(cat)
 while read -r local_ref local_sha remote_ref remote_sha; do
   case "$remote_ref" in
@@ -84,10 +88,11 @@ export interface InstalledHook {
 export const installPrePushHook = async (options: {
   worktreePath: string;
   baseBranch: string;
+  runBaseBranch?: string | undefined;
   exec: Exec;
   sleep?: (ms: number) => Promise<void>;
 }): Promise<InstalledHook> => {
-  const { worktreePath, baseBranch, exec, sleep = defaultSleep } = options;
+  const { worktreePath, baseBranch, runBaseBranch, exec, sleep = defaultSleep } = options;
   const git = async (...args: string[]): Promise<string> =>
     (await exec('git', args, { cwd: worktreePath })).stdout.trim();
 
@@ -109,7 +114,7 @@ export const installPrePushHook = async (options: {
   const repoHookPath = resolve(candidate) === resolve(hookFile) ? '' : candidate;
 
   await mkdir(hooksDir, { recursive: true });
-  await writeFile(hookFile, renderPrePushHook({ baseBranch, repoHookPath }));
+  await writeFile(hookFile, renderPrePushHook({ baseBranch, runBaseBranch, repoHookPath }));
   await chmod(hookFile, 0o755);
 
   // Shared by every worktree: write it only once, so parallel Runs rarely touch .git/config.

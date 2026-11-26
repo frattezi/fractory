@@ -62,6 +62,8 @@ interface Setup {
   keychain?: Record<string, string>;
   sandcastleEnv?: string;
   flow?: string;
+  /** Overrides on the queued Run record, e.g. its own base branch. */
+  run?: Partial<RunRecord>;
 }
 
 const setup = async (options: Setup = {}) => {
@@ -82,6 +84,7 @@ const setup = async (options: Setup = {}) => {
     logPath: join(dir, 'logs', 'run1.log'),
     createdAt: now,
     updatedAt: now,
+    ...options.run,
   };
   await registry.write(record);
 
@@ -154,8 +157,12 @@ const setup = async (options: Setup = {}) => {
       };
     },
   };
+  const worktreeRequests: { repoPath: string; branch: string; baseRef: string }[] = [];
   const sandcastle = {
-    createWorktree: async () => worktree,
+    createWorktree: async (request: { repoPath: string; branch: string; baseRef: string }) => {
+      worktreeRequests.push(request);
+      return worktree;
+    },
     sandbox: (image: string | undefined, cpus?: number) => ({ name: 'docker', image, cpus }),
     claudeCode: (model: string, o: { env?: Record<string, string> }) => {
       const provider = { name: 'claude', model, env: o.env ?? {} };
@@ -181,7 +188,20 @@ const setup = async (options: Setup = {}) => {
     readRules: async () => 'RULES',
     sandcastle,
   };
-  return { deps, registry, calls, comments, statuses, agentRequests, providers, record, dir };
+  const hookScript = () => readFile(join(gitDir, 'fractory-hooks', 'pre-push'), 'utf8');
+  return {
+    deps,
+    registry,
+    calls,
+    comments,
+    statuses,
+    agentRequests,
+    providers,
+    record,
+    dir,
+    worktreeRequests,
+    hookScript,
+  };
 };
 
 const pushed = (calls: { file: string; args: string[] }[]) =>
@@ -234,6 +254,42 @@ describe('executeRun', () => {
     expect(pushed(t.calls)[0]?.args.slice(-3)).toEqual(['--set-upstream', 'mine', 'fractory/1']);
     const create = t.calls.find((c) => c.args.slice(0, 2).join(' ') === 'pr create');
     expect(create?.args.slice(2, 4)).toEqual(['--repo', 'me/repo']);
+  });
+
+  it('builds a Run with no base of its own on the repository base branch', async () => {
+    const t = await setup();
+    expect((await executeRun('run1', t.deps)).status).toBe('done');
+    expect(t.calls.some((c) => c.args.join(' ') === 'fetch origin main')).toBe(true);
+    expect(t.worktreeRequests.map((r) => r.baseRef)).toEqual(['origin/main']);
+    const create = t.calls.find((c) => c.args.slice(0, 2).join(' ') === 'pr create');
+    expect(create?.args[create.args.indexOf('--base') + 1]).toBe('main');
+    const hook = await t.hookScript();
+    expect(hook).toContain('refs/heads/main|refs/heads/master)');
+  });
+
+  it('branches a Run that names a base from it, opens its PR against it and protects it', async () => {
+    const t = await setup({ run: { baseBranch: 'fractory/4-astro', baseSha: 'abc123' } });
+    const record = await executeRun('run1', t.deps);
+    expect(record.status).toBe('done');
+    expect(record.baseBranch).toBe('fractory/4-astro');
+    expect(record.baseSha).toBe('abc123');
+
+    expect(t.calls.some((c) => c.args.join(' ') === 'fetch origin fractory/4-astro')).toBe(true);
+    expect(t.calls.some((c) => c.args.join(' ') === 'fetch origin main')).toBe(false);
+    expect(t.worktreeRequests.map((r) => r.baseRef)).toEqual(['origin/fractory/4-astro']);
+    expect(
+      t.calls.some((c) =>
+        c.args.join(' ').startsWith('rev-list --count origin/fractory/4-astro..'),
+      ),
+    ).toBe(true);
+    expect(t.calls.filter((c) => c.args[0] === 'ls-remote').map((c) => c.args)).toEqual([
+      ['ls-remote', '--heads', 'origin', 'refs/heads/fractory/4-astro'],
+    ]);
+    const create = t.calls.find((c) => c.args.slice(0, 2).join(' ') === 'pr create');
+    expect(create?.args[create.args.indexOf('--base') + 1]).toBe('fractory/4-astro');
+
+    const hook = await t.hookScript();
+    expect(hook).toContain('refs/heads/main|refs/heads/fractory/4-astro|refs/heads/master)');
   });
 
   it('checks the base branch on the push remote once, then opens the PR', async () => {
