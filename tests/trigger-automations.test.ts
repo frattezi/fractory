@@ -73,6 +73,8 @@ describe('Automation requests in the tick', () => {
       }),
     ]);
     expect(await requests(h)).toEqual([]);
+    // The configuration stays next to the record for the Run's host process.
+    expect((await store(h).readRequestCopy('a7f3c2e1', id))?.automation.id).toBe('a7f3c2e1');
   });
 
   it('never executes, sets a Ticket status or touches the Run registry or a PR', async () => {

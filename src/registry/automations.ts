@@ -3,8 +3,11 @@ import { join } from 'node:path';
 import { z } from 'zod';
 import {
   type AutomationId,
+  type AutomationRequest,
+  AutomationRequestSchema,
   type AutomationRunRecord,
   AutomationRunRecordSchema,
+  parseAutomationRequest,
   parseAutomationRunRecord,
 } from '../contracts/automation.ts';
 
@@ -14,6 +17,8 @@ import {
  * - `requests/<name>.json`: Automation requests dropped by Fractory Manager. Fractory removes each
  *   one once it has a record or a refusal.
  * - `<automationId>/<runId>.json`, `.log`, `.out`: one Automation Run's record, log and output.
+ * - `<automationId>/<runId>.request`: the accepted request (JSON), kept so the Run's host process
+ *   knows the configuration it was queued with after the request file is gone.
  * - `refused/<name>.json`: why a request was refused, with its original text.
  *
  * Every write is atomic (tmp file + rename) so a reader never sees a half-written file.
@@ -70,6 +75,36 @@ export class AutomationStore {
 
   outputPath(automationId: AutomationId, runId: string): string {
     return join(this.runDir(automationId), `${runId}.out`);
+  }
+
+  requestCopyPath(automationId: AutomationId, runId: string): string {
+    return join(this.runDir(automationId), `${runId}.request`);
+  }
+
+  /** Keeps the accepted request next to its Run's record. */
+  async writeRequestCopy(runId: string, request: AutomationRequest): Promise<void> {
+    const valid = AutomationRequestSchema.parse(request);
+    await writeAtomic(this.requestCopyPath(valid.automation.id, runId), valid);
+  }
+
+  /**
+   * The request an Automation Run was queued from. `undefined` only when no copy exists; an
+   * unreadable or invalid copy throws, because a failed read proves nothing.
+   */
+  async readRequestCopy(
+    automationId: AutomationId,
+    runId: string,
+  ): Promise<AutomationRequest | undefined> {
+    let text: string;
+    try {
+      text = await readFile(this.requestCopyPath(automationId, runId), 'utf8');
+    } catch (error) {
+      if (isMissing(error)) return undefined;
+      throw error;
+    }
+    const parsed = parseAutomationRequest(JSON.parse(text));
+    if (!parsed.ok) throw new Error(parsed.reason);
+    return parsed.value;
   }
 
   /** Request file names, sorted. An absent directory has none; temporary files are not requests. */
