@@ -128,6 +128,7 @@ export const makeHarness = async (
     // Host Limits are off so tests keep their meaning; resource tests switch them on.
     resources: false,
     hostStatePath: join(root, 'host.json'),
+    automationsDir: join(root, 'automations'),
   };
   const registry = new RunRegistry(factory.registryDir);
   const source = new FakeSource();

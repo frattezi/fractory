@@ -34,6 +34,7 @@ const setup = async (remotes = ORIGIN_IS_APP) => {
       logDir: join(root, 'logs'),
       resources: false as const,
       hostStatePath: join(root, 'host.json'),
+      automationsDir: join(root, 'automations'),
     },
     registry,
     gh,
