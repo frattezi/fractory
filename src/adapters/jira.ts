@@ -8,12 +8,12 @@ import {
   type TicketStatus,
 } from '../contracts/ticket.ts';
 import { assertOutboundAllowed } from '../policy/outbound.ts';
+import { parseRelations, renderRelations } from './relations.ts';
 import {
   type AdapterOptions,
   type CreatedTicket,
   type NewTicket,
   RetryableError,
-  bodyWithRelations,
   defaultSleep,
   withRetry,
 } from './shared.ts';
@@ -178,17 +178,22 @@ export const createJiraAdapter = (config: JiraConfig, options: AdapterOptions = 
 
   const toTicket = (issue: JiraIssue): Ticket => {
     const { description } = issue.fields;
+    const ref: TicketRef = `jira:${issue.key}`;
+    const body = !description
+      ? ''
+      : typeof description === 'string'
+        ? description
+        : flattenAdf(description);
+    const { errors, ...relations } = parseRelations(body, ref);
     return TicketSchema.parse({
-      ref: `jira:${issue.key}`,
+      ref,
       title: issue.fields.summary,
-      body: !description
-        ? ''
-        : typeof description === 'string'
-          ? description
-          : flattenAdf(description),
+      body,
       url: `${baseUrl}/browse/${issue.key}`,
       status: statusOf(issue.fields.status.name),
       updatedAt: normalizeTimestamp(issue.fields.updated),
+      ...relations,
+      relationErrors: errors,
     });
   };
 
@@ -258,7 +263,10 @@ export const createJiraAdapter = (config: JiraConfig, options: AdapterOptions = 
   };
 
   const create = async (input: NewTicket): Promise<CreatedTicket> => {
-    const body = bodyWithRelations(input, (ref) => ref.replace(/^(jira|github):/, ''));
+    const body = renderRelations(input.body, {
+      blockedBy: input.blockedBy ?? [],
+      parent: input.parent,
+    });
     assertOutboundAllowed(input.title, mode);
     assertOutboundAllowed(body, mode);
     const created = CreatedSchema.parse(

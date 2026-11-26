@@ -8,12 +8,12 @@ import {
   type TicketStatus,
 } from '../contracts/ticket.ts';
 import { assertOutboundAllowed } from '../policy/outbound.ts';
+import { parseRelations, renderRelations } from './relations.ts';
 import {
   type AdapterOptions,
   type CreatedTicket,
   type NewTicket,
   RetryableError,
-  bodyWithRelations,
   defaultExec,
   defaultSleep,
   withRetry,
@@ -80,15 +80,20 @@ export const createGithubAdapter = (config: GithubConfig, options: AdapterOption
     return Number(match[2]);
   };
 
-  const toTicket = (issue: GhIssue): Ticket =>
-    TicketSchema.parse({
-      ref: `github:${config.repo}#${issue.number}`,
+  const toTicket = (issue: GhIssue): Ticket => {
+    const ref: TicketRef = `github:${config.repo}#${issue.number}`;
+    const { errors, ...relations } = parseRelations(issue.body, ref);
+    return TicketSchema.parse({
+      ref,
       title: issue.title,
       body: issue.body,
       url: issue.url,
       status: statusOf(issue),
       updatedAt: issue.updatedAt,
+      ...relations,
+      relationErrors: errors,
     });
+  };
 
   const parseJson = <T>(schema: z.ZodType<T, z.ZodTypeDef, unknown>, stdout: string): T => {
     let raw: unknown;
@@ -188,13 +193,9 @@ export const createGithubAdapter = (config: GithubConfig, options: AdapterOption
   };
 
   const create = async (input: NewTicket): Promise<CreatedTicket> => {
-    const body = bodyWithRelations(input, (ref) => {
-      const match = ref.match(/^github:([\w.-]+\/[\w.-]+)#(\d+)$/);
-      return match
-        ? match[1] === config.repo
-          ? `#${match[2]}`
-          : `${match[1]}#${match[2]}`
-        : ref.replace(/^jira:/, '');
+    const body = renderRelations(input.body, {
+      blockedBy: input.blockedBy ?? [],
+      parent: input.parent,
     });
     assertOutboundAllowed(input.title, mode);
     assertOutboundAllowed(body, mode);

@@ -179,25 +179,63 @@ describe('github adapter', () => {
   });
 
   describe('createTicket', () => {
-    it('renders parent and blockers as body lines', async () => {
-      const { exec, calls } = fakeExec((args) =>
-        args[1] === 'create' ? 'https://github.com/acme/app/issues/9' : '',
-      );
-      await createTicket(
+    it('writes a Relations section with full refs that reads back as the same relations', async () => {
+      let written = '';
+      const { exec, calls } = fakeExec((args) => {
+        if (args[1] === 'create') {
+          written = args[args.indexOf('--body') + 1] ?? '';
+          return 'https://github.com/acme/app/issues/7';
+        }
+        return args[1] === 'view' ? JSON.stringify(issue({ body: written })) : '';
+      });
+      const input = {
+        title: 'T',
+        body: 'B',
+        status: 'backlog',
+        parent: 'github:acme/app#1',
+        blockedBy: ['github:acme/app#2', 'github:other/lib#3', 'jira:ABC-4'],
+      } as const;
+      const created = await createTicket(
         config,
-        {
-          title: 'T',
-          body: 'B',
-          status: 'backlog',
-          parent: 'github:acme/app#1',
-          blockedBy: ['github:acme/app#2', 'github:other/lib#3', 'jira:ABC-4'],
-        },
+        { ...input, blockedBy: [...input.blockedBy] },
         { exec, sleep },
       );
       const create = calls.find((c) => c[1] === 'create') ?? [];
       expect(create[create.indexOf('--body') + 1]).toBe(
-        'B\n\nParent: #1\nBlocked by #2\nBlocked by other/lib#3\nBlocked by ABC-4',
+        'B\n\n## Relations\n\nBlocked by: github:acme/app#2\nBlocked by: github:other/lib#3\nBlocked by: jira:ABC-4\nParent: github:acme/app#1',
       );
+
+      const ticket = await createTicketSource(config, { exec, sleep }).get(created.ref);
+      expect(ticket).toMatchObject({
+        blockedBy: input.blockedBy,
+        parent: input.parent,
+        relationErrors: [],
+      });
+    });
+
+    it('reads blockers from the older prose form against its own repository', async () => {
+      const body = 'B\n\nParent: #1\nBlocked by #2\nBlocked by other/lib#3';
+      const { exec } = fakeExec(() => JSON.stringify([issue({ body })]));
+      const [ticket] = await createTicketSource(config, { exec, sleep }).listReady();
+      expect(ticket).toMatchObject({
+        blockedBy: ['github:acme/app#2', 'github:other/lib#3'],
+        parent: 'github:acme/app#1',
+        relationErrors: [],
+      });
+    });
+
+    it('reads no blockers without a Relations section and reports a malformed ref', async () => {
+      const plain = fakeExec(() => JSON.stringify(issue({ body: null })));
+      const none = await createTicketSource(config, { exec: plain.exec, sleep }).get(ref);
+      expect(none.blockedBy).toEqual([]);
+      expect(none.parent).toBeUndefined();
+      expect(none.relationErrors).toEqual([]);
+
+      const body = 'B\n\n## Relations\n\nBlocked by: github:acme/app#2, acme-app-3';
+      const bad = fakeExec(() => JSON.stringify(issue({ body })));
+      const ticket = await createTicketSource(config, { exec: bad.exec, sleep }).get(ref);
+      expect(ticket.blockedBy).toEqual(['github:acme/app#2']);
+      expect(ticket.relationErrors).toEqual(['Blocked by: "acme-app-3" is not a Ticket ref']);
     });
 
     it('checks relation lines against the outbound policy too', async () => {

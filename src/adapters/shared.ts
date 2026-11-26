@@ -77,12 +77,3 @@ export interface CreatedTicket {
   ref: TicketRef;
   url: string;
 }
-
-/** Relations are rendered as plain lines at the end of the body, readable in any tracker. */
-export const bodyWithRelations = (input: NewTicket, label: (ref: TicketRef) => string): string => {
-  const lines = [
-    ...(input.parent ? [`Parent: ${label(input.parent)}`] : []),
-    ...(input.blockedBy ?? []).map((ref) => `Blocked by ${label(ref)}`),
-  ];
-  return lines.length > 0 ? `${input.body.trimEnd()}\n\n${lines.join('\n')}` : input.body;
-};
