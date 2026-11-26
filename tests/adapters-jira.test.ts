@@ -1,5 +1,10 @@
 import { describe, expect, it, vi } from 'vitest';
-import { createTicket, createTicketSource, flattenAdf } from '../src/adapters/index.ts';
+import {
+  createTicket,
+  createTicketSource,
+  flattenAdf,
+  parseBlockers,
+} from '../src/adapters/index.ts';
 import type { FetchFn } from '../src/adapters/index.ts';
 import { OutboundPolicyError } from '../src/policy/outbound.ts';
 
@@ -271,6 +276,27 @@ describe('jira adapter', () => {
         issuetype: { name: 'Task' },
       });
       expect(calls.some((c) => c.path.endsWith('/transitions') && c.method === 'POST')).toBe(true);
+    });
+
+    it('writes blockers that the source reads back exactly', async () => {
+      const blockedBy = ['jira:ABC-4', 'github:acme/app#9'] as const;
+      let description: unknown;
+      const { fetch } = fakeFetch((call) => {
+        if (call.method === 'POST' && call.path === '/rest/api/3/issue') {
+          description = (call.body as { fields: { description: unknown } }).fields.description;
+          return json({ key: 'ABC-12' }, 201);
+        }
+        return json(jiraIssue({ status: 'Backlog', description }));
+      });
+      const options = { fetch, sleep, env, mode: 'personal' } as const;
+      const created = await createTicket(
+        config,
+        { title: 'T', body: 'First\n\nSecond', status: 'backlog', blockedBy: [...blockedBy] },
+        options,
+      );
+      const ticket = await createTicketSource(config, options).get(created.ref);
+      expect(ticket.body).toContain('Blocked by ABC-4');
+      expect(parseBlockers(ticket.body, ticket.ref).map((b) => b.ref)).toEqual(blockedBy);
     });
 
     it('applies the outbound policy to title and body', async () => {

@@ -161,6 +161,29 @@ describe('fractory CLI', () => {
     expect(JSON.parse(out[0] as string).host).toEqual(host);
   });
 
+  it('status names the Held Tickets of the repo from host.json', async () => {
+    const { env, out, root } = await setup();
+    await writeFile(
+      join(root, 'host.json'),
+      JSON.stringify({
+        version: 1,
+        held: false,
+        heldTickets: [
+          { repoPath: env.cwd, ticketRef: 'github:me/app#5', blockers: ['jira:ABC-4'] },
+        ],
+        queued: 0,
+        updatedAt: '2026-05-31T23:59:00.000Z',
+      }),
+    );
+    await main(['status'], env);
+    expect(out[0]).toContain('github:me/app#5 held by jira:ABC-4');
+    out.length = 0;
+    await main(['status', '--json'], env);
+    expect(JSON.parse(out[0] as string).waitingOnBlockers).toEqual([
+      { ticketRef: 'github:me/app#5', blockers: ['jira:ABC-4'] },
+    ]);
+  });
+
   it('tick writes host.json through the injected sysctl and docker, with Host Limits on by default', async () => {
     const { env, root } = await setup();
     await writeFile(

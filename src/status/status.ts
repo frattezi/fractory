@@ -28,6 +28,8 @@ export interface RepoStatus {
   }[];
   /** Open PRs Fractory made: a review comment or red CI starts a follow-up Run on that branch. */
   openPrs: { ticketRef: string; branch: string; prUrl: string }[];
+  /** Held Tickets from the last tick: Ready, but not started while their blockers are open. */
+  waitingOnBlockers: { ticketRef: string; blockers: string[] }[];
   needsHuman: { ticketRef: string; reason: NeedsHumanReason; question: string; runId: string }[];
   /** Every branch an agent must not commit to, push to, check out or rebase by hand. */
   factoryBranches: string[];
@@ -49,6 +51,8 @@ export const repoStatus = (input: {
   config: RepoConfig | undefined;
   factoryRepos: string[];
   runs: RunRecord[];
+  /** `heldTickets` of the last tick's host state, for every repo. */
+  heldTickets?: HostState['heldTickets'];
 }): RepoStatus => {
   const repoPath = resolve(input.repoPath);
   const listed = input.factoryRepos.some((r) => resolve(r) === repoPath);
@@ -59,6 +63,7 @@ export const repoStatus = (input: {
     configuredOnly: config !== undefined && !listed,
     activeRuns: [],
     openPrs: [],
+    waitingOnBlockers: [],
     needsHuman: [],
     factoryBranches: [],
   };
@@ -95,6 +100,9 @@ export const repoStatus = (input: {
       });
     }
   }
+  status.waitingOnBlockers = (input.heldTickets ?? [])
+    .filter((held) => resolve(held.repoPath) === repoPath)
+    .map(({ ticketRef, blockers }) => ({ ticketRef, blockers }));
   status.factoryBranches = [...branches].sort();
   return status;
 };
@@ -116,6 +124,10 @@ export const formatStatus = (s: RepoStatus): string => {
   section(
     'Open factory PRs',
     s.openPrs.map((p) => `${p.ticketRef} ${p.prUrl} (${p.branch})`),
+  );
+  section(
+    'Waiting on blockers',
+    s.waitingOnBlockers.map((w) => `${w.ticketRef} held by ${w.blockers.join(', ')}`),
   );
   section(
     'Waiting on the owner',

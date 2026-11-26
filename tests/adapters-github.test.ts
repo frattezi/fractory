@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { createTicket, createTicketSource } from '../src/adapters/index.ts';
+import { createTicket, createTicketSource, parseBlockers } from '../src/adapters/index.ts';
 import type { ExecFn } from '../src/adapters/index.ts';
 import { OutboundPolicyError } from '../src/policy/outbound.ts';
 
@@ -251,5 +251,49 @@ describe('github adapter', () => {
       ).rejects.toThrow(OutboundPolicyError);
       expect(calls).toHaveLength(0);
     });
+  });
+});
+
+describe('blocker relations', () => {
+  it('reads back exactly the blockers createTicket writes', async () => {
+    const blockedBy = ['github:acme/app#4', 'github:acme/lib#9', 'jira:ABC-12'] as const;
+    let written = '';
+    const { exec } = fakeExec((args) => {
+      if (args[1] === 'create' && args[0] === 'issue') {
+        written = args[args.indexOf('--body') + 1] ?? '';
+        return 'https://github.com/acme/app/issues/7\n';
+      }
+      if (args[1] === 'view') return JSON.stringify(issue({ body: written }));
+      return '';
+    });
+    const created = await createTicket(
+      config,
+      { title: 'T', body: 'Details', status: 'ready', blockedBy: [...blockedBy] },
+      { exec, sleep },
+    );
+    expect(written).toContain('Blocked by #4');
+    const ticket = await createTicketSource(config, { exec, sleep }).get(created.ref);
+    expect(parseBlockers(ticket.body, ticket.ref).map((b) => b.ref)).toEqual(blockedBy);
+  });
+
+  it('reads only lines in the written format, once each', () => {
+    const body = [
+      '## Blocked by',
+      '',
+      'None (can start immediately)',
+      'Blocked by #4',
+      'Blocked by #4',
+      'Blocked by the design review',
+      '  Blocked by acme/lib#2  ',
+      'Parent: #1',
+    ].join('\n');
+    expect(parseBlockers(body, 'github:acme/app#7')).toEqual([
+      { label: '#4', ref: 'github:acme/app#4' },
+      { label: 'acme/lib#2', ref: 'github:acme/lib#2' },
+    ]);
+  });
+
+  it('keeps a same-repo label it cannot resolve, without a ref', () => {
+    expect(parseBlockers('Blocked by #4', 'jira:ABC-1')).toEqual([{ label: '#4' }]);
   });
 });

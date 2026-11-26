@@ -116,4 +116,23 @@ describe('repoStatus', () => {
     });
     expect(s.activeRuns).toEqual([]);
   });
+
+  it('reports a Held Ticket of this repo as waiting on its blockers', () => {
+    const s = repoStatus({
+      repoPath: '/repo/app',
+      config: personal,
+      factoryRepos: ['/repo/app'],
+      runs: [],
+      heldTickets: [
+        { repoPath: '/repo/app', ticketRef: 'github:me/app#5', blockers: ['github:me/app#4'] },
+        { repoPath: '/repo/lib', ticketRef: 'github:me/lib#2', blockers: ['github:me/lib#1'] },
+      ],
+    });
+    expect(s.waitingOnBlockers).toEqual([
+      { ticketRef: 'github:me/app#5', blockers: ['github:me/app#4'] },
+    ]);
+    expect(formatStatus(s)).toContain(
+      'Waiting on blockers: \n  - github:me/app#5 held by github:me/app#4',
+    );
+  });
 });
