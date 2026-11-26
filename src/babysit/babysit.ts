@@ -51,6 +51,13 @@ export interface BabysitDeps {
    * named explicitly are never filtered. A read that fails proves nothing, so the Ticket stays.
    */
   isTicketFinished?: (ticketRef: string) => Promise<boolean>;
+  /**
+   * Why the Run's pull request cannot merge, or undefined when nothing blocks it. Conflicts with
+   * the base branch are the case that matters: no Trigger starts a Run for them, so the pull
+   * request would sit open until the deadline. A read that fails returns undefined, because a
+   * failed read of external state proves nothing.
+   */
+  prBlockedReason?: (run: RunRecord) => Promise<string | undefined>;
 }
 
 export interface BabysitInput {
@@ -161,6 +168,13 @@ const babysitTicket = async (
     if (isSettled(current)) {
       deps.out(`${ticketRef}: merged`);
       return { ticketRef, outcome: 'merged', runId: current?.id ?? runId };
+    }
+    if (current?.status === 'done' && current.prUrl && deps.prBlockedReason) {
+      const reason = await deps.prBlockedReason(current).catch(() => undefined);
+      if (reason !== undefined) {
+        deps.out(`${ticketRef}: ${reason}`);
+        return { ticketRef, outcome: 'stopped', runId: current.id, detail: reason };
+      }
     }
     await deps.wait(pollMs);
   }

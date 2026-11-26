@@ -318,6 +318,15 @@ const commands: Record<string, (args: CliArgs, env: CliEnv) => Promise<void>> = 
         wait: (ms) => new Promise((done) => setTimeout(done, ms)),
         now: env.now,
         out: env.out,
+        prBlockedReason: async (record) => {
+          if (!record.prUrl) return undefined;
+          const pr = await env.gh.viewPr(record.repoPath, record.prUrl);
+          if (pr.state === 'CLOSED') return 'its pull request was closed without merging';
+          if (pr.mergeable === 'CONFLICTING') {
+            return `its pull request conflicts with the base branch (${record.prUrl})`;
+          }
+          return undefined;
+        },
         isTicketFinished: async (ref) => {
           const parsed = TicketRefSchema.parse(ref);
           const { config } = await findRepoForTicket(env, factory, parsed);

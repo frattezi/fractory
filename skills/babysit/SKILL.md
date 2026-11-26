@@ -47,6 +47,10 @@ without this one's change. The summary names the Ticket, the Run and its questio
 - **failed**: read the Run's log (`fractory runs` gives its path) before re-running. A Run that
   failed for a missing base, a host limit or a flake is worth another Run; one that failed on the
   Ticket's own terms needs the Ticket fixed first.
+- **a pull request that cannot merge**: a Run whose change conflicts with the base branch, or whose
+  pull request was closed, stops babysitting at once. No Trigger starts a Run for a conflict, so
+  nothing will fix it on its own, and the branch is hands-off: the owner rebases it, or closes the
+  pull request and lets a new Run rebuild the Ticket.
 - **timed out**: check `fractory status` for a Held queue or a stuck tick before assuming the Ticket
   is at fault.
 

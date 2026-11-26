@@ -324,3 +324,69 @@ describe('babysit discovery', () => {
     expect(lines.join('\n')).not.toMatch(/skipped/);
   });
 });
+
+describe('babysit and a pull request that cannot merge', () => {
+  const openPr = (over: Partial<RunRecord> = {}): RunRecord =>
+    makeRun({
+      id: 'd',
+      status: 'done',
+      prUrl: 'https://github.com/me/app/pull/1',
+      prState: 'OPEN',
+      ...over,
+    });
+
+  it('stops on a conflicting pull request instead of waiting out the deadline', async () => {
+    const { deps, lines } = harness({ states: [[openPr()]] });
+    const summary = await babysit({
+      repoPath: REPO,
+      tickets: ['github:me/app#1'],
+      pollMs: 1,
+      perTicketMs: 1_000,
+      deps: { ...deps, prBlockedReason: async () => 'its pull request conflicts with the base' },
+    });
+    expect(summary.outcome).toBe('stopped');
+    expect(summary.tickets[0]).toMatchObject({
+      outcome: 'stopped',
+      detail: 'its pull request conflicts with the base',
+    });
+    expect(lines).toContain('github:me/app#1: its pull request conflicts with the base');
+  });
+
+  it('keeps waiting when the pull request read fails, since a failed read proves nothing', async () => {
+    const { deps } = harness({ states: [[openPr()], [openPr()], [merged({ id: 'd' })]] });
+    const summary = await babysit({
+      repoPath: REPO,
+      tickets: ['github:me/app#1'],
+      pollMs: 1,
+      perTicketMs: 1_000,
+      deps: {
+        ...deps,
+        prBlockedReason: async () => {
+          throw new Error('gh down');
+        },
+      },
+    });
+    expect(summary.outcome).toBe('merged');
+  });
+
+  it('never asks about a pull request while the Run is still going', async () => {
+    const asked: string[] = [];
+    const queued = makeRun({ id: 'q', status: 'queued' });
+    const { deps } = harness({ states: [[queued], [queued], [merged({ id: 'q' })]] });
+    const summary = await babysit({
+      repoPath: REPO,
+      tickets: ['github:me/app#1'],
+      pollMs: 1,
+      perTicketMs: 1_000,
+      deps: {
+        ...deps,
+        prBlockedReason: async (run) => {
+          asked.push(run.id);
+          return undefined;
+        },
+      },
+    });
+    expect(summary.outcome).toBe('merged');
+    expect(asked).toEqual([]);
+  });
+});
