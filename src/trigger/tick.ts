@@ -18,6 +18,7 @@ import { consumedCommentIds, pendingComments, readRunComments } from '../registr
 import { readHostState, writeHostState } from '../registry/host-state.ts';
 import type { RunRegistry } from '../registry/registry.ts';
 import { listRerunRequests } from '../registry/reruns.ts';
+import { acceptAutomationRequests } from './automations.ts';
 import { branchFor, queueRun } from './queue.ts';
 import { type Logger, type PidState, acquireLock } from './support.ts';
 
@@ -48,6 +49,8 @@ export interface TickSummary {
   errors: number;
   /** Why queued Runs were held back this tick by the resource limits. */
   held?: string;
+  /** Automation requests read this tick (Spec 0003). */
+  automations: { queued: string[]; refused: string[]; discarded: string[] };
 }
 
 /** Launch priority: what the owner asked for, then follow-ups, then newly Ready Tickets. */
@@ -85,6 +88,7 @@ export const tick = async (deps: TickDeps): Promise<TickSummary> => {
     merged: [],
     ticketsDone: [],
     errors: 0,
+    automations: { queued: [], refused: [], discarded: [] },
   };
   const { log, registry, factory } = deps;
   const lock = await acquireLock(join(factory.logDir, 'tick.lock'), deps.now);
@@ -475,6 +479,11 @@ export const tick = async (deps: TickDeps): Promise<TickSummary> => {
         fail(`repo ${repoPath}`, error);
       }
     }
+    // After Re-runs, before launches. Automation Runs live apart from the Run registry, so they
+    // never set a Ticket status and never reach the pull-request path.
+    const { errors, ...automations } = await acceptAutomationRequests(deps);
+    summary.errors += errors;
+    summary.automations = automations;
     await startQueued();
     if (deps.afterTick) {
       try {
@@ -487,7 +496,7 @@ export const tick = async (deps: TickDeps): Promise<TickSummary> => {
     await lock.release();
   }
   log.info(
-    `tick done: dead=${summary.markedDead.length} queued=${summary.queued.length} launched=${summary.launched.length} merged=${summary.merged.length} errors=${summary.errors}`,
+    `tick done: dead=${summary.markedDead.length} queued=${summary.queued.length} launched=${summary.launched.length} merged=${summary.merged.length} automations=${summary.automations.queued.length} errors=${summary.errors}`,
   );
   return summary;
 };
