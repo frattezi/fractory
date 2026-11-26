@@ -1,5 +1,5 @@
 import { mkdir, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { isAbsolute, join, relative } from 'node:path';
 import { z } from 'zod';
 import {
   type AutomationId,
@@ -197,6 +197,28 @@ export class AutomationStore {
   async writeRun(record: AutomationRunRecord): Promise<void> {
     const valid = AutomationRunRecordSchema.parse(record);
     await writeAtomic(join(this.runDir(valid.automationId), `${valid.id}.json`), valid);
+  }
+
+  /**
+   * Removes one Automation Run: its log, its output directory, its request copy and, last, its
+   * record, so a crash part-way leaves a record the next prune finds and finishes. A file or
+   * directory that is already gone is not an error. A recorded path outside the Automation's own
+   * directory is never touched: the record is refused instead.
+   */
+  async removeRun(record: AutomationRunRecord): Promise<void> {
+    const own = this.runDir(record.automationId);
+    for (const path of [record.logPath, record.outputPath]) {
+      const inside = relative(own, path);
+      if (inside === '' || inside.startsWith('..') || isAbsolute(inside)) {
+        throw new Error(
+          `Automation Run ${record.id}: ${path} is outside ${own}; it is not removed`,
+        );
+      }
+    }
+    await rm(record.logPath, { force: true });
+    await rm(record.outputPath, { recursive: true, force: true });
+    await rm(this.requestCopyPath(record.automationId, record.id), { force: true });
+    await rm(join(own, `${record.id}.json`), { force: true });
   }
 
   private refusalPath(request: string): string {

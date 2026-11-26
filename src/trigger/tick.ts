@@ -20,6 +20,7 @@ import { consumedCommentIds, pendingComments, readRunComments } from '../registr
 import { readHostState, writeHostState } from '../registry/host-state.ts';
 import type { RunRegistry } from '../registry/registry.ts';
 import { listRerunRequests } from '../registry/reruns.ts';
+import { pruneAutomationRuns } from './automation-prune.ts';
 import { acceptAutomationRequests } from './automations.ts';
 import { branchFor, queueRun } from './queue.ts';
 import { type Logger, type PidState, acquireLock } from './support.ts';
@@ -62,6 +63,8 @@ export interface TickSummary {
     launched: string[];
     /** Automation Run ids marked failed because their host process is gone. */
     markedDead: string[];
+    /** Automation Run ids removed, with their logs and outputs, to keep each history's count. */
+    pruned: string[];
   };
 }
 
@@ -104,7 +107,14 @@ export const tick = async (deps: TickDeps): Promise<TickSummary> => {
     merged: [],
     ticketsDone: [],
     errors: 0,
-    automations: { queued: [], refused: [], discarded: [], launched: [], markedDead: [] },
+    automations: {
+      queued: [],
+      refused: [],
+      discarded: [],
+      launched: [],
+      markedDead: [],
+      pruned: [],
+    },
   };
   const { log, registry, factory } = deps;
   const lock = await acquireLock(join(factory.logDir, 'tick.lock'), deps.now);
@@ -565,6 +575,10 @@ export const tick = async (deps: TickDeps): Promise<TickSummary> => {
     summary.errors += errors;
     summary.automations = { ...summary.automations, ...automations };
     await startQueued();
+    // Last: Runs that finished since the previous tick, or just now (dead or failed to launch).
+    const pruned = await pruneAutomationRuns(deps);
+    summary.errors += pruned.errors;
+    summary.automations.pruned = pruned.pruned;
     if (deps.afterTick) {
       try {
         await deps.afterTick();
@@ -576,7 +590,7 @@ export const tick = async (deps: TickDeps): Promise<TickSummary> => {
     await lock.release();
   }
   log.info(
-    `tick done: dead=${summary.markedDead.length} queued=${summary.queued.length} launched=${summary.launched.length} merged=${summary.merged.length} automations=${summary.automations.queued.length} automationsLaunched=${summary.automations.launched.length} errors=${summary.errors}`,
+    `tick done: dead=${summary.markedDead.length} queued=${summary.queued.length} launched=${summary.launched.length} merged=${summary.merged.length} automations=${summary.automations.queued.length} automationsLaunched=${summary.automations.launched.length} automationsPruned=${summary.automations.pruned.length} errors=${summary.errors}`,
   );
   return summary;
 };
