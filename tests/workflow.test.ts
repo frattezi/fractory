@@ -6,6 +6,7 @@ const ready = {
   config: personalRepo,
   checks: 'passing',
   mergeable: 'MERGEABLE',
+  baseBranch: 'main',
   latestRunStatus: 'done',
 } as const;
 
@@ -33,6 +34,16 @@ describe('mayAutoMerge', () => {
     expect(mayAutoMerge({ ...ready, mergeable: 'UNKNOWN' })).toBe(false);
     for (const latestRunStatus of ['queued', 'running', 'failed', 'needs-human'] as const) {
       expect(mayAutoMerge({ ...ready, latestRunStatus })).toBe(false);
+    }
+  });
+
+  it('merges only a PR based on the repository base branch', () => {
+    const develop = { ...personalRepo, baseBranch: 'develop' };
+    expect(mayAutoMerge({ ...ready, config: develop, baseBranch: 'develop' })).toBe(true);
+    expect(mayAutoMerge({ ...ready, config: develop, baseBranch: 'main' })).toBe(false);
+    for (const checks of ['passing', 'none'] as const) {
+      expect(mayAutoMerge({ ...ready, checks, baseBranch: 'fractory/1-blocker' })).toBe(false);
+      expect(mayAutoMerge({ ...ready, checks, baseBranch: '' })).toBe(false);
     }
   });
 });

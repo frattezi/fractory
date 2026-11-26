@@ -14,21 +14,26 @@ export interface AutoMergeInput {
   checks: ChecksSummary;
   /** GitHub's `mergeable` field: MERGEABLE | CONFLICTING | UNKNOWN. */
   mergeable: string;
+  /** The branch the PR merges into (`baseRefName`). */
+  baseBranch: string;
   latestRunStatus: RunStatus;
 }
 
 /**
  * Personal Mode merges a PR when the Ticket's latest Run is done, GitHub says it is MERGEABLE and
  * checks are passing or absent. Never while checks are pending or failing, never when conflicting
- * or unknown, and never in Work Mode (ADR 0005).
+ * or unknown, and never in Work Mode (ADR 0005). Never a PR based on any branch other than the
+ * repository's base branch, so work built on unmerged work cannot land before it (Spec 0004).
  */
 export const mayAutoMerge = ({
   config,
   checks,
   mergeable,
+  baseBranch,
   latestRunStatus,
 }: AutoMergeInput): boolean =>
   config.mode === 'personal' &&
+  baseBranch === config.baseBranch &&
   latestRunStatus === 'done' &&
   mergeable === 'MERGEABLE' &&
   (checks === 'passing' || checks === 'none');
@@ -114,7 +119,7 @@ export const describeWorkflow = (
       value: work ? 'never' : 'on',
       why: work
         ? 'Work Mode never auto-merges.'
-        : 'Merges when the latest Run is done, the PR is MERGEABLE and checks pass or do not exist; waits while checks are pending, stops for failing ones.',
+        : 'Merges when the latest Run is done, the PR is MERGEABLE and based on the base branch, and checks pass or do not exist; waits while checks are pending, stops for failing ones.',
     },
     {
       id: 'agents',

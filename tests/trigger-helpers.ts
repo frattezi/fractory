@@ -65,6 +65,7 @@ export const makePr = (overrides: Record<string, unknown> = {}): PrView =>
     number: 7,
     state: 'OPEN',
     mergeable: 'MERGEABLE',
+    baseRefName: 'main',
     headRefOid: 'sha1',
     statusCheckRollup: [{ status: 'COMPLETED', conclusion: 'SUCCESS' }],
     reviews: [],
