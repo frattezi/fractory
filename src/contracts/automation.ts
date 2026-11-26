@@ -121,6 +121,11 @@ export const AutomationRunRecordSchema = z.object({
   pid: z.number().int().optional(),
   /** Set once the Run finishes. */
   result: RunResultSchema.optional(),
+  /**
+   * Set once the Automation's history was pruned after this Run finished. A finished record
+   * without it tells the tick that its Automation still needs pruning.
+   */
+  prunedAt: z.string().datetime().optional(),
 });
 export type AutomationRunRecord = z.infer<typeof AutomationRunRecordSchema>;
 

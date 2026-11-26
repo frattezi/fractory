@@ -58,6 +58,7 @@ describe('Automation requests in the tick', () => {
       discarded: [],
       launched: [id],
       markedDead: [],
+      pruned: [],
     });
     expect(summary.errors).toBe(0);
     const runs = await store(h).listRuns('a7f3c2e1');
