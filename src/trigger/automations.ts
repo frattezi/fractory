@@ -112,6 +112,8 @@ export const acceptAutomationRequests = async (deps: AcceptDeps): Promise<Accept
 
       const id = automationRunId(automation.id, firedFor);
       const stamp = deps.now().toISOString();
+      // The copy first: a record never exists without the configuration it runs.
+      await store.writeRequestCopy(id, verdict.request);
       await store.writeRun({
         version: AUTOMATION_RUN_RECORD_VERSION,
         id,

@@ -294,16 +294,19 @@ const commands: Record<string, (args: CliArgs, env: CliEnv) => Promise<void>> = 
     });
   },
 
-  /**
-   * The host process of a launched Automation Run. Executing the Automation's work is not built
-   * yet, so it exits without a result and a later tick marks the Run failed.
-   */
-  async 'automation-exec'(args) {
+  /** The host process of a launched Automation Run: runs it to completion and records the end. */
+  async 'automation-exec'(args, env) {
     const [automationId, runId] = args.positionals;
     if (!automationId || !runId) {
       throw new Error('Usage: fractory automation-exec <automationId> <runId>');
     }
-    throw new Error(`Automation Run ${runId}: executing Automation Runs is not supported yet`);
+    // Imported lazily: only automation-exec needs the sandbox stack.
+    const { executeAutomationRun } = await import('./runner/automation-execute.ts');
+    const factory = await loadFactory(env);
+    await executeAutomationRun(automationId, runId, {
+      store: new AutomationStore(factory.automationsDir),
+      ...(factory.resources && { cpus: factory.resources.cpusPerRun }),
+    });
   },
 
   async config(args, env) {

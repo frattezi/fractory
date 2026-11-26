@@ -22,7 +22,7 @@ import {
   readRunComments,
 } from '../registry/comments.ts';
 import { RunRegistry } from '../registry/registry.ts';
-import { MissingCredentialError, credentialKeysIn, resolveCredentials } from './credentials.ts';
+import { MissingCredentialError, refuseEnvCredentials, resolveCredentials } from './credentials.ts';
 import { type Exec, FRACTORY_ROOT, defaultExec } from './exec.ts';
 import { installPrePushHook } from './hook.ts';
 import {
@@ -370,27 +370,6 @@ class Executor {
     return z.string().url().parse(url);
   }
 
-  /**
-   * Sandcastle merges `.sandcastle/.env` under the agent provider's env, but a credential key
-   * defined there and not set by us (e.g. ANTHROPIC_API_KEY next to a Claude OAuth token) would
-   * still reach the sandbox and could pick the wrong account. So a Run refuses to start.
-   */
-  private async refuseEnvCredentials(repoPath: string): Promise<void> {
-    let content: string;
-    try {
-      content = await readFile(join(repoPath, '.sandcastle', '.env'), 'utf8');
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return;
-      throw new Error(`could not read .sandcastle/.env: ${message(error)}`);
-    }
-    const keys = credentialKeysIn(content);
-    if (keys.length > 0) {
-      throw new Error(
-        `.sandcastle/.env defines ${keys.join(', ')}; remove it: the account comes from the Keychain per Mode`,
-      );
-    }
-  }
-
   private agents(sandcastle: SandcastleAdapter, config: RepoConfig, used: Set<string>): FlowAgents {
     const wire = async <O extends { env?: Record<string, string> | undefined }>(
       kind: AgentKind,
@@ -458,7 +437,7 @@ class Executor {
     const rules = await (this.deps.readRules ?? defaultReadRules)();
     const followUp = await this.followUp(record);
 
-    await this.refuseEnvCredentials(record.repoPath);
+    await refuseEnvCredentials(record.repoPath);
     const flow = await (this.deps.loadFlow ?? loadFlow)(config.flow);
 
     const target = await this.resolveRemote(record, config);

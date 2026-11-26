@@ -1,3 +1,5 @@
+import { readFile } from 'node:fs/promises';
+import { join } from 'node:path';
 import { type AgentProfile, profileLabel } from '../contracts/agents.ts';
 import type { Exec } from './exec.ts';
 
@@ -77,4 +79,27 @@ export const credentialKeysIn = (dotenv: string): string[] => {
       .filter((key): key is string => key !== undefined),
   );
   return CREDENTIAL_ENV_KEYS.filter((key) => keys.has(key));
+};
+
+/**
+ * Sandcastle merges `.sandcastle/.env` under the provider's env, but a credential key defined
+ * there and not set by us (e.g. ANTHROPIC_API_KEY next to a Claude OAuth token) would still reach
+ * the sandbox and could pick the wrong account. So a Run refuses to start.
+ */
+export const refuseEnvCredentials = async (repoPath: string): Promise<void> => {
+  let content: string;
+  try {
+    content = await readFile(join(repoPath, '.sandcastle', '.env'), 'utf8');
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return;
+    throw new Error(
+      `could not read .sandcastle/.env: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+  const keys = credentialKeysIn(content);
+  if (keys.length > 0) {
+    throw new Error(
+      `.sandcastle/.env defines ${keys.join(', ')}; remove it: the account comes from the Keychain per Mode`,
+    );
+  }
 };
