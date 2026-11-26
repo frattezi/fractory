@@ -116,4 +116,55 @@ describe('repoStatus', () => {
     });
     expect(s.activeRuns).toEqual([]);
   });
+  describe('answered needs-human questions', () => {
+    const waiting = [
+      makeRun({
+        id: 'd',
+        key: 'kd',
+        ticketRef: 'github:me/app#4',
+        branch: 'fractory/4-d',
+        status: 'needs-human',
+        result: { outcome: 'needs-human', reason: 'ambiguous-spec', question: 'Which flag?' },
+      }),
+    ];
+    const status = (answeredRunIds?: string[]) =>
+      repoStatus({
+        repoPath: '/repo/app',
+        config: personal,
+        factoryRepos: ['/repo/app'],
+        runs: waiting,
+        ...(answeredRunIds && { answeredRunIds }),
+      });
+
+    it('marks a question whose Run has an answer request as answered and waiting for the next tick', () => {
+      const s = status(['d']);
+      expect(s.needsHuman).toEqual([
+        {
+          ticketRef: 'github:me/app#4',
+          reason: 'ambiguous-spec',
+          question: 'Which flag?',
+          runId: 'd',
+          answered: true,
+        },
+      ]);
+      expect(formatStatus(s)).toContain(
+        '  - github:me/app#4 ambiguous-spec: Which flag? (answered, waiting for the next tick)',
+      );
+    });
+
+    it('reports a question with no answer request exactly as before', () => {
+      for (const s of [status(), status(['other-run'])]) {
+        expect(s.needsHuman).toEqual([
+          {
+            ticketRef: 'github:me/app#4',
+            reason: 'ambiguous-spec',
+            question: 'Which flag?',
+            runId: 'd',
+          },
+        ]);
+        expect(formatStatus(s)).toContain('  - github:me/app#4 ambiguous-spec: Which flag?\n');
+        expect(formatStatus(s)).not.toContain('answered');
+      }
+    });
+  });
 });

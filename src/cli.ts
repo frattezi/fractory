@@ -35,6 +35,7 @@ import { installSkills } from './package/install.ts';
 import { readHostLoad } from './policy/resources.ts';
 import { describeWorkflow, formatWorkflow } from './policy/workflow.ts';
 import { type RunShell, defaultRunShell, rebuild } from './rebuild/rebuild.ts';
+import { listAnswerRequests } from './registry/answers.ts';
 import { AutomationStore } from './registry/automations.ts';
 import { readHostState } from './registry/host-state.ts';
 import { RunRegistry } from './registry/registry.ts';
@@ -421,6 +422,7 @@ const commands: Record<string, (args: CliArgs, env: CliEnv) => Promise<void>> = 
       config,
       factoryRepos: factory.repos,
       runs: await new RunRegistry(factory.registryDir).list(),
+      answeredRunIds: await listAnswerRequests(factory.registryDir),
     });
     const host = await readHostState(factory.hostStatePath);
     env.out(
