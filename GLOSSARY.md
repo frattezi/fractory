@@ -87,6 +87,10 @@ Whose subscription pays for and answers for an agent's work: work or personal. I
 **Flow**:
 The fixed sequence of steps a Run follows to turn a Ticket into a change. Each repository names the Flow it uses.
 
+**Rebuild**:
+Refreshing what the owner runs from a repository's current checkout, by running the commands its `.fractory.json` lists under `rebuild`. It never touches git and is only started by the owner, with `fractory rebuild`.
+_Avoid_: deploy, update, sync
+
 ### Knowledge
 
 **Rule**:

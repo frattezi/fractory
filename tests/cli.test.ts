@@ -44,6 +44,7 @@ const setup = async () => {
     launchAgentsDir: join(root, 'LaunchAgents'),
     uid: 501,
     exec: async () => '',
+    runShell: async () => 0,
     gh: new FakeGh(),
     launchctl: async (args) => {
       launchctlCalls.push(args);
