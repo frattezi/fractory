@@ -134,9 +134,9 @@ Ticket read, the prompt assembly, the completion-signal contract or `publish`. A
 Run reaching its end without a usable result is recorded as failed with its log; there is no
 `needs-human` and no re-run, because the manager owns both retrying and asking the owner.
 
-**The two kinds.** Each is a Flow, the primitive this repo already uses to describe how work is
-carried out in a container, so adding a third kind of Automation later is a new flow file and
-no change to the executor.
+**The two kinds.** One executor with a small branch on the kind, since everything but how the
+work starts is shared: the worktree, the container, the output mount, the credentials and the
+log. A third kind later is another branch, or a Flow if one ever needs a different shape.
 
 **The tick.** One new step reading the request directory, placed after Re-run handling and
 before queued Runs are launched. The launch gate is the existing one: Host Limits, the
