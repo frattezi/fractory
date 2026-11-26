@@ -25,6 +25,38 @@ describe('pre-push hook', () => {
     }
   });
 
+  it('also refuses pushes to the branch the Run is built on', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'hook-'));
+    const script = renderPrePushHook({
+      baseBranch: 'develop',
+      runBaseBranch: 'fractory/4-astro',
+      repoHookPath: join(dir, 'none'),
+    });
+    for (const branch of ['fractory/4-astro', 'develop', 'main', 'master']) {
+      const result = await runHook(script, dir, line(`refs/heads/${branch}`));
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain(branch);
+    }
+    expect((await runHook(script, dir, line('refs/heads/fractory/5-law'))).status).toBe(0);
+  });
+
+  it('protects only the usual branches when the Run names no base of its own', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'hook-'));
+    const none = join(dir, 'none');
+    expect(
+      renderPrePushHook({ baseBranch: 'main', runBaseBranch: undefined, repoHookPath: none }),
+    ).toBe(renderPrePushHook({ baseBranch: 'main', repoHookPath: none }));
+    expect(
+      renderPrePushHook({ baseBranch: 'main', runBaseBranch: 'main', repoHookPath: none }),
+    ).toBe(renderPrePushHook({ baseBranch: 'main', repoHookPath: none }));
+  });
+
+  it('rejects a Run base branch that is not safe to embed in the script', () => {
+    expect(() =>
+      renderPrePushHook({ baseBranch: 'main', runBaseBranch: 'x$(id)', repoHookPath: '/x' }),
+    ).toThrow();
+  });
+
   it('allows other branches and chains to the repo hook with args and stdin', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'hook-'));
     const repoHook = join(dir, 'repo-pre-push');
@@ -75,6 +107,25 @@ describe('pre-push hook', () => {
       "repo_hook='/repo/.git/hooks/pre-push'",
     );
     expect(calls).toContainEqual(['config', '--worktree', 'core.hooksPath', hooksDir]);
+  });
+
+  it('installs a hook that protects the Run base branch', async () => {
+    const gitDir = await mkdtemp(join(tmpdir(), 'gitdir-'));
+    const exec: Exec = async (_file, args) => {
+      if (args[0] === 'rev-parse' && args[1] === '--absolute-git-dir')
+        return { stdout: `${gitDir}\n`, stderr: '' };
+      if (args[0] === 'rev-parse') return { stdout: '/repo/.git\n', stderr: '' };
+      return { stdout: '', stderr: '' };
+    };
+    const { hooksDir } = await installPrePushHook({
+      worktreePath: '/wt',
+      baseBranch: 'main',
+      runBaseBranch: 'fractory/4-astro',
+      exec,
+    });
+    expect(await readFile(join(hooksDir, 'pre-push'), 'utf8')).toContain(
+      'refs/heads/main|refs/heads/fractory/4-astro|refs/heads/master)',
+    );
   });
   it('writes the shared worktreeConfig flag only once and retries a busy config lock', async () => {
     const gitDir = await mkdtemp(join(tmpdir(), 'gitdir-'));
