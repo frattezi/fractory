@@ -38,12 +38,26 @@ const TimezoneSchema = z
   .min(1)
   .refine(isIanaTimezone, { message: 'Expected an IANA timezone, e.g. "Europe/Lisbon"' });
 
+/** Letters, digits, `-` and `_`, starting with a letter or digit: safe as a file name. */
+const FileNameSafeSchema = z
+  .string()
+  .regex(/^[A-Za-z0-9][A-Za-z0-9_-]*$/, 'Expected letters, digits, "-" or "_" only');
+
+/**
+ * An Automation's identity: assigned once when the Automation is created and never changed, so a
+ * rename keeps its history. Unique per host. File-name safe, so it can name directories.
+ */
+export const AutomationIdSchema = FileNameSafeSchema;
+export type AutomationId = z.infer<typeof AutomationIdSchema>;
+
 export const AutomationSchema = z.object({
   version: z.literal(AUTOMATION_VERSION),
-  /** Unique per host; used in file names, so letters, digits, `-` and `_` only. */
-  name: z
-    .string()
-    .regex(/^[A-Za-z0-9][A-Za-z0-9_-]*$/, 'Expected letters, digits, "-" or "_" only'),
+  id: AutomationIdSchema,
+  /**
+   * A label the owner may edit at any time; not the identity, so nothing resolves an Automation by
+   * it. File-name safe, so a file name may carry it for readability.
+   */
+  name: FileNameSafeSchema,
   kind: AutomationKindSchema,
   repoPath: z.string().min(1),
   cron: CronSchema,
@@ -75,9 +89,10 @@ export type AutomationRunStatus = z.infer<typeof AutomationRunStatusSchema>;
 
 export const AutomationRunRecordSchema = z.object({
   version: z.literal(AUTOMATION_RUN_RECORD_VERSION),
+  /** This Automation Run's own id. */
   id: z.string().min(1),
-  /** The Automation's `name`. */
-  automation: z.string().min(1),
+  /** The `id` of the Automation that produced this Run (never its `name`). */
+  automationId: AutomationIdSchema,
   firedFor: z.string().datetime(),
   status: AutomationRunStatusSchema,
   startedAt: z.string().datetime(),
@@ -88,6 +103,16 @@ export const AutomationRunRecordSchema = z.object({
   result: RunResultSchema.optional(),
 });
 export type AutomationRunRecord = z.infer<typeof AutomationRunRecordSchema>;
+
+/**
+ * The configuration an Automation Run record belongs to, matched by id only. `undefined` means the
+ * record is orphaned: no configuration given carries its `automationId`.
+ */
+export const automationOf = (
+  record: Pick<AutomationRunRecord, 'automationId'>,
+  automations: readonly Automation[],
+): Automation | undefined =>
+  automations.find((automation) => automation.id === record.automationId);
 
 export type Parsed<T> = { ok: true; value: T } | { ok: false; reason: string };
 
