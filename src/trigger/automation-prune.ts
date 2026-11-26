@@ -22,7 +22,7 @@ const inFlight = (record: AutomationRunRecord): boolean =>
   record.status === 'queued' || record.status === 'running';
 
 /** Newest first: by the instant each Run fired for, then when it started, then by id. */
-const newestFirst = (a: AutomationRunRecord, b: AutomationRunRecord): number =>
+export const newestFirst = (a: AutomationRunRecord, b: AutomationRunRecord): number =>
   new Date(b.firedFor).getTime() - new Date(a.firedFor).getTime() ||
   b.startedAt.localeCompare(a.startedAt) ||
   b.id.localeCompare(a.id);

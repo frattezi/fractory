@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import { type CliEnv, main, parseArgs } from '../src/cli.ts';
+import { AutomationStore } from '../src/registry/automations.ts';
 import { RunRegistry } from '../src/registry/registry.ts';
 import { FakeGh, FakeSource, makeRun, makeTicket, memoryLogger } from './trigger-helpers.ts';
 
@@ -222,6 +223,126 @@ describe('fractory CLI', () => {
     expect(out[0]).toContain('queued');
     expect(out[0]).toContain('MODE');
     expect(out[0]).toContain('AGENTS');
+  });
+
+  describe('automations', () => {
+    const automationRun = (
+      store: AutomationStore,
+      automationId: string,
+      id: string,
+      over = {},
+    ) => ({
+      version: 1 as const,
+      id,
+      automationId,
+      firedFor: '2026-06-01T07:00:00.000Z',
+      status: 'done' as const,
+      startedAt: '2026-06-01T07:00:05.000Z',
+      updatedAt: '2026-06-01T07:01:35.000Z',
+      logPath: store.logPath(automationId, id),
+      outputPath: store.outputPath(automationId, id),
+      ...over,
+    });
+
+    it('lists Automation Runs newest first with their Automation, instant, status, duration and paths', async () => {
+      const { root, env, out } = await setup();
+      const store = new AutomationStore(join(root, 'automations'));
+      await store.writeRun(automationRun(store, 'digest', 'digest-old'));
+      await store.writeRun(
+        automationRun(store, 'report', 'report-new', {
+          firedFor: '2026-06-02T07:00:00.000Z',
+          startedAt: '2026-06-02T07:00:00.000Z',
+          updatedAt: '2026-06-02T07:00:00.000Z',
+          status: 'running',
+        }),
+      );
+      expect(await main(['automations'], env)).toBe(0);
+      const lines = (out[0] as string).split('\n');
+      expect(lines[0]).toMatch(/AUTOMATION\s+FIRED FOR\s+STATUS\s+DURATION\s+LOG\s+OUTPUT/);
+      expect(lines[1]).toContain('report');
+      expect(lines[1]).toContain('2026-06-02T07:00:00.000Z');
+      expect(lines[1]).toMatch(/running\s+-\s/);
+      expect(lines[1]).toContain(store.logPath('report', 'report-new'));
+      expect(lines[2]).toContain('digest');
+      expect(lines[2]).toMatch(/done\s+1m30s\s/);
+      expect(lines[2]).toContain(store.outputPath('digest', 'digest-old'));
+      expect(lines).toHaveLength(3);
+    });
+
+    it('prints the same information as JSON with --json', async () => {
+      const { root, env, out } = await setup();
+      const store = new AutomationStore(join(root, 'automations'));
+      await store.writeRun(automationRun(store, 'digest', 'digest-old'));
+      await store.writeRun(
+        automationRun(store, 'digest', 'digest-new', {
+          firedFor: '2026-06-02T07:00:00.000Z',
+          status: 'queued',
+        }),
+      );
+      expect(await main(['automations', '--json'], env)).toBe(0);
+      expect(JSON.parse(out[0] as string)).toEqual([
+        {
+          id: 'digest-new',
+          automationId: 'digest',
+          firedFor: '2026-06-02T07:00:00.000Z',
+          status: 'queued',
+          startedAt: '2026-06-01T07:00:05.000Z',
+          updatedAt: '2026-06-01T07:01:35.000Z',
+          durationMs: null,
+          logPath: store.logPath('digest', 'digest-new'),
+          outputPath: store.outputPath('digest', 'digest-new'),
+        },
+        {
+          id: 'digest-old',
+          automationId: 'digest',
+          firedFor: '2026-06-01T07:00:00.000Z',
+          status: 'done',
+          startedAt: '2026-06-01T07:00:05.000Z',
+          updatedAt: '2026-06-01T07:01:35.000Z',
+          durationMs: 90_000,
+          logPath: store.logPath('digest', 'digest-old'),
+          outputPath: store.outputPath('digest', 'digest-old'),
+        },
+      ]);
+    });
+
+    it('prints an empty list and succeeds when the records directory is absent', async () => {
+      const { env, out } = await setup();
+      expect(await main(['automations'], env)).toBe(0);
+      expect(out).toEqual(['No Automation Runs.']);
+      out.length = 0;
+      expect(await main(['automations', '--json'], env)).toBe(0);
+      expect(JSON.parse(out[0] as string)).toEqual([]);
+    });
+
+    it('prints an empty list when the records directory is empty', async () => {
+      const { root, env, out } = await setup();
+      await mkdir(join(root, 'automations', 'requests'), { recursive: true });
+      expect(await main(['automations', '--json'], env)).toBe(0);
+      expect(JSON.parse(out[0] as string)).toEqual([]);
+      out.length = 0;
+      expect(await main(['automations'], env)).toBe(0);
+      expect(out).toEqual(['No Automation Runs.']);
+    });
+
+    it('leaves out a record this release cannot understand', async () => {
+      const { root, env, out } = await setup();
+      const store = new AutomationStore(join(root, 'automations'));
+      await store.writeRun(automationRun(store, 'digest', 'digest-old'));
+      await writeFile(
+        join(root, 'automations', 'digest', 'future.json'),
+        JSON.stringify({ version: 99, id: 'future' }),
+      );
+      await writeFile(join(root, 'automations', 'digest', 'broken.json'), '{ not json');
+      expect(await main(['automations', '--json'], env)).toBe(0);
+      expect(JSON.parse(out[0] as string).map((r: { id: string }) => r.id)).toEqual(['digest-old']);
+    });
+
+    it('appears in the help', async () => {
+      const { env, out } = await setup();
+      expect(await main(['help'], env)).toBe(0);
+      expect(out[0]).toContain('automations [--json]');
+    });
   });
 
   it('run takes the Ticket out of Ready so the tick does not queue a second Run', async () => {

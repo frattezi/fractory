@@ -40,6 +40,7 @@ import { RunRegistry } from './registry/registry.ts';
 import { launchAutomationRun } from './runner/automation.ts';
 import { launchRun } from './runner/index.ts';
 import { formatHost, formatStatus, repoStatus } from './status/status.ts';
+import { newestFirst } from './trigger/automation-prune.ts';
 import { type Launchctl, installLaunchd, resolveBin, uninstallLaunchd } from './trigger/launchd.ts';
 import { branchFor, queueRun } from './trigger/queue.ts';
 import { type Logger, checkPid, createFileLogger } from './trigger/support.ts';
@@ -144,6 +145,7 @@ const HELP_NAMES = new Set(['help', '--help', '-h']);
 
 const HELP = `Usage: fractory <command>
   tick | cleanup | runs | run <ticketRef> | run-exec <id>
+  automations [--json]
   automation-exec <automationId> <runId>
   status [repoPath] [--json]
   config show [repoPath]
@@ -167,6 +169,21 @@ const formatTable = (rows: string[][]): string => {
         .trimEnd(),
     )
     .join('\n');
+};
+
+/** How long a finished Automation Run took, from its record; `undefined` while it is in flight. */
+const automationRunDurationMs = (record: AutomationRunRecord): number | undefined =>
+  record.status === 'done' || record.status === 'failed'
+    ? Math.max(0, new Date(record.updatedAt).getTime() - new Date(record.startedAt).getTime())
+    : undefined;
+
+const formatDuration = (ms: number | undefined): string => {
+  if (ms === undefined) return '-';
+  const seconds = Math.round(ms / 1000);
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m${String(seconds % 60).padStart(2, '0')}s`;
+  return `${Math.floor(minutes / 60)}h${String(minutes % 60).padStart(2, '0')}m`;
 };
 
 const findRepoForTicket = async (
@@ -248,6 +265,40 @@ const commands: Record<string, (args: CliArgs, env: CliEnv) => Promise<void>> = 
           r.branch,
           r.prUrl ?? '-',
           r.updatedAt,
+        ]),
+      ]),
+    );
+  },
+
+  /** Automation Runs newest first. Records this release cannot read are left out. */
+  async automations(args, env) {
+    const factory = await loadFactory(env);
+    const records = (await new AutomationStore(factory.automationsDir).listAllRuns()).sort(
+      newestFirst,
+    );
+    const rows = records.map((r) => ({
+      id: r.id,
+      automationId: r.automationId,
+      firedFor: r.firedFor,
+      status: r.status,
+      startedAt: r.startedAt,
+      updatedAt: r.updatedAt,
+      durationMs: automationRunDurationMs(r) ?? null,
+      logPath: r.logPath,
+      outputPath: r.outputPath,
+    }));
+    if (args.flags.json === true) return env.out(JSON.stringify(rows, null, 2));
+    if (rows.length === 0) return env.out('No Automation Runs.');
+    env.out(
+      formatTable([
+        ['AUTOMATION', 'FIRED FOR', 'STATUS', 'DURATION', 'LOG', 'OUTPUT'],
+        ...rows.map((r) => [
+          r.automationId,
+          r.firedFor,
+          r.status,
+          formatDuration(r.durationMs ?? undefined),
+          r.logPath,
+          r.outputPath,
         ]),
       ]),
     );
