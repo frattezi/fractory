@@ -92,6 +92,10 @@ _Avoid_: budget, capacity, quota
 The state of the queue while the machine is over its Host Limits: queued Runs wait and start once it has room again. It describes the machine, not a Run.
 _Avoid_: paused, throttled
 
+**Babysitting**:
+Driving a repository's unfinished Tickets to merged one at a time: queueing a Run where a Ticket has none, waiting for the Run and then for the merge before the next Ticket starts. It stops at the first Ticket that needs the owner and never merges anything itself.
+_Avoid_: watching, polling, monitoring
+
 ### Agents and flows
 
 **Agent Profile**:

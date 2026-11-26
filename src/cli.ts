@@ -11,6 +11,7 @@ import {
   createTicket,
   createTicketSource,
 } from './adapters/index.ts';
+import { babysit, formatBabysitSummary } from './babysit/babysit.ts';
 import { cleanup } from './cleanup/cleanup.ts';
 import {
   describeRepoConfig,
@@ -108,7 +109,7 @@ export interface CliArgs {
 }
 
 const BOOLEAN_FLAGS = new Set(['ci', 'no-ci', 'ticket-gate', 'force', 'json']);
-const REPEATABLE_FLAGS = new Set(['blocked-by']);
+const REPEATABLE_FLAGS = new Set(['blocked-by', 'ticket']);
 
 export const parseArgs = (argv: string[]): CliArgs => {
   const args: CliArgs = { positionals: [], flags: {} };
@@ -146,6 +147,7 @@ const HELP = `Usage: fractory <command>
   tick | cleanup | runs | run <ticketRef> | run-exec <id>
   automation-exec <automationId> <runId>
   status [repoPath] [--json]
+  babysit [repoPath] [--ticket <ref>]... [--poll <seconds>] [--timeout-min <minutes>]
   config show [repoPath]
   rules [repoPath] [--json]
   launchd install|uninstall
@@ -184,6 +186,39 @@ const findRepoForTicket = async (
     if (matches) return { repoPath, config };
   }
   throw new Error(`No configured repo owns ${ref}`);
+};
+
+/**
+ * Queues a manual Run for a Ticket, continuing on the branch its earlier Runs used so the Run
+ * updates the Ticket's pull request instead of opening a second one. Shared by `run` and `babysit`.
+ */
+const queueManualRun = async (
+  env: CliEnv,
+  factory: FactoryConfig,
+  ref: TicketRef,
+): Promise<RunRecord> => {
+  const { repoPath, config } = await findRepoForTicket(env, factory, ref);
+  const registry = new RunRegistry(factory.registryDir);
+  const previous = (await registry.list())
+    .filter((r) => r.ticketRef === ref)
+    .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
+    .at(-1);
+  const source = env.createTicketSource(config.ticketSource, config.mode);
+  const branch = previous?.branch ?? branchFor(ref, (await source.get(ref)).title, config.mode);
+  const { record } = await queueRun(
+    { registry, factory, now: env.now, newId: env.newId },
+    {
+      ticketRef: ref,
+      repoPath,
+      trigger: { kind: 'manual' },
+      branch,
+      mode: config.mode,
+      flow: config.flow,
+    },
+  );
+  // Out of Ready, so the tick does not queue a ticket-ready Run next to this one.
+  await source.setStatus(ref, 'in_progress');
+  return record;
 };
 
 const commands: Record<string, (args: CliArgs, env: CliEnv) => Promise<void>> = {
@@ -256,29 +291,37 @@ const commands: Record<string, (args: CliArgs, env: CliEnv) => Promise<void>> = 
   async run(args, env) {
     const ref = TicketRefSchema.parse(args.positionals[0]);
     const factory = await loadFactory(env);
-    const { repoPath, config } = await findRepoForTicket(env, factory, ref);
-    const registry = new RunRegistry(factory.registryDir);
-    // Reuse the Ticket's branch when it already has Runs, so a manual Run continues the PR.
-    const previous = (await registry.list())
-      .filter((r) => r.ticketRef === ref)
-      .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
-      .at(-1);
-    const source = env.createTicketSource(config.ticketSource, config.mode);
-    const branch = previous?.branch ?? branchFor(ref, (await source.get(ref)).title, config.mode);
-    const { record } = await queueRun(
-      { registry, factory, now: env.now, newId: env.newId },
-      {
-        ticketRef: ref,
-        repoPath,
-        trigger: { kind: 'manual' },
-        branch,
-        mode: config.mode,
-        flow: config.flow,
-      },
-    );
-    // Out of Ready, so the tick does not queue a ticket-ready Run next to this one.
-    await source.setStatus(ref, 'in_progress');
+    const record = await queueManualRun(env, factory, ref);
     env.out(`Queued Run ${record.id} on ${record.branch}; the next tick starts it.`);
+  },
+
+  /**
+   * Drives this repository's unfinished Tickets to merged, one at a time: queue a Run where one is
+   * missing, wait for it, wait for the merge, then the next Ticket. Stops at the first Run that
+   * needs the owner. Reads the registry only; the tick refreshes pull request state.
+   */
+  async babysit(args, env) {
+    const factory = await loadFactory(env);
+    const repoPath = resolve(env.cwd, args.positionals[0] ?? '.');
+    const registry = new RunRegistry(factory.registryDir);
+    const tickets = ((args.flags.ticket as string[] | string | undefined) ?? []) as
+      | string[]
+      | string;
+    const summary = await babysit({
+      repoPath,
+      tickets: (Array.isArray(tickets) ? tickets : [tickets]).map((t) => TicketRefSchema.parse(t)),
+      pollMs: Number(args.flags.poll ?? 30) * 1_000,
+      perTicketMs: Number(args.flags['timeout-min'] ?? 120) * 60_000,
+      deps: {
+        listRuns: () => registry.list(),
+        queueManualRun: (ref) => queueManualRun(env, factory, TicketRefSchema.parse(ref)),
+        wait: (ms) => new Promise((done) => setTimeout(done, ms)),
+        now: env.now,
+        out: env.out,
+      },
+    });
+    env.out(formatBabysitSummary(summary));
+    if (summary.outcome !== 'merged') throw new Error(`babysitting ${summary.outcome}`);
   },
 
   async 'run-exec'(args, env) {
