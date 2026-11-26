@@ -60,7 +60,7 @@ describe('pre-push hook', () => {
       calls.push(args);
       if (args[0] === 'rev-parse' && args[1] === '--absolute-git-dir')
         return { stdout: `${gitDir}\n`, stderr: '' };
-      if (args[0] === 'rev-parse') return { stdout: '/repo/.git/hooks/pre-push\n', stderr: '' };
+      if (args[0] === 'rev-parse') return { stdout: '/repo/.git\n', stderr: '' };
       return { stdout: '', stderr: '' };
     };
 
@@ -84,7 +84,7 @@ describe('pre-push hook', () => {
       calls.push(args);
       if (args[0] === 'rev-parse' && args[1] === '--absolute-git-dir')
         return { stdout: `${gitDir}\n`, stderr: '' };
-      if (args[0] === 'rev-parse') return { stdout: '/repo/.git/hooks/pre-push\n', stderr: '' };
+      if (args[0] === 'rev-parse') return { stdout: '/repo/.git\n', stderr: '' };
       if (args.includes('--get')) return { stdout: 'true\n', stderr: '' };
       if (args.includes('--worktree') && locked-- > 0) {
         throw Object.assign(new Error('git failed'), {
@@ -112,7 +112,7 @@ describe('pre-push hook', () => {
     const exec: Exec = async (_file, args) => {
       if (args[0] === 'rev-parse' && args[1] === '--absolute-git-dir')
         return { stdout: `${gitDir}\n`, stderr: '' };
-      if (args[0] === 'rev-parse') return { stdout: '/repo/.git/hooks/pre-push\n', stderr: '' };
+      if (args[0] === 'rev-parse') return { stdout: '/repo/.git\n', stderr: '' };
       if (args.includes('--get')) throw new Error('unset');
       if (args[0] === 'config')
         throw Object.assign(new Error('boom'), { stderr: 'fatal: bad config' });
@@ -121,5 +121,47 @@ describe('pre-push hook', () => {
     await expect(
       installPrePushHook({ worktreePath: '/wt', baseBranch: 'main', exec, sleep: async () => {} }),
     ).rejects.toThrow('boom');
+  });
+
+  it('never chains to itself when a Run reuses a worktree whose hooksPath is already ours', async () => {
+    const gitDir = await mkdtemp(join(tmpdir(), 'gitdir-'));
+    const ours = join(gitDir, 'fractory-hooks');
+    const exec: Exec = async (_file, args) => {
+      const key = args.join(' ');
+      if (key === 'rev-parse --absolute-git-dir') return { stdout: `${gitDir}\n`, stderr: '' };
+      if (key.startsWith('rev-parse --path-format=absolute --git-common-dir'))
+        return { stdout: '/repo/.git\n', stderr: '' };
+      // What `--git-path hooks/pre-push` would wrongly return here; it must not be asked.
+      if (key.startsWith('rev-parse --git-path'))
+        return { stdout: `${ours}/pre-push\n`, stderr: '' };
+      if (key === 'config --local --get core.hooksPath') return { stdout: `${ours}\n`, stderr: '' };
+      return { stdout: '', stderr: '' };
+    };
+    for (let i = 0; i < 2; i++) {
+      await installPrePushHook({ worktreePath: '/wt', baseBranch: 'main', exec });
+    }
+    const script = await readFile(join(ours, 'pre-push'), 'utf8');
+    expect(script).toContain("repo_hook=''");
+    const result = await runHook(script, gitDir, line('refs/heads/fractory/1'));
+    expect(result.status).toBe(0);
+  });
+
+  it("chains to the repo's configured hooksPath (e.g. husky), resolved from the worktree", async () => {
+    const gitDir = await mkdtemp(join(tmpdir(), 'gitdir-'));
+    const exec: Exec = async (_file, args) => {
+      const key = args.join(' ');
+      if (key === 'rev-parse --absolute-git-dir') return { stdout: `${gitDir}\n`, stderr: '' };
+      if (key.startsWith('rev-parse --path-format')) return { stdout: '/repo/.git\n', stderr: '' };
+      if (key === 'config --local --get core.hooksPath') return { stdout: '.husky\n', stderr: '' };
+      return { stdout: '', stderr: '' };
+    };
+    const { hooksDir } = await installPrePushHook({
+      worktreePath: '/wt',
+      baseBranch: 'main',
+      exec,
+    });
+    expect(await readFile(join(hooksDir, 'pre-push'), 'utf8')).toContain(
+      "repo_hook='/wt/.husky/pre-push'",
+    );
   });
 });
