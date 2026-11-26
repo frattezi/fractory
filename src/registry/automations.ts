@@ -117,6 +117,30 @@ export class AutomationStore {
     return records.filter((r): r is AutomationRunRecord => r !== undefined);
   }
 
+  /** Every Automation's Run records, across all Automations. Unreadable records are skipped. */
+  async listAllRuns(): Promise<AutomationRunRecord[]> {
+    let names: string[];
+    try {
+      names = (await readdir(this.dir, { withFileTypes: true }))
+        .filter((entry) => entry.isDirectory())
+        .map((entry) => entry.name)
+        .filter((name) => name !== REQUESTS_DIR && name !== REFUSED_DIR)
+        .sort();
+    } catch (error) {
+      if (isMissing(error)) return [];
+      throw error;
+    }
+    return (await Promise.all(names.map((name) => this.listRuns(name)))).flat();
+  }
+
+  /** One Automation Run's record; `undefined` when it is absent or unreadable. */
+  async getRun(
+    automationId: AutomationId,
+    runId: string,
+  ): Promise<AutomationRunRecord | undefined> {
+    return (await this.listRuns(automationId)).find((r) => r.id === runId);
+  }
+
   /**
    * Whether the Automation already has a record for this instant. A record file that exists but
    * cannot be read still counts: a failed read proves nothing, so it must not cause a second Run.

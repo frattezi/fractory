@@ -1,11 +1,13 @@
 import { mkdir, mkdtemp, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import type { AutomationRunRecord } from '../src/contracts/automation.ts';
 import type { FactoryConfig } from '../src/contracts/factory-config.ts';
 import type { RepoConfig } from '../src/contracts/repo-config.ts';
 import { RUN_RECORD_VERSION, type RunRecord, runKey } from '../src/contracts/run.ts';
 import type { Ticket, TicketRef, TicketSource, TicketStatus } from '../src/contracts/ticket.ts';
 import { type Gh, type PrView, PrViewSchema } from '../src/github/gh.ts';
+import { AutomationStore } from '../src/registry/automations.ts';
 import { RunRegistry } from '../src/registry/registry.ts';
 import type { Logger, PidState } from '../src/trigger/support.ts';
 import type { TickDeps } from '../src/trigger/tick.ts';
@@ -108,6 +110,8 @@ export interface Harness {
   source: FakeSource;
   gh: FakeGh;
   launched: string[];
+  /** Automation Run ids, in launch order; their stubbed pids are 5001, 5002, ... */
+  launchedAutomations: string[];
   log: ReturnType<typeof memoryLogger>;
   pids: Map<number, PidState>;
   configs: Map<string, RepoConfig | Error>;
@@ -135,6 +139,8 @@ export const makeHarness = async (
   const gh = new FakeGh();
   const log = memoryLogger();
   const launched: string[] = [];
+  const launchedAutomations: string[] = [];
+  const automationStore = new AutomationStore(factory.automationsDir);
   const pids = new Map<number, PidState>();
   const configs = new Map<string, RepoConfig | Error>(
     repos.map((r) => [r, options.config ?? personalRepo]),
@@ -156,6 +162,14 @@ export const makeHarness = async (
       launched.push(record.id);
       await registry.update(record.id, { status: 'running', pid: 4000 + launched.length });
     },
+    async launchAutomationRun(record: AutomationRunRecord) {
+      launchedAutomations.push(record.id);
+      await automationStore.writeRun({
+        ...record,
+        status: 'running',
+        pid: 5000 + launchedAutomations.length,
+      });
+    },
     checkPid: (pid) => pids.get(pid) ?? 'alive',
     now: () => {
       // each reading advances the clock so createdAt orders Runs deterministically
@@ -172,6 +186,7 @@ export const makeHarness = async (
     source,
     gh,
     launched,
+    launchedAutomations,
     log,
     pids,
     configs,

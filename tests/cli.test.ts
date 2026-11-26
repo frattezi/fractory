@@ -56,6 +56,7 @@ const setup = async () => {
       url: `https://example.test/${input.title}?${options.mode}`,
     }),
     launchRun: vi.fn(async () => {}),
+    launchAutomationRun: vi.fn(async () => {}),
     makeLogger: () => memoryLogger(),
     now: () => new Date('2026-06-01T00:00:00.000Z'),
     newId: () => 'manual-1',

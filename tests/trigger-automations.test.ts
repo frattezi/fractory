@@ -51,7 +51,14 @@ describe('Automation requests in the tick', () => {
 
     const id = automationRunId('a7f3c2e1', FIRED_FOR);
     expect(id).toBe('a7f3c2e1-20260601T030000Z');
-    expect(summary.automations).toEqual({ queued: [id], refused: [], discarded: [] });
+    // Queued from the request, then launched by the same tick: Host Limits are off here.
+    expect(summary.automations).toEqual({
+      queued: [id],
+      refused: [],
+      discarded: [],
+      launched: [id],
+      markedDead: [],
+    });
     expect(summary.errors).toBe(0);
     const runs = await store(h).listRuns('a7f3c2e1');
     expect(runs).toEqual([
@@ -59,7 +66,8 @@ describe('Automation requests in the tick', () => {
         id,
         automationId: 'a7f3c2e1',
         firedFor: FIRED_FOR,
-        status: 'queued',
+        status: 'running',
+        pid: 5001,
         logPath: join(h.factory.automationsDir, 'a7f3c2e1', `${id}.log`),
         outputPath: join(h.factory.automationsDir, 'a7f3c2e1', `${id}.out`),
       }),
@@ -87,7 +95,11 @@ describe('Automation requests in the tick', () => {
     await drop(h, 'again.json', request({ firedFor: '2026-06-01T03:00:00Z' }));
     const summary = await tick(h.deps);
 
-    expect(summary.automations).toEqual({ queued: [], refused: [], discarded: ['again.json'] });
+    expect(summary.automations).toMatchObject({
+      queued: [],
+      refused: [],
+      discarded: ['again.json'],
+    });
     expect(await store(h).listRuns('a7f3c2e1')).toEqual(before);
     expect(await requests(h)).toEqual([]);
   });
@@ -149,7 +161,7 @@ describe('Automation requests in the tick', () => {
 
     const summary = await tick(h.deps);
 
-    expect(summary.automations).toEqual({ queued: [], refused: ['bad.json'], discarded: [] });
+    expect(summary.automations).toMatchObject({ queued: [], refused: ['bad.json'], discarded: [] });
     expect(summary.errors).toBe(0);
     const refusals = await store(h).listRefusals();
     expect(refusals).toHaveLength(1);
@@ -161,7 +173,7 @@ describe('Automation requests in the tick', () => {
 
     // Not retried: the next tick has nothing to look at.
     const next = await tick(h.deps);
-    expect(next.automations).toEqual({ queued: [], refused: [], discarded: [] });
+    expect(next.automations).toMatchObject({ queued: [], refused: [], discarded: [] });
     expect(await store(h).listRefusals()).toHaveLength(1);
   });
 
@@ -186,7 +198,7 @@ describe('Automation requests in the tick', () => {
     const h = await makeHarness();
     await writeJson(requestPath(h, 'r.json.123.tmp'), request());
     const summary = await tick(h.deps);
-    expect(summary.automations).toEqual({ queued: [], refused: [], discarded: [] });
+    expect(summary.automations).toMatchObject({ queued: [], refused: [], discarded: [] });
     expect(await readdir(store(h).requestsDir)).toEqual(['r.json.123.tmp']);
   });
 
@@ -194,13 +206,13 @@ describe('Automation requests in the tick', () => {
     const absent = await makeHarness();
     const summary = await tick(absent.deps);
     expect(summary.errors).toBe(0);
-    expect(summary.automations).toEqual({ queued: [], refused: [], discarded: [] });
+    expect(summary.automations).toMatchObject({ queued: [], refused: [], discarded: [] });
 
     const empty = await makeHarness();
     await mkdir(store(empty).requestsDir, { recursive: true });
     const again = await tick(empty.deps);
     expect(again.errors).toBe(0);
-    expect(again.automations).toEqual({ queued: [], refused: [], discarded: [] });
+    expect(again.automations).toMatchObject({ queued: [], refused: [], discarded: [] });
   });
 
   it('reads requests after Re-run handling and before queued Runs are launched', async () => {
