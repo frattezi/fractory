@@ -3,13 +3,16 @@ import {
   AUTOMATION_REQUEST_VERSION,
   AUTOMATION_RUN_RECORD_VERSION,
   AUTOMATION_VERSION,
+  automationOf,
   parseAutomation,
   parseAutomationRequest,
   parseAutomationRunRecord,
 } from '../src/contracts/automation.ts';
+import type { Automation } from '../src/contracts/automation.ts';
 
-const automation = () => ({
+const automation = (): Automation => ({
   version: AUTOMATION_VERSION,
+  id: 'a7f3c2e1',
   name: 'nightly-deps',
   kind: 'agent',
   repoPath: '/repos/app',
@@ -31,8 +34,8 @@ const request = () => ({
 
 const record = () => ({
   version: AUTOMATION_RUN_RECORD_VERSION,
-  id: 'nightly-deps-20261126T030000Z',
-  automation: 'nightly-deps',
+  id: 'a7f3c2e1-20261126T030000Z',
+  automationId: 'a7f3c2e1',
   firedFor: '2026-11-26T03:00:00.000Z',
   status: 'done',
   startedAt: '2026-11-26T03:00:05.000Z',
@@ -61,6 +64,24 @@ describe('Automation configuration', () => {
   it('refuses a missing field, naming it', () => {
     const { entryPoint: _, ...rest } = automation();
     expect(refusal(parseAutomation(rest))).toMatch(/entryPoint: Required/);
+  });
+
+  it('requires a stable id, naming it when missing or bad', () => {
+    const { id: _, ...noId } = automation();
+    expect(refusal(parseAutomation(noId))).toMatch(/Invalid Automation: id: Required/);
+    expect(refusal(parseAutomation({ ...automation(), id: '' }))).toMatch(/id:/);
+    expect(refusal(parseAutomation({ ...automation(), id: '../x' }))).toMatch(/id:/);
+  });
+
+  it('still requires a file-name-safe name', () => {
+    const { name: _, ...noName } = automation();
+    expect(refusal(parseAutomation(noName))).toMatch(/name: Required/);
+  });
+
+  it('keeps the id when the name is edited', () => {
+    const parsed = parseAutomation({ ...automation(), name: 'weekly-deps' });
+    expect(parsed.ok).toBe(true);
+    if (parsed.ok) expect(parsed.value.id).toBe(automation().id);
   });
 
   it('refuses a kind outside agent and script', () => {
@@ -115,6 +136,10 @@ describe('Automation request', () => {
     expect(refusal(parseAutomationRequest({ ...request(), automation: noCron }))).toMatch(
       /automation\.cron: Required/,
     );
+    const { id: ___, ...noId } = automation();
+    expect(refusal(parseAutomationRequest({ ...request(), automation: noId }))).toMatch(
+      /automation\.id: Required/,
+    );
   });
 
   it('refuses a bad value, naming the field', () => {
@@ -154,6 +179,15 @@ describe('Automation Run record', () => {
   it('refuses a missing field, naming it', () => {
     const { outputPath: _, ...rest } = record();
     expect(refusal(parseAutomationRunRecord(rest))).toMatch(/outputPath: Required/);
+    const { automationId: __, ...noAutomationId } = record();
+    expect(refusal(parseAutomationRunRecord(noAutomationId))).toMatch(/automationId: Required/);
+  });
+
+  it('refuses a record that references the Automation by name only', () => {
+    const { automationId: _, ...rest } = record();
+    expect(refusal(parseAutomationRunRecord({ ...rest, automation: automation().name }))).toMatch(
+      /automationId: Required/,
+    );
   });
 
   it('accepts only the closed set of statuses', () => {
@@ -174,5 +208,22 @@ describe('Automation Run record', () => {
       ok: true,
       value: record(),
     });
+  });
+});
+
+describe('Matching a record to its Automation', () => {
+  it('finds the configuration by id, even after a rename', () => {
+    const renamed = { ...automation(), name: 'weekly-deps' };
+    const other = { ...automation(), id: 'b81d0e44', name: 'nightly-deps' };
+    expect(automationOf(record(), [other, renamed])).toBe(renamed);
+  });
+
+  it('parses a record whose id matches no configuration, and identifies it as orphaned', () => {
+    const parsed = parseAutomationRunRecord({ ...record(), automationId: 'gone-0001' });
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) return;
+    // Same name, different id: a name never stands in for the identity.
+    expect(automationOf(parsed.value, [automation()])).toBeUndefined();
+    expect(automationOf(parsed.value, [])).toBeUndefined();
   });
 });
