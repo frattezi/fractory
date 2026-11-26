@@ -83,7 +83,7 @@ make build VERSION=0.50.0-fractory
 install -m 755 agent-manager ~/.local/bin/fractory-manager && rm agent-manager
 ```
 
-The fork's `.fractory.json` carries these steps as its `rebuild` list, so after the factory merges
+Give the fork's `.fractory.json` these steps as its `rebuild` list; then after the factory merges
 work into it, `fractory rebuild` (or `fractory rebuild ~/Work/Personal/agent-manager`) refreshes
 the installed binary.
 
