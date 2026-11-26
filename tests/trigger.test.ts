@@ -1,13 +1,17 @@
 import { mkdir, readFile, utimes, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { parseRelations } from '../src/adapters/relations.ts';
 import { ResourceLimitsSchema } from '../src/contracts/factory-config.ts';
+import type { RepoConfig } from '../src/contracts/repo-config.ts';
 import { type Trigger, answerRequestPath, rerunRequestPath, runKey } from '../src/contracts/run.ts';
 import type { HostLoad } from '../src/policy/resources.ts';
+import { ownsRef } from '../src/trigger/blockers.ts';
 import { branchFor, byTicketOrder } from '../src/trigger/queue.ts';
 import { acquireLock } from '../src/trigger/support.ts';
 import { tick } from '../src/trigger/tick.ts';
 import {
+  FakeSource,
   PR_URL,
   makeHarness,
   makePr,
@@ -102,6 +106,139 @@ describe('ticket-ready Trigger', () => {
   it('drops a title that would trip the Work Mode outbound policy', () => {
     expect(branchFor('github:me/app#3', 'Ask Claude to fix it', 'work')).toBe('feat/3');
     expect(branchFor('jira:ABC-12', 'Add login', 'work')).toBe('feat/abc-12-add-login');
+  });
+});
+
+describe('blockers hold a Ready Ticket', () => {
+  const blocked = (n: number, ...blockers: string[]) => {
+    const base = makeTicket(n);
+    const body = `What to build\n\n${blockers.map((b) => `Blocked by ${b}`).join('\n')}`;
+    // The adapters parse the Relations a body declares; the fake source stands in for them.
+    const { errors, ...relations } = parseRelations(body, base.ref);
+    return { ...base, body, ...relations, relationErrors: errors };
+  };
+  const readHost = async (path: string) => JSON.parse(await readFile(path, 'utf8'));
+
+  it('starts a Ticket that records no blocker as before', async () => {
+    const h = await makeHarness();
+    h.source.tickets.set('github:me/app#1', makeTicket(1));
+    const summary = await tick(h.deps);
+    expect(summary.launched).toHaveLength(1);
+    expect(summary.heldTickets).toEqual([]);
+    expect((await readHost(h.factory.hostStatePath)).heldTickets).toBeUndefined();
+  });
+
+  it('holds a Ticket while a blocker is open, logs it and leaves the tracker alone', async () => {
+    const h = await makeHarness();
+    h.source.tickets.set('github:me/app#4', makeTicket(4, 'in_progress'));
+    h.source.tickets.set('github:me/app#5', blocked(5, '#4'));
+    const summary = await tick(h.deps);
+
+    expect(await h.registry.list()).toEqual([]);
+    expect(h.source.statusCalls).toEqual([]);
+    expect(summary.heldTickets).toEqual([
+      { repoPath: '/repo/app', ticketRef: 'github:me/app#5', blockers: ['github:me/app#4'] },
+    ]);
+    expect(h.log.lines).toContain(
+      'INFO holding github:me/app#5: waiting on blockers github:me/app#4 (open)',
+    );
+    expect((await readHost(h.factory.hostStatePath)).heldTickets).toEqual(summary.heldTickets);
+  });
+
+  it('holds while any blocker is open and starts on the next tick once all are closed', async () => {
+    const h = await makeHarness();
+    h.source.tickets.set('github:me/app#3', makeTicket(3, 'done'));
+    h.source.tickets.set('github:me/app#4', makeTicket(4, 'in_review'));
+    h.source.tickets.set('github:me/app#5', blocked(5, '#3', '#4'));
+    const first = await tick(h.deps);
+    expect(first.heldTickets[0]?.blockers).toEqual(['github:me/app#4']);
+    expect(h.launched).toEqual([]);
+
+    h.source.tickets.set('github:me/app#4', makeTicket(4, 'done'));
+    const second = await tick(h.deps);
+    expect(second.heldTickets).toEqual([]);
+    expect(second.launched).toHaveLength(1);
+    expect((await h.registry.list())[0]?.ticketRef).toBe('github:me/app#5');
+    expect(h.source.statusCalls).toEqual([['github:me/app#5', 'in_progress']]);
+  });
+
+  it('takes no launch slot: the next candidate starts under the cap', async () => {
+    const h = await makeHarness({ maxConcurrentRuns: 1 });
+    h.source.tickets.set('github:me/app#4', makeTicket(4, 'backlog'));
+    h.source.tickets.set('github:me/app#5', blocked(5, '#4'));
+    h.source.tickets.set('github:me/app#6', makeTicket(6));
+    const summary = await tick(h.deps);
+    expect(summary.heldTickets.map((t) => t.ticketRef)).toEqual(['github:me/app#5']);
+    expect((await h.registry.list()).map((r) => r.ticketRef)).toEqual(['github:me/app#6']);
+    expect(h.launched).toHaveLength(1);
+  });
+
+  it('resolves a blocker owned by another configured repo through that repo source', async () => {
+    const h = await makeHarness({ repos: ['/repo/app', '/repo/lib'] });
+    const lib: RepoConfig = { ...personalRepo, ticketSource: { kind: 'github', repo: 'me/lib' } };
+    h.configs.set('/repo/lib', lib);
+    const libSource = new FakeSource([{ ...makeTicket(9, 'in_progress'), ref: 'github:me/lib#9' }]);
+    const asked: string[] = [];
+    h.deps.createTicketSource = (config) => {
+      asked.push(config.kind === 'github' ? config.repo : config.projectKey);
+      return config.kind === 'github' && config.repo === 'me/lib' ? libSource : h.source;
+    };
+    h.source.tickets.set('github:me/app#5', blocked(5, 'me/lib#9'));
+    // `get` is never asked of the wrong source for the blocker
+    const appGet = h.source.get.bind(h.source);
+    h.source.get = async (ref) => {
+      expect(ref).not.toBe('github:me/lib#9');
+      return appGet(ref);
+    };
+
+    const first = await tick(h.deps);
+    expect(first.heldTickets[0]?.blockers).toEqual(['github:me/lib#9']);
+    expect(asked).toContain('me/lib');
+
+    libSource.tickets.set('github:me/lib#9', {
+      ...makeTicket(9, 'done'),
+      ref: 'github:me/lib#9',
+    });
+    const second = await tick(h.deps);
+    expect(second.launched).toHaveLength(1);
+  });
+
+  it('holds on a reference no configured repo owns, names it, and moves on', async () => {
+    const h = await makeHarness();
+    h.source.tickets.set('github:me/app#5', blocked(5, 'other/repo#2', 'XYZ-3'));
+    h.source.tickets.set('github:me/app#6', makeTicket(6));
+    const summary = await tick(h.deps);
+    expect(summary.errors).toBe(0);
+    expect(summary.heldTickets[0]?.blockers).toEqual(['github:other/repo#2', 'jira:XYZ-3']);
+    expect(h.log.lines).toContain(
+      'INFO holding github:me/app#5: waiting on blockers github:other/repo#2 (not owned by any configured repo), jira:XYZ-3 (not owned by any configured repo)',
+    );
+    expect((await h.registry.list()).map((r) => r.ticketRef)).toEqual(['github:me/app#6']);
+  });
+
+  it('finds the owner of a ref by GitHub repo or Jira project key', () => {
+    const jira = {
+      kind: 'jira',
+      baseUrl: 'https://acme.atlassian.net',
+      projectKey: 'ABC',
+      statuses: { ready: 'Ready', inProgress: 'Doing', inReview: 'Review', done: 'Shipped' },
+    } as const;
+    expect(ownsRef(jira, 'jira:ABC-3')).toBe(true);
+    expect(ownsRef(jira, 'jira:ABCD-3')).toBe(false);
+    expect(ownsRef(jira, 'github:me/app#3')).toBe(false);
+    expect(ownsRef({ kind: 'github', repo: 'Me/App' }, 'github:me/app#3')).toBe(true);
+    expect(ownsRef({ kind: 'github', repo: 'me/app' }, 'github:me/lib#3')).toBe(false);
+  });
+
+  it('holds when a blocker cannot be read: a failed read proves nothing', async () => {
+    const h = await makeHarness();
+    h.source.tickets.set('github:me/app#5', blocked(5, '#4'));
+    const summary = await tick(h.deps);
+    expect(summary.heldTickets[0]?.blockers).toEqual(['github:me/app#4']);
+    expect(
+      h.log.lines.some((l) => l.startsWith('WARN could not read blocker github:me/app#4')),
+    ).toBe(true);
+    expect(h.launched).toEqual([]);
   });
 });
 

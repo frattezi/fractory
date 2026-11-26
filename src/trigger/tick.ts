@@ -25,6 +25,12 @@ import type { RunRegistry } from '../registry/registry.ts';
 import { listRerunRequests } from '../registry/reruns.ts';
 import { pruneAutomationRuns } from './automation-prune.ts';
 import { acceptAutomationRequests } from './automations.ts';
+import {
+  type ConfiguredRepo,
+  createBlockerResolver,
+  describeHolding,
+  holdingBlockers,
+} from './blockers.ts';
 import { branchFor, byTicketOrder, queueRun } from './queue.ts';
 import { type Logger, type PidState, acquireLock } from './support.ts';
 
@@ -55,6 +61,8 @@ export interface TickSummary {
   merged: string[];
   ticketsDone: string[];
   errors: number;
+  /** Held Tickets: Ready Tickets not queued this tick because a blocker is unresolved. */
+  heldTickets: NonNullable<HostState['heldTickets']>;
   /** Why queued Runs were held back this tick by the resource limits. */
   held?: string;
   /** Automation requests read this tick (Spec 0003). */
@@ -111,6 +119,7 @@ export const tick = async (deps: TickDeps): Promise<TickSummary> => {
     merged: [],
     ticketsDone: [],
     errors: 0,
+    heldTickets: [],
     automations: {
       queued: [],
       refused: [],
@@ -134,6 +143,44 @@ export const tick = async (deps: TickDeps): Promise<TickSummary> => {
   };
 
   const repoConfigs = new Map<string, RepoConfig>();
+  const sources = new Map<string, TicketSource>();
+
+  /** Every configured repo, read once per tick; one whose config cannot be read owns nothing. */
+  let configuredRepos: Promise<ConfiguredRepo[]> | undefined;
+  const allRepos = (): Promise<ConfiguredRepo[]> => {
+    configuredRepos ??= (async () => {
+      const repos: ConfiguredRepo[] = [];
+      for (const repoPath of factory.repos) {
+        let config = repoConfigs.get(repoPath);
+        if (!config) {
+          try {
+            config = await deps.loadRepoConfig(repoPath);
+            repoConfigs.set(repoPath, config);
+          } catch (error) {
+            log.warn(
+              `could not read the config of ${repoPath} to resolve blockers: ${message(error)}`,
+            );
+            continue;
+          }
+        }
+        repos.push({ repoPath, config });
+      }
+      return repos;
+    })();
+    return configuredRepos;
+  };
+  const resolveBlocker = createBlockerResolver({
+    repos: allRepos,
+    sourceFor: ({ repoPath, config }) => {
+      let source = sources.get(repoPath);
+      if (!source) {
+        source = deps.createTicketSource(config.ticketSource, config.mode);
+        sources.set(repoPath, source);
+      }
+      return source;
+    },
+    onReadError: (ref, error) => log.warn(`could not read blocker ${ref}: ${message(error)}`),
+  });
 
   /** Follow-up Runs reuse the branch of the Ticket's latest Run so the PR branch is continued. */
   const queueFollowUp = async (
@@ -482,6 +529,17 @@ export const tick = async (deps: TickDeps): Promise<TickSummary> => {
           await source.setStatus(ticket.ref, 'in_progress');
           continue;
         }
+        // A Held Ticket stays Ready and untouched in the tracker; a later tick starts it.
+        const holding = await holdingBlockers(ticket, resolveBlocker);
+        if (holding.length > 0) {
+          summary.heldTickets.push({
+            repoPath,
+            ticketRef: ticket.ref,
+            blockers: holding.map((h) => h.blocker),
+          });
+          log.info(`holding ${ticket.ref}: waiting on blockers ${describeHolding(holding)}`);
+          continue;
+        }
         const branch = branchFor(ticket.ref, ticket.title, config.mode);
         const { record, created } = await queueRun(deps, {
           ticketRef: ticket.ref,
@@ -612,6 +670,7 @@ export const tick = async (deps: TickDeps): Promise<TickSummary> => {
         ...(input.reason !== undefined && { reason: input.reason }),
         ...(heldSince !== undefined && { heldSince }),
         ...(input.readings && { readings: input.readings }),
+        ...(summary.heldTickets.length > 0 && { heldTickets: summary.heldTickets }),
         queued: input.queued,
         updatedAt: stamp,
       });
@@ -635,6 +694,7 @@ export const tick = async (deps: TickDeps): Promise<TickSummary> => {
         const config = await deps.loadRepoConfig(repoPath);
         repoConfigs.set(repoPath, config);
         const source = deps.createTicketSource(config.ticketSource, config.mode);
+        sources.set(repoPath, source);
         await markDead(repoPath);
         await handleReruns(repoPath, source);
         await handleAnswers(repoPath, config, source);
@@ -667,7 +727,7 @@ export const tick = async (deps: TickDeps): Promise<TickSummary> => {
     await lock.release();
   }
   log.info(
-    `tick done: dead=${summary.markedDead.length} queued=${summary.queued.length} launched=${summary.launched.length} merged=${summary.merged.length} automations=${summary.automations.queued.length} automationsLaunched=${summary.automations.launched.length} automationsPruned=${summary.automations.pruned.length} errors=${summary.errors}`,
+    `tick done: dead=${summary.markedDead.length} queued=${summary.queued.length} launched=${summary.launched.length} merged=${summary.merged.length} heldTickets=${summary.heldTickets.length} automations=${summary.automations.queued.length} automationsLaunched=${summary.automations.launched.length} automationsPruned=${summary.automations.pruned.length} errors=${summary.errors}`,
   );
   return summary;
 };

@@ -475,14 +475,15 @@ const commands: Record<string, (args: CliArgs, env: CliEnv) => Promise<void>> = 
     ))
       ? await loadRepoConfig(repoPath)
       : undefined;
+    const host = await readHostState(factory.hostStatePath);
     const status = repoStatus({
       repoPath,
       config,
       factoryRepos: factory.repos,
       runs: await new RunRegistry(factory.registryDir).list(),
+      heldTickets: host?.heldTickets,
       answeredRunIds: await listAnswerRequests(factory.registryDir),
     });
-    const host = await readHostState(factory.hostStatePath);
     env.out(
       args.flags.json === true
         ? JSON.stringify({ ...status, host: host ?? null }, null, 2)
