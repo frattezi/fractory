@@ -347,6 +347,25 @@ describe('executeRun', () => {
     expect(prompt).not.toContain('body of c4');
   });
 
+  it('records a follow-up Run as done when the agent named the result tag in prose', async () => {
+    const t = await setup({
+      trigger: { kind: 'review-comment', prNumber: 9, commentId: '77' },
+      existingPr: 'https://github.com/me/repo/pull/9',
+      stdout:
+        'Renamed it. I did not touch the <result> contract.\n<result>{"outcome":"done","summary":"Renamed"}</result>\n<promise>COMPLETE</promise>',
+    });
+    const record = await executeRun('run1', t.deps);
+    expect(record.status).toBe('done');
+    expect(record.result).toEqual({ outcome: 'done', summary: 'Renamed' });
+  });
+
+  it('fails the Run when the agent prints only a malformed result block', async () => {
+    const t = await setup({ stdout: 'see <result> below\n<result>{"outcome":"done"</result>' });
+    const record = await executeRun('run1', t.deps);
+    expect(record.status).toBe('failed');
+    expect(pushed(t.calls)).toHaveLength(0);
+  });
+
   it('fails the Run, without pushing, when the result block is missing', async () => {
     const t = await setup({ stdout: 'no result here' });
     const record = await executeRun('run1', t.deps);

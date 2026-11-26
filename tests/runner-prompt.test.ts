@@ -59,6 +59,38 @@ describe('parseRunResult', () => {
     expect(parseRunResult(out)).toEqual({ outcome: 'done', summary: 'ok' });
   });
 
+  it('ignores an opening tag the agent mentions in prose before the real block', () => {
+    const out = [
+      'I did not check the `<result>` contract against the old parser.',
+      'Summary: the final output is a <result> block with the RunResult JSON.',
+      '<result>{"outcome":"done","summary":"327 tests pass"}</result>',
+      '<promise>COMPLETE</promise>',
+    ].join('\n');
+    expect(parseRunResult(out)).toEqual({ outcome: 'done', summary: '327 tests pass' });
+  });
+
+  it('takes the last valid block when several are printed, skipping a later malformed one', () => {
+    const out = [
+      '<result>{"outcome":"failed","summary":"first"}</result>',
+      '<result>{"outcome":"done","summary":"second"}</result>',
+      'then a stray <result> and a broken <result>{"outcome":</result>',
+    ].join('\n');
+    expect(parseRunResult(out)).toEqual({ outcome: 'done', summary: 'second' });
+  });
+
+  it('ignores a closing tag the agent mentions in prose after the real block', () => {
+    const out =
+      '<result>{"outcome":"done","summary":"ok"}</result>\nThe block ends with </result>.';
+    expect(parseRunResult(out)).toEqual({ outcome: 'done', summary: 'ok' });
+  });
+
+  it('returns undefined when only tags in prose or a malformed block are printed', () => {
+    expect(parseRunResult('I will print a <result> block at the end.')).toBeUndefined();
+    expect(
+      parseRunResult('mention <result> then <result>{"outcome":"done"}</result>'),
+    ).toBeUndefined();
+  });
+
   it('returns undefined for missing, malformed or schema-invalid output', () => {
     expect(parseRunResult('nothing')).toBeUndefined();
     expect(parseRunResult('<result>not json</result>')).toBeUndefined();
