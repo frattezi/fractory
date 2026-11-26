@@ -5,7 +5,13 @@ import type { AutomationRunRecord } from '../src/contracts/automation.ts';
 import type { FactoryConfig } from '../src/contracts/factory-config.ts';
 import type { RepoConfig } from '../src/contracts/repo-config.ts';
 import { RUN_RECORD_VERSION, type RunRecord, runKey } from '../src/contracts/run.ts';
-import type { Ticket, TicketRef, TicketSource, TicketStatus } from '../src/contracts/ticket.ts';
+import {
+  type Ticket,
+  TicketNotFoundError,
+  type TicketRef,
+  type TicketSource,
+  type TicketStatus,
+} from '../src/contracts/ticket.ts';
 import { type Gh, type PrView, PrViewSchema } from '../src/github/gh.ts';
 import { AutomationStore } from '../src/registry/automations.ts';
 import { RunRegistry } from '../src/registry/registry.ts';
@@ -43,6 +49,10 @@ export class FakeSource implements TicketSource {
   /** When true, setStatus records the change but listReady keeps returning the Ticket. */
   stickyReady = false;
   statusCalls: [string, TicketStatus][] = [];
+  /** Refs the tracker answers do not exist; any other unknown ref fails to read. */
+  missing = new Set<string>();
+  /** Every ref `get` was asked for, in order. */
+  gets: string[] = [];
   constructor(tickets: Ticket[] = []) {
     for (const t of tickets) this.tickets.set(t.ref, t);
   }
@@ -50,6 +60,8 @@ export class FakeSource implements TicketSource {
     return [...this.tickets.values()].filter((t) => t.status === 'ready');
   }
   async get(ref: TicketRef): Promise<Ticket> {
+    this.gets.push(ref);
+    if (this.missing.has(ref)) throw new TicketNotFoundError(ref);
     const t = this.tickets.get(ref);
     if (!t) throw new Error(`no ${ref}`);
     return t;

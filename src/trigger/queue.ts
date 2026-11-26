@@ -18,25 +18,12 @@ export const slugify = (text: string, maxLength = 40): string =>
 const refSlug = (ref: TicketRef): string =>
   ref.startsWith('jira:') ? slugify(ref.slice(5)) : ref.slice(ref.lastIndexOf('#') + 1);
 
+export { byTicketOrder } from '../policy/dependencies.ts';
+
 /**
  * Branch for a new Run. Work Mode branches are shared names, so they carry no `fractory` prefix and
  * pass the outbound policy; the title part is dropped if it would trip the policy.
  */
-/**
- * Ticket order: Tickets of one project by ascending number (`#2` before `#10`), projects by name.
- * Trackers list Tickets in their own order (GitHub newest first); a chain must queue root first.
- */
-export const byTicketOrder = (a: { ref: TicketRef }, b: { ref: TicketRef }): number => {
-  const split = (ref: TicketRef): [string, number] => {
-    const match = ref.match(/^(.*?)[#-](\d+)$/);
-    return match ? [match[1] ?? ref, Number(match[2])] : [ref, 0];
-  };
-  const [projectA, numberA] = split(a.ref);
-  const [projectB, numberB] = split(b.ref);
-  if (projectA !== projectB) return projectA < projectB ? -1 : 1;
-  return numberA - numberB;
-};
-
 export const branchFor = (ref: TicketRef, title: string, mode: Mode): string => {
   const prefix = mode === 'work' ? 'feat' : 'fractory';
   const titleSlug = slugify(title);

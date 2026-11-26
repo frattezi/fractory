@@ -136,6 +136,31 @@ describe('repoStatus', () => {
     );
   });
 
+  it('says why each blocker holds a Held Ticket', () => {
+    const holds = [
+      { blocker: 'github:me/app#4', reason: 'not done: in progress, its latest Run running' },
+      { blocker: 'github:me/lib#1', reason: 'in another repository' },
+    ];
+    const s = repoStatus({
+      repoPath: '/repo/app',
+      config: personal,
+      factoryRepos: ['/repo/app'],
+      runs: [],
+      heldTickets: [
+        {
+          repoPath: '/repo/app',
+          ticketRef: 'github:me/app#5',
+          blockers: holds.map((h) => h.blocker),
+          holds,
+        },
+      ],
+    });
+    expect(s.waitingOnBlockers[0]?.holds).toEqual(holds);
+    expect(formatStatus(s)).toContain(
+      '  - github:me/app#5 held by github:me/app#4 (not done: in progress, its latest Run running), github:me/lib#1 (in another repository)',
+    );
+  });
+
   describe('answered needs-human questions', () => {
     const waiting = [
       makeRun({
