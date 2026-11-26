@@ -252,6 +252,35 @@ class Executor {
       .filter(Boolean);
   }
 
+  /**
+   * Refuse to open a PR against a base branch the remote does not have: GitHub answers that with
+   * a pile of GraphQL errors that never name the branch. Only an answered `ls-remote` with no
+   * matching ref proves the branch is missing; a failed read is logged and the PR call goes ahead.
+   */
+  private async assertBaseOnRemote(
+    record: RunRecord,
+    worktree: string,
+    remote: string,
+    base: string,
+  ): Promise<void> {
+    let refs: string;
+    try {
+      refs = (
+        await this.exec('git', ['ls-remote', '--heads', remote, `refs/heads/${base}`], {
+          cwd: worktree,
+        })
+      ).stdout;
+    } catch (error) {
+      await this.log(record, `could not list ${base} on ${remote}: ${message(error)}`);
+      return;
+    }
+    if (refs.trim() === '') {
+      throw new Error(
+        `base branch ${base} is not on remote ${remote}; push it (git push ${remote} ${base}) and re-run the Ticket`,
+      );
+    }
+  }
+
   /** Push the branch and open the PR, or reuse the open one. Returns the PR url. */
   private async publish(
     record: RunRecord,
@@ -311,6 +340,8 @@ class Executor {
       ),
     );
     if (existing[0]) return existing[0].url; // pushing the branch updated it
+
+    await this.assertBaseOnRemote(record, worktree, target.remote, config.baseBranch);
 
     const key = ticketKey(ticket.ref);
     const title = outboundText(ticket.title, `Work on ${key}`, config.mode);
