@@ -55,6 +55,13 @@ export const RunRecordSchema = z.object({
   trigger: TriggerSchema,
   status: RunStatusSchema,
   branch: z.string(),
+  /**
+   * Branch the Run is built on: its worktree is created from it, its PR targets it and its
+   * pre-push hook refuses it. Absent means the repository's base branch. Optional: still version 1.
+   */
+  baseBranch: z.string().min(1).optional(),
+  /** Tip sha of `baseBranch` the Run started from. Optional: still version 1. */
+  baseSha: z.string().min(1).optional(),
   worktreePath: z.string().optional(),
   prUrl: z.string().url().optional(),
   /** Agent conversation id captured by Sandcastle, for resume/fork. */
@@ -77,6 +84,12 @@ export const RunRecordSchema = z.object({
   cleanedAt: z.string().datetime().optional(),
 });
 export type RunRecord = z.infer<typeof RunRecordSchema>;
+
+/** The branch a Run is built on: its own base, or the repository's when it names none. */
+export const runBaseBranch = (
+  record: Pick<RunRecord, 'baseBranch'>,
+  repoBaseBranch: string,
+): string => record.baseBranch ?? repoBaseBranch;
 
 export const ACTIVE_STATUSES: readonly RunStatus[] = ['queued', 'running'];
 
