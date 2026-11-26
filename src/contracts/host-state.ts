@@ -25,9 +25,9 @@ export const HostStateSchema = z.object({
     })
     .optional(),
   /**
-   * Held Tickets: Ready Tickets the tick did not queue because a blocker is unresolved. Each
-   * names its repository and the blockers holding it (refs, or the label as written when no
-   * configured repo owns it). Optional: still version 1.
+   * Held Tickets: Ready Tickets the tick did not queue because of their blockers. Each names its
+   * repository and the blockers holding it (refs, or the relation as written when it is not a
+   * ref); `holds` says why each blocker holds it. Optional: still version 1.
    */
   heldTickets: z
     .array(
@@ -35,6 +35,10 @@ export const HostStateSchema = z.object({
         repoPath: z.string(),
         ticketRef: z.string(),
         blockers: z.array(z.string()).min(1),
+        holds: z
+          .array(z.object({ blocker: z.string(), reason: z.string().min(1) }))
+          .min(1)
+          .optional(),
       }),
     )
     .optional(),

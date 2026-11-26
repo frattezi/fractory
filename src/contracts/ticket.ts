@@ -34,3 +34,14 @@ export interface TicketSource {
   setStatus(ref: TicketRef, status: TicketStatus): Promise<void>;
   comment(ref: TicketRef, body: string): Promise<void>;
 }
+
+/**
+ * Thrown by `TicketSource.get` when the tracker answers that the Ticket does not exist. Only that
+ * answer proves absence: any other failed read is a plain error and proves nothing.
+ */
+export class TicketNotFoundError extends Error {
+  constructor(readonly ref: TicketRef) {
+    super(`Ticket ${ref} does not exist`);
+    this.name = 'TicketNotFoundError';
+  }
+}
