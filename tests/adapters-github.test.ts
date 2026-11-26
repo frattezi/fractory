@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { createTicket, createTicketSource } from '../src/adapters/index.ts';
 import type { ExecFn } from '../src/adapters/index.ts';
+import { TicketNotFoundError } from '../src/contracts/ticket.ts';
 import { OutboundPolicyError } from '../src/policy/outbound.ts';
 
 const config = { kind: 'github', repo: 'acme/app' } as const;
@@ -133,6 +134,26 @@ describe('github adapter', () => {
     const { exec, calls } = fakeExec(() => new Error('HTTP 404: Not Found'));
     await expect(createTicketSource(config, { exec, sleep }).get(ref)).rejects.toThrow('404');
     expect(calls).toHaveLength(1);
+  });
+
+  it('says a Ticket does not exist only when gh cannot resolve the issue', async () => {
+    const { exec } = fakeExec(
+      () =>
+        new Error(
+          'gh issue view failed: GraphQL: Could not resolve to an issue or pull request with the number of 7. (repository.issue)',
+        ),
+    );
+    const error = await createTicketSource(config, { exec, sleep })
+      .get(ref)
+      .catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(TicketNotFoundError);
+    expect(error).toMatchObject({ ref });
+
+    const offline = fakeExec(() => new Error('error connecting to api.github.com'));
+    const other = await createTicketSource(config, { exec: offline.exec, sleep })
+      .get(ref)
+      .catch((e: unknown) => e);
+    expect(other).not.toBeInstanceOf(TicketNotFoundError);
   });
 
   it('rejects invalid gh responses', async () => {

@@ -2,6 +2,7 @@ import { z } from 'zod';
 import type { TicketSourceConfig } from '../contracts/repo-config.ts';
 import {
   type Ticket,
+  TicketNotFoundError,
   type TicketRef,
   TicketSchema,
   type TicketSource,
@@ -54,6 +55,8 @@ const statusOf = (issue: GhIssue): TicketStatus => {
   return 'backlog';
 };
 
+/** What `gh issue view` says for a number that is no issue in the repo. */
+const NOT_FOUND_GH_ERROR = /could not resolve to an issue/i;
 const RETRYABLE_GH_ERROR = /rate limit|abuse detection|HTTP (429|5\d\d)\b/i;
 
 export const createGithubAdapter = (config: GithubConfig, options: AdapterOptions = {}) => {
@@ -155,7 +158,15 @@ export const createGithubAdapter = (config: GithubConfig, options: AdapterOption
     },
 
     async get(ref) {
-      return toTicket(await view(numberOf(ref)));
+      const number = numberOf(ref);
+      try {
+        return toTicket(await view(number));
+      } catch (error) {
+        if (error instanceof Error && NOT_FOUND_GH_ERROR.test(error.message)) {
+          throw new TicketNotFoundError(ref);
+        }
+        throw error;
+      }
     },
 
     async setStatus(ref, status) {

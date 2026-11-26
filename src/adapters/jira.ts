@@ -2,6 +2,7 @@ import { z } from 'zod';
 import type { TicketSourceConfig } from '../contracts/repo-config.ts';
 import {
   type Ticket,
+  TicketNotFoundError,
   type TicketRef,
   TicketSchema,
   type TicketSource,
@@ -19,6 +20,16 @@ import {
 } from './shared.ts';
 
 type JiraConfig = Extract<TicketSourceConfig, { kind: 'jira' }>;
+
+/** A Jira answer that is not 2xx, keeping the status so a missing issue can be told apart. */
+class JiraHttpError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+  ) {
+    super(message);
+  }
+}
 
 export interface AdfNode {
   type: string;
@@ -161,7 +172,10 @@ export const createJiraAdapter = (config: JiraConfig, options: AdapterOptions = 
     );
     if (!response.ok) {
       const detail = (await response.text().catch(() => '')).slice(0, 300);
-      throw new Error(`Jira ${method} ${path} failed: ${response.status} ${detail}`.trim());
+      throw new JiraHttpError(
+        `Jira ${method} ${path} failed: ${response.status} ${detail}`.trim(),
+        response.status,
+      );
     }
     const text = response.status === 204 ? '' : await response.text();
     return text ? JSON.parse(text) : undefined;
@@ -235,7 +249,15 @@ export const createJiraAdapter = (config: JiraConfig, options: AdapterOptions = 
     },
 
     async get(ref) {
-      return toTicket(await fetchIssue(keyOf(ref)));
+      const key = keyOf(ref);
+      try {
+        return toTicket(await fetchIssue(key));
+      } catch (error) {
+        if (error instanceof JiraHttpError && error.status === 404) {
+          throw new TicketNotFoundError(ref);
+        }
+        throw error;
+      }
     },
 
     async setStatus(ref, status) {

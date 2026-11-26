@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { createTicket, createTicketSource, flattenAdf } from '../src/adapters/index.ts';
 import type { FetchFn } from '../src/adapters/index.ts';
+import { TicketNotFoundError } from '../src/contracts/ticket.ts';
 import { OutboundPolicyError } from '../src/policy/outbound.ts';
 
 const config = {
@@ -160,9 +161,25 @@ describe('jira adapter', () => {
     await expect(source(down.fetch).get(ref)).rejects.toThrow('500');
     expect(down.calls).toHaveLength(4);
 
+    const forbidden = fakeFetch(() => new Response('', { status: 403 }));
+    await expect(source(forbidden.fetch).get(ref)).rejects.toThrow('403');
+    expect(forbidden.calls).toHaveLength(1);
+  });
+
+  it('says a Ticket does not exist only when Jira answers 404 for it', async () => {
     const missing = fakeFetch(() => new Response('', { status: 404 }));
-    await expect(source(missing.fetch).get(ref)).rejects.toThrow('404');
+    const error = await source(missing.fetch)
+      .get(ref)
+      .catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(TicketNotFoundError);
+    expect(error).toMatchObject({ ref });
     expect(missing.calls).toHaveLength(1);
+
+    const down = fakeFetch(() => new Response('', { status: 401 }));
+    const other = await source(down.fetch)
+      .get(ref)
+      .catch((e: unknown) => e);
+    expect(other).not.toBeInstanceOf(TicketNotFoundError);
   });
 
   it('retries network errors', async () => {
