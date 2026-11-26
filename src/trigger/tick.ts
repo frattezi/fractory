@@ -22,7 +22,7 @@ import type { RunRegistry } from '../registry/registry.ts';
 import { listRerunRequests } from '../registry/reruns.ts';
 import { pruneAutomationRuns } from './automation-prune.ts';
 import { acceptAutomationRequests } from './automations.ts';
-import { branchFor, queueRun } from './queue.ts';
+import { branchFor, byTicketOrder, queueRun } from './queue.ts';
 import { type Logger, type PidState, acquireLock } from './support.ts';
 
 export interface TickDeps {
@@ -393,7 +393,8 @@ export const tick = async (deps: TickDeps): Promise<TickSummary> => {
     config: RepoConfig,
     source: TicketSource,
   ): Promise<void> => {
-    const ready = await source.listReady();
+    // Queue in Ticket order, not tracker order: GitHub lists newest first.
+    const ready = [...(await source.listReady())].sort(byTicketOrder);
     for (const ticket of ready) {
       try {
         // A Ticket still marked Ready may already have a Run (e.g. `fractory run`): never a second.
