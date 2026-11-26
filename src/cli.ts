@@ -318,6 +318,12 @@ const commands: Record<string, (args: CliArgs, env: CliEnv) => Promise<void>> = 
         wait: (ms) => new Promise((done) => setTimeout(done, ms)),
         now: env.now,
         out: env.out,
+        isTicketFinished: async (ref) => {
+          const parsed = TicketRefSchema.parse(ref);
+          const { config } = await findRepoForTicket(env, factory, parsed);
+          const source = env.createTicketSource(config.ticketSource, config.mode);
+          return (await source.get(parsed)).status === 'done';
+        },
       },
     });
     env.out(formatBabysitSummary(summary));

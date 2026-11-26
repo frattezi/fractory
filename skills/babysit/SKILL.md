@@ -23,12 +23,14 @@ fractory babysit [repoPath] [--ticket <ref>]... [--poll <seconds>] [--timeout-mi
 - No `--ticket`: every unfinished Ticket in the repository, oldest Run first. Unfinished means its
   newest Run is queued, running, failed or needs-human, or is done with a pull request that has not
   merged. A Ticket with no Run at all is never started: babysitting chases work, it does not create
-  it.
+  it; nor is one the tracker already calls done, so a Ticket closed by hand or finished by work that
+  landed another way is not re-queued for nothing.
 - `--ticket` (repeatable): exactly these Tickets, **in the order given**. Order matters — give
   blockers before the Tickets that depend on them.
 - It prints one line per state change and a summary, and exits non-zero when it stops or times out.
-- It reads the Run registry only. Pull request state comes from the tick, so the factory must be
-  running (`fractory launchd install`), or nothing will ever merge.
+- While driving a Ticket it reads the Run registry only, and the tracker once per candidate when
+  discovering Tickets. Pull request state comes from the tick, so the factory must be running
+  (`fractory launchd install`), or nothing will ever merge.
 
 Run it in the background and report what it prints. Never rebuild the loop out of `fractory runs`,
 `sleep` and `gh` calls: the ordering, the adoption of an existing Run and the stop conditions are

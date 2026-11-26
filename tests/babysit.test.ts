@@ -269,3 +269,58 @@ describe('babysit', () => {
     expect(queuedFor).toEqual(['github:me/app#2']);
   });
 });
+
+describe('babysit discovery', () => {
+  it('skips a discovered Ticket the tracker already calls finished', async () => {
+    const stale = makeRun({ id: 'x', ticketRef: 'github:me/app#1', status: 'failed' });
+    const live = makeRun({ id: 'y', ticketRef: 'github:me/app#2', status: 'failed' });
+    const { deps, lines, queuedFor } = harness({
+      states: [
+        [stale, live],
+        [stale, live],
+        [stale, live],
+        [stale, live],
+      ],
+      queued: makeRun({ id: 'q', ticketRef: 'github:me/app#2', status: 'needs-human' }),
+    });
+    const summary = await babysit({
+      repoPath: REPO,
+      pollMs: 1,
+      perTicketMs: 5,
+      deps: { ...deps, isTicketFinished: async (ref) => ref === 'github:me/app#1' },
+    });
+    expect(lines).toContain('github:me/app#1: skipped, the tracker already calls it finished');
+    expect(queuedFor).toEqual(['github:me/app#2']);
+    expect(summary.tickets.map((t) => t.ticketRef)).toEqual(['github:me/app#2']);
+  });
+
+  it('keeps a Ticket whose tracker read fails, because a failed read proves nothing', async () => {
+    const live = makeRun({ id: 'y', ticketRef: 'github:me/app#2', status: 'running' });
+    const { deps } = harness({ states: [[live]] });
+    const summary = await babysit({
+      repoPath: REPO,
+      pollMs: 1,
+      perTicketMs: 1,
+      deps: {
+        ...deps,
+        isTicketFinished: async () => {
+          throw new Error('tracker down');
+        },
+      },
+    });
+    expect(summary.tickets.map((t) => t.ticketRef)).toEqual(['github:me/app#2']);
+  });
+
+  it('never filters Tickets the caller named explicitly', async () => {
+    const run = makeRun({ id: 'z', ticketRef: 'github:me/app#1', status: 'running' });
+    const { deps, lines } = harness({ states: [[run]] });
+    await babysit({
+      repoPath: REPO,
+      tickets: ['github:me/app#1'],
+      pollMs: 1,
+      perTicketMs: 1,
+      deps: { ...deps, isTicketFinished: async () => true },
+    });
+    expect(lines.join('\n')).not.toMatch(/skipped/);
+  });
+});

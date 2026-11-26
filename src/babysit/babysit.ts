@@ -44,6 +44,13 @@ export interface BabysitDeps {
   now: () => Date;
   /** One line per state change, for the owner watching a terminal. */
   out: (line: string) => void;
+  /**
+   * Whether the tracker already considers the Ticket finished. Used only when discovering the
+   * Tickets to drive: a Ticket closed by hand, or finished by work that landed another way, has a
+   * failed Run as its newest and would otherwise be re-queued for nothing. Tickets the caller
+   * named explicitly are never filtered. A read that fails proves nothing, so the Ticket stays.
+   */
+  isTicketFinished?: (ticketRef: string) => Promise<boolean>;
 }
 
 export interface BabysitInput {
@@ -161,6 +168,24 @@ const babysitTicket = async (
   return { ticketRef, outcome: 'timed-out', runId };
 };
 
+/** The unfinished Tickets of a repository, minus the ones the tracker already calls finished. */
+const discover = async (repoPath: string, deps: BabysitDeps): Promise<string[]> => {
+  const candidates = unfinishedTickets(await deps.listRuns(), repoPath);
+  const { isTicketFinished } = deps;
+  if (!isTicketFinished) return candidates;
+  const kept: string[] = [];
+  for (const ticketRef of candidates) {
+    // A failed read proves nothing: keep the Ticket rather than assume it is finished.
+    const finished = await isTicketFinished(ticketRef).catch(() => false);
+    if (finished) {
+      deps.out(`${ticketRef}: skipped, the tracker already calls it finished`);
+      continue;
+    }
+    kept.push(ticketRef);
+  }
+  return kept;
+};
+
 /**
  * Babysits the given Tickets in order, stopping at the first one that needs the owner: the next
  * Ticket would be built on a base without this one's change, which is how a batch of dependent
@@ -168,9 +193,7 @@ const babysitTicket = async (
  */
 export const babysit = async (input: BabysitInput): Promise<BabysitSummary> => {
   const { deps, repoPath } = input;
-  const tickets = input.tickets?.length
-    ? input.tickets
-    : unfinishedTickets(await deps.listRuns(), repoPath);
+  const tickets = input.tickets?.length ? input.tickets : await discover(repoPath, deps);
   if (tickets.length === 0) {
     deps.out('Nothing to babysit: every Ticket with a Run has merged.');
     return { outcome: 'merged', tickets: [] };
