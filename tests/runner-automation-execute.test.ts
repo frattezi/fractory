@@ -14,6 +14,8 @@ import { AutomationStore } from '../src/registry/automations.ts';
 import {
   AUTOMATION_OUTPUT_ENV,
   AUTOMATION_OUTPUT_MOUNT,
+  agentCommand,
+  agentKindOf,
   automationCommand,
   executeAutomationRun,
 } from '../src/runner/automation-execute.ts';
@@ -101,6 +103,7 @@ const setup = async (options: Options = {}) => {
   const worktreeRequests: { repoPath: string; branch: string; baseRef: string }[] = [];
   const containers: ContainerSpec[] = [];
   const commands: string[] = [];
+  const stdins: (string | undefined)[] = [];
   const events: string[] = [];
   const worktreePath = join(dir, 'worktree');
   const sandcastle = {
@@ -117,8 +120,12 @@ const setup = async (options: Options = {}) => {
           containers.push({ ...sandbox, outputExisted: existsSync(record.outputPath) });
           events.push('container started');
           return {
-            exec: async (command: string, o: { onLine: (line: string) => void }) => {
+            exec: async (
+              command: string,
+              o: { onLine: (line: string) => void; stdin?: string },
+            ) => {
               commands.push(command);
+              stdins.push(o.stdin);
               const run =
                 options.container ??
                 (async () => ({ stdout: '', stderr: '', exitCode: 0 }) as const);
@@ -182,6 +189,7 @@ const setup = async (options: Options = {}) => {
     worktreeRequests,
     containers,
     commands,
+    stdins,
     events,
     calls,
   };
@@ -347,6 +355,182 @@ describe('executeAutomationRun', () => {
     const final = await h.run();
     expect(final.status).toBe('done');
     expect(h.worktreeRequests).toEqual([]);
+  });
+});
+
+const PROMPT = 'Write the monthly report to $AUTOMATION_OUTPUT_DIR/report.md.\n';
+
+const agent = (options: Options = {}) =>
+  setup({
+    files: { 'prompts/report.md': PROMPT },
+    ...options,
+    automation: {
+      kind: 'agent',
+      cli: 'claude',
+      flags: ['-p', '--model', 'claude-sonnet-5-5'],
+      entryPoint: 'prompts/report.md',
+      ...options.automation,
+    },
+  });
+
+describe('executeAutomationRun, Agent Automation', () => {
+  it('runs the named CLI with its flags and the committed prompt, end to end', async () => {
+    const h = await agent({
+      container: async (_command, extra, onLine) => {
+        await writeFile(join(hostPathOf(extra), 'report.md'), '# June\n');
+        onLine('thinking...');
+        onLine('Wrote report.md');
+        return { stdout: 'thinking...\nWrote report.md\n', stderr: 'warn: slow', exitCode: 0 };
+      },
+    });
+    const final = await h.run();
+
+    expect(h.worktreeRequests).toEqual([
+      { repoPath: h.repoPath, branch: `automation/${RUN_ID}`, baseRef: 'trunk' },
+    ]);
+    expect(h.commands).toEqual([`'claude' '-p' '--model' 'claude-sonnet-5-5' 2>&1`]);
+    expect(h.stdins).toEqual([PROMPT]);
+
+    const [container] = h.containers;
+    expect(container?.image).toBe('chores:latest');
+    expect(container?.outputExisted).toBe(true);
+    expect(container?.extra?.mounts).toEqual([
+      { hostPath: h.record.outputPath, sandboxPath: AUTOMATION_OUTPUT_MOUNT },
+    ]);
+    expect(container?.extra?.env).toMatchObject({
+      [AUTOMATION_OUTPUT_ENV]: AUTOMATION_OUTPUT_MOUNT,
+      CLAUDE_CODE_OAUTH_TOKEN: 'personal-token',
+      CLAUDE_CODE_DISABLE_AUTO_MEMORY: '1',
+    });
+
+    const log = await readFile(h.record.logPath, 'utf8');
+    expect(log).toContain('thinking...\nWrote report.md\n');
+    expect(log).toContain('warn: slow\n');
+
+    expect(final).toMatchObject({ status: 'done', result: { outcome: 'done' } });
+    expect(await readFile(join(final.outputPath, 'report.md'), 'utf8')).toBe('# June\n');
+    expect(h.events).toEqual(['container started', 'container closed', 'worktree closed']);
+    expect(h.calls.filter((c) => c.file !== 'security')).toEqual([
+      { file: 'git', args: ['branch', '-D', `automation/${RUN_ID}`] },
+    ]);
+  });
+
+  it("resolves the credentials of the CLI's agent for the Automation's Mode", async () => {
+    const h = await agent({
+      automation: { cli: 'opencode', flags: ['run'] },
+      keychain: { 'fractory.opencode.personal': 'oc-key' },
+      container: async () => ({ stdout: 'ok', stderr: '', exitCode: 0 }),
+    });
+    const final = await h.run();
+    expect(final.status).toBe('done');
+    expect(h.calls.filter((c) => c.file === 'security')).toEqual([
+      {
+        file: 'security',
+        args: ['find-generic-password', '-s', 'fractory.opencode.personal', '-w'],
+      },
+    ]);
+    expect(h.containers[0]?.extra?.env).toMatchObject({ OPENCODE_API_KEY: 'oc-key' });
+    expect(h.containers[0]?.image).toBe('chores:latest');
+  });
+
+  it('uses the work account in Work Mode', async () => {
+    const h = await agent({
+      automation: { mode: 'work' },
+      container: async () => ({ stdout: 'ok', stderr: '', exitCode: 0 }),
+    });
+    await h.run();
+    expect(h.containers[0]?.extra?.env).toMatchObject({ CLAUDE_CODE_OAUTH_TOKEN: 'work-token' });
+  });
+
+  it('fails a CLI that is not a known agent before any worktree', async () => {
+    const h = await agent({ automation: { cli: 'gemini' } });
+    const final = await h.run();
+    expect(final.status).toBe('failed');
+    expect(JSON.stringify(final.result)).toContain('Agent CLI gemini is not a known agent');
+    expect(h.worktreeRequests).toEqual([]);
+  });
+
+  it('fails with a reason when the prompt is missing, without starting a container', async () => {
+    const h = await agent({ files: {} });
+    const final = await h.run();
+    expect(final.status).toBe('failed');
+    expect(final.result && 'summary' in final.result && final.result.summary).toMatch(
+      /Entry point prompts\/report\.md is missing from the repository/,
+    );
+    expect(h.containers).toEqual([]);
+    expect(h.commands).toEqual([]);
+    expect(h.events).toEqual(['worktree closed']);
+  });
+
+  it('records an agent that printed nothing as failed, with its log path', async () => {
+    const h = await agent({
+      container: async (_command, _extra, onLine) => {
+        onLine('   ');
+        return { stdout: '  \n', stderr: '', exitCode: 0 };
+      },
+    });
+    const final = await h.run();
+    expect(final.status).toBe('failed');
+    expect(final.result).toEqual({
+      outcome: 'failed',
+      summary: `claude printed nothing: no usable result; log: ${h.record.logPath}`,
+    });
+    expect(final.logPath).toBe(h.record.logPath);
+  });
+
+  it('records an agent that exited non-zero as failed with its log, never needs-human', async () => {
+    const h = await agent({
+      container: async (_command, _extra, onLine) => {
+        onLine('Error: rate limited');
+        return { stdout: 'Error: rate limited\n', stderr: '', exitCode: 1 };
+      },
+    });
+    const final = await h.run();
+    expect(final).toMatchObject({
+      status: 'failed',
+      result: {
+        outcome: 'failed',
+        summary: `claude exited with code 1 without a usable result; log: ${h.record.logPath}`,
+      },
+    });
+    expect(await readFile(h.record.logPath, 'utf8')).toContain('Error: rate limited\n');
+    // Nothing re-runs it: exactly one container and one command.
+    expect(h.commands).toHaveLength(1);
+    expect(h.containers).toHaveLength(1);
+  });
+
+  it('never records needs-human, even when the agent prints a needs-human result', async () => {
+    const h = await agent({
+      container: async () => ({
+        stdout:
+          '<result>{"outcome":"needs-human","reason":"ambiguous-spec","question":"Which?"}</result>',
+        stderr: '',
+        exitCode: 0,
+      }),
+    });
+    const final = await h.run();
+    expect(final.status).not.toBe('needs-human');
+    expect(final.result?.outcome).not.toBe('needs-human');
+  });
+});
+
+describe('agentCommand', () => {
+  it('quotes the CLI and flags and leaves the prompt to stdin', () => {
+    expect(
+      agentCommand({
+        cli: 'claude',
+        flags: ['-p', '$(whoami)'],
+        entryPoint: 'prompts/x.md',
+      } as Automation),
+    ).toBe(`'claude' '-p' '$(whoami)' 2>&1`);
+  });
+});
+
+describe('agentKindOf', () => {
+  it('names the agent by the CLI file name', () => {
+    expect(agentKindOf('claude')).toBe('claude');
+    expect(agentKindOf('/usr/local/bin/opencode')).toBe('opencode');
+    expect(() => agentKindOf('bash')).toThrow(/not a known agent/);
   });
 });
 

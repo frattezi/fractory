@@ -1,7 +1,7 @@
 import { appendFile, mkdir, readFile, stat } from 'node:fs/promises';
-import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
+import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import type { Sandbox, Worktree } from '@ai-hero/sandcastle';
-import { profileFor } from '../contracts/agents.ts';
+import { type AgentKind, AgentKindSchema, profileFor } from '../contracts/agents.ts';
 import type { Automation, AutomationRunRecord } from '../contracts/automation.ts';
 import { FactoryConfigSchema } from '../contracts/factory-config.ts';
 import { REPO_CONFIG_FILE, type RepoConfig, RepoConfigSchema } from '../contracts/repo-config.ts';
@@ -42,11 +42,81 @@ export const shellQuote = (word: string): string => `'${word.replaceAll("'", `'\
 export const automationCommand = (automation: Automation): string =>
   `${[automation.cli, ...automation.flags, automation.entryPoint].map(shellQuote).join(' ')} 2>&1`;
 
+/** `<cli> <flags...>`, stderr merged into stdout; an agent gets its prompt on stdin. */
+export const agentCommand = (automation: Automation): string =>
+  `${[automation.cli, ...automation.flags].map(shellQuote).join(' ')} 2>&1`;
+
+/**
+ * The agent an Agent Automation's CLI is, so its Mode's credentials can be resolved: the CLI's
+ * file name (`claude`, `/usr/local/bin/opencode`). Anything else has no credentials to give it.
+ */
+export const agentKindOf = (cli: string): AgentKind => {
+  const parsed = AgentKindSchema.safeParse(basename(cli));
+  if (!parsed.success) {
+    throw new Error(
+      `Agent CLI ${cli} is not a known agent (${AgentKindSchema.options.join(', ')}); no credentials can be chosen for it`,
+    );
+  }
+  return parsed.data;
+};
+
 /** The local branch the Automation Run's worktree is on. Never pushed. */
 export const automationBranch = (record: AutomationRunRecord): string => `automation/${record.id}`;
 
-/** How an Automation Run ended. */
+/** How an Automation Run ended. Never `needs-human`: Fractory Manager owns asking the owner. */
 type Ended = Extract<RunResult, { outcome: 'done' | 'failed' }>;
+
+interface Executed {
+  exitCode: number;
+  /** Whether the work printed anything but whitespace (streamed or in the output tail). */
+  printed: boolean;
+}
+
+/** How one kind of Automation starts its work in the container, and what counts as success. */
+interface Work {
+  command: string;
+  stdin?: string;
+  judge(executed: Executed, logPath: string): Ended;
+}
+
+/** A script runs its committed entry point; a clean exit is done. */
+const scriptWork = (automation: Automation): Work => ({
+  command: automationCommand(automation),
+  judge: ({ exitCode }) =>
+    exitCode === 0
+      ? { outcome: 'done', summary: `${automation.entryPoint} exited cleanly` }
+      : {
+          outcome: 'failed',
+          summary: `${automation.entryPoint} exited with code ${exitCode}`,
+        },
+});
+
+/**
+ * An agent gets the committed entry point as its prompt. It produced a usable result when it
+ * exited cleanly and printed something; anything else fails the Run (no needs-human, no re-run).
+ */
+const agentWork = (automation: Automation, prompt: string): Work => ({
+  command: agentCommand(automation),
+  stdin: prompt,
+  judge: ({ exitCode, printed }, logPath) => {
+    if (exitCode !== 0) {
+      return {
+        outcome: 'failed',
+        summary: `${automation.cli} exited with code ${exitCode} without a usable result; log: ${logPath}`,
+      };
+    }
+    if (!printed) {
+      return {
+        outcome: 'failed',
+        summary: `${automation.cli} printed nothing: no usable result; log: ${logPath}`,
+      };
+    }
+    return {
+      outcome: 'done',
+      summary: `${automation.cli} finished the prompt ${automation.entryPoint}`,
+    };
+  },
+});
 
 class AutomationExecutor {
   private readonly store: AutomationStore;
@@ -113,11 +183,6 @@ class AutomationExecutor {
       throw new Error(`No configuration was kept for Automation Run ${record.id}; it cannot run`);
     }
     const { automation } = request;
-    if (automation.kind !== 'script') {
-      throw new Error(
-        `Automation ${automation.id} is a ${automation.kind} Automation; only Script Automations run here`,
-      );
-    }
 
     const repoPath = automation.repoPath;
     const config = await (this.deps.loadRepoConfig ?? defaultLoadRepoConfig)(repoPath);
@@ -125,7 +190,8 @@ class AutomationExecutor {
 
     let credentials: Record<string, string>;
     try {
-      credentials = await resolveCredentials(profileFor('claude', automation.mode), this.exec);
+      const kind = automation.kind === 'agent' ? agentKindOf(automation.cli) : 'claude';
+      credentials = await resolveCredentials(profileFor(kind, automation.mode), this.exec);
     } catch (error) {
       if (error instanceof MissingCredentialError) throw new Error(error.question);
       throw error;
@@ -141,7 +207,11 @@ class AutomationExecutor {
     let sandbox: Sandbox | undefined;
     try {
       await this.note(record, `worktree ready at ${worktree.worktreePath} on ${branch}`);
-      await this.assertEntryPoint(worktree, automation.entryPoint);
+      const entryPoint = await this.assertEntryPoint(worktree, automation.entryPoint);
+      const work =
+        automation.kind === 'agent'
+          ? agentWork(automation, await readFile(entryPoint, 'utf8'))
+          : scriptWork(automation);
 
       await mkdir(record.outputPath, { recursive: true });
       sandbox = await worktree.createSandbox({
@@ -156,31 +226,34 @@ class AutomationExecutor {
         }),
       });
 
-      const command = automationCommand(automation);
-      await this.note(record, `running ${command}`);
-      const executed = await sandbox.exec(command, {
+      await this.note(record, `running ${work.command}`);
+      let printed = false;
+      const executed = await sandbox.exec(work.command, {
         onLine: (line) => {
+          if (line.trim() !== '') printed = true;
           void this.append(record, `${line}\n`);
         },
+        ...(work.stdin !== undefined && { stdin: work.stdin }),
       });
       if (executed.stderr)
         await this.append(
           record,
           executed.stderr.endsWith('\n') ? executed.stderr : `${executed.stderr}\n`,
         );
-      return executed.exitCode === 0
-        ? { outcome: 'done', summary: `${automation.entryPoint} exited cleanly` }
-        : {
-            outcome: 'failed',
-            summary: `${automation.entryPoint} exited with code ${executed.exitCode}`,
-          };
+      return work.judge(
+        { exitCode: executed.exitCode, printed: printed || executed.stdout.trim() !== '' },
+        record.logPath,
+      );
     } finally {
       await this.cleanUp(record, worktree, sandbox, repoPath, branch);
     }
   }
 
-  /** The entry point must be a file inside the repository; anything else fails the Run. */
-  private async assertEntryPoint(worktree: Worktree, entryPoint: string): Promise<void> {
+  /**
+   * The entry point must be a file inside the repository; anything else fails the Run.
+   * Returns its path on the host.
+   */
+  private async assertEntryPoint(worktree: Worktree, entryPoint: string): Promise<string> {
     const path = resolve(worktree.worktreePath, entryPoint);
     const inside = relative(worktree.worktreePath, path);
     if (isAbsolute(entryPoint) || inside === '' || inside.startsWith('..') || isAbsolute(inside)) {
@@ -198,6 +271,7 @@ class AutomationExecutor {
         `Entry point ${entryPoint} is missing from the repository: it must be committed on the base branch`,
       );
     }
+    return path;
   }
 
   /** Tears down the container and the worktree; the output directory is outside both. */
@@ -234,9 +308,10 @@ class AutomationExecutor {
 }
 
 /**
- * Entry for `fractory automation-exec <automationId> <runId>`: runs a Script Automation's entry
- * point in a container on a fresh worktree and records how it ended. It never reads a Ticket,
- * never requires commits and never opens a pull request.
+ * Entry for `fractory automation-exec <automationId> <runId>`: runs an Automation in a container
+ * on a fresh worktree and records how it ended. Both kinds share this path; only how the work
+ * starts differs (a script runs its entry point, an agent CLI gets it as its prompt on stdin).
+ * It never reads a Ticket, never requires commits and never opens a pull request.
  */
 export const executeAutomationRun = (
   automationId: string,
