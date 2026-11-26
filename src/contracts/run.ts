@@ -19,6 +19,8 @@ export const TriggerSchema = z.discriminatedUnion('kind', [
     commentId: z.string(),
   }),
   z.object({ kind: z.literal('manual') }),
+  /** The owner answered the `needs-human` question of Run `runId` (Spec 0005). */
+  z.object({ kind: z.literal('answer'), runId: z.string().min(1) }),
 ]);
 export type Trigger = z.infer<typeof TriggerSchema>;
 
@@ -103,6 +105,8 @@ export const runKey = (ticketRef: string, trigger: Trigger): string => {
       return `${ticketRef}:review-comment:${trigger.commentId}`;
     case 'manual':
       return `${ticketRef}:manual:${Date.now()}`;
+    case 'answer':
+      return answerKey(ticketRef, trigger.runId);
   }
 };
 
@@ -147,6 +151,29 @@ export const rerunRequestPath = (registryDir: string, runId: string): string =>
   join(registryDir, `${runId}${RERUN_SUFFIX}`);
 
 export const rerunKey = (ticketRef: string, runId: string): string => `${ticketRef}:rerun:${runId}`;
+
+/**
+ * Answer requests written by Fractory Manager at `<registryDir>/<runId>.answer.json` (atomic
+ * write): the owner's answer to the `needs-human` question of Run `runId`. Fractory only reads
+ * them and never modifies or deletes one. The Run an answer creates has key
+ * `<ticketRef>:answer:<runId>`, so one answer yields one Run.
+ */
+export const ANSWER_REQUEST_VERSION = 1;
+
+export const AnswerRequestSchema = z.object({
+  version: z.literal(ANSWER_REQUEST_VERSION),
+  answeredAt: z.string().datetime(),
+  answer: z.string().min(1),
+});
+export type AnswerRequest = z.infer<typeof AnswerRequestSchema>;
+
+export const ANSWER_SUFFIX = '.answer.json';
+
+export const answerRequestPath = (registryDir: string, runId: string): string =>
+  join(registryDir, `${runId}${ANSWER_SUFFIX}`);
+
+export const answerKey = (ticketRef: string, runId: string): string =>
+  `${ticketRef}:answer:${runId}`;
 
 export const commentsFilePath = (registryDir: string, runId: string): string =>
   join(registryDir, `${runId}.comments.json`);

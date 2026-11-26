@@ -80,8 +80,12 @@ The Gate where a human reviews a Run's change before it merges. Applies only in 
 **Auto-merge**:
 Fractory merging a Personal Mode change by itself once the Run is done and the change is mergeable with passing or no checks. It never happens in Work Mode.
 
+**Answer**:
+The owner's reply to the question a Run stopped with when it needed a human. It starts a new Run on the Ticket's branch, with the question and the Answer in its prompt as the owner's binding decision, and it is posted on the Ticket so later Runs read it too. It never resumes the Run that asked.
+_Avoid_: reply, response, input
+
 **Trigger**:
-A detectable change of state that starts a Run without anyone asking: a Ticket becoming ready, a failed check on a Run's change, or a review comment on it.
+A detectable change of state that starts a Run without anyone asking: a Ticket becoming ready, a failed check on a Run's change, a review comment on it, or an Answer to a Run's question.
 _Avoid_: event, hook
 
 **Host Limits**:
@@ -91,6 +95,10 @@ _Avoid_: budget, capacity, quota
 **Held**:
 The state of the queue while the machine is over its Host Limits: queued Runs wait and start once it has room again. It describes the machine, not a Run.
 _Avoid_: paused, throttled
+
+**Babysitting**:
+Driving a repository's unfinished Tickets to merged one at a time: queueing a Run where a Ticket has none, waiting for the Run and then for the merge before the next Ticket starts. It stops at the first Ticket that needs the owner and never merges anything itself.
+_Avoid_: watching, polling, monitoring
 
 ### Agents and flows
 
@@ -102,6 +110,10 @@ Whose subscription pays for and answers for an agent's work: work or personal. I
 
 **Flow**:
 The fixed sequence of steps a Run follows to turn a Ticket into a change. Each repository names the Flow it uses.
+
+**Rebuild**:
+Refreshing what the owner runs from a repository's current checkout, by running the commands its `.fractory.json` lists under `rebuild`. It never touches git and is only started by the owner, with `fractory rebuild`.
+_Avoid_: deploy, update, sync
 
 ### Knowledge
 

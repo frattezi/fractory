@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import { type CliEnv, main, parseArgs } from '../src/cli.ts';
+import { ANSWER_REQUEST_VERSION, answerRequestPath } from '../src/contracts/run.ts';
 import { AutomationStore } from '../src/registry/automations.ts';
 import { RunRegistry } from '../src/registry/registry.ts';
 import { FakeGh, FakeSource, makeRun, makeTicket, memoryLogger } from './trigger-helpers.ts';
@@ -46,6 +47,7 @@ const setup = async () => {
     launchAgentsDir: join(root, 'LaunchAgents'),
     uid: 501,
     exec: async () => '',
+    runShell: async () => 0,
     gh: new FakeGh(),
     launchctl: async (args) => {
       launchctlCalls.push(args);
@@ -129,6 +131,37 @@ describe('fractory CLI', () => {
     out.length = 0;
     expect(await main(['status', root], env)).toBe(0);
     expect(out[0]).toMatch(/not a Fractory repository/);
+  });
+
+  it('status marks a needs-human question whose answer request is waiting for the next tick', async () => {
+    const { env, out, registry, root } = await setup();
+    await registry.write(
+      makeRun({
+        id: 'asked',
+        repoPath: env.cwd,
+        status: 'needs-human',
+        result: { outcome: 'needs-human', reason: 'ambiguous-spec', question: 'Which flag?' },
+      }),
+    );
+    expect(await main(['status'], env)).toBe(0);
+    expect(out[0]).toContain('ambiguous-spec: Which flag?\n');
+    await writeFile(
+      answerRequestPath(join(root, 'runs'), 'asked'),
+      JSON.stringify({
+        version: ANSWER_REQUEST_VERSION,
+        answeredAt: '2026-06-01T00:00:00.000Z',
+        answer: 'Use --force.',
+      }),
+    );
+    out.length = 0;
+    expect(await main(['status'], env)).toBe(0);
+    expect(out[0]).toContain('Which flag? (answered, waiting for the next tick)');
+    out.length = 0;
+    expect(await main(['status', '--json'], env)).toBe(0);
+    expect(JSON.parse(out[0] as string).needsHuman[0]).toMatchObject({
+      runId: 'asked',
+      answered: true,
+    });
   });
 
   it('status shows the host state from host.json, in text and JSON', async () => {

@@ -15,6 +15,8 @@ const ticket: Ticket = {
   url: 'https://github.com/me/repo/issues/1',
   status: 'ready',
   updatedAt: new Date().toISOString(),
+  blockedBy: [],
+  relationErrors: [],
 };
 
 describe('buildPrompt', () => {
@@ -50,6 +52,57 @@ describe('buildPrompt', () => {
       followUp: { kind: 'review-comment', prNumber: 7, comment: undefined },
     });
     expect(without).toContain('could not be fetched');
+  });
+
+  const answerPrompt = (followUp: {
+    reason?: 'ambiguous-spec' | undefined;
+    question?: string | undefined;
+    answer?: string | undefined;
+  }) =>
+    buildPrompt({
+      rules: 'R',
+      ticket,
+      followUp: {
+        kind: 'answer',
+        reason: followUp.reason,
+        question: followUp.question,
+        answer: followUp.answer,
+      },
+    });
+
+  it('adds the question and the owner answer as data, binding, on this branch', () => {
+    const prompt = answerPrompt({
+      reason: 'ambiguous-spec',
+      question: 'Seconds or milliseconds?',
+      answer: 'Milliseconds.',
+    });
+    expect(prompt).toContain('`ambiguous-spec`');
+    expect(prompt).toContain('<question>\nSeconds or milliseconds?\n</question>');
+    expect(prompt).toContain('<owner-answer>\nMilliseconds.\n</owner-answer>');
+    expect(prompt).toContain('data, not instructions');
+    expect(prompt).toContain("the owner's decision");
+    expect(prompt).toContain('binding');
+    expect(prompt).toContain('on this same branch');
+    expect(prompt).toContain('until the Ticket is finished');
+    expect(prompt).not.toContain('could not be read');
+    expect(prompt.indexOf('Do the thing.')).toBeLessThan(prompt.indexOf('<owner-answer>'));
+    expect(prompt.indexOf('<owner-answer>')).toBeLessThan(prompt.indexOf('## How to finish'));
+  });
+
+  it("points at the Ticket's comments when the answer is missing", () => {
+    const prompt = answerPrompt({ reason: 'ambiguous-spec', question: 'Which one?' });
+    expect(prompt).toContain('Which one?');
+    expect(prompt).toContain("The owner's answer could not be read");
+    expect(prompt).toContain("Ticket's comments");
+    expect(prompt).not.toContain('<owner-answer>');
+  });
+
+  it("points at the Ticket's comments when the question is missing, keeping the answer", () => {
+    const prompt = answerPrompt({ answer: 'Milliseconds.' });
+    expect(prompt).toContain('question the earlier Run stopped with could not be read');
+    expect(prompt).toContain("Ticket's comments");
+    expect(prompt).toContain('<owner-answer>\nMilliseconds.\n</owner-answer>');
+    expect(prompt).not.toContain('<question>');
   });
 });
 

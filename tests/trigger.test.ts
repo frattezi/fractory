@@ -1,12 +1,13 @@
 import { mkdir, readFile, utimes, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { parseRelations } from '../src/adapters/relations.ts';
 import { ResourceLimitsSchema } from '../src/contracts/factory-config.ts';
 import type { RepoConfig } from '../src/contracts/repo-config.ts';
-import { type Trigger, rerunRequestPath, runKey } from '../src/contracts/run.ts';
+import { type Trigger, answerRequestPath, rerunRequestPath, runKey } from '../src/contracts/run.ts';
 import type { HostLoad } from '../src/policy/resources.ts';
 import { ownsRef } from '../src/trigger/blockers.ts';
-import { branchFor } from '../src/trigger/queue.ts';
+import { branchFor, byTicketOrder } from '../src/trigger/queue.ts';
 import { acquireLock } from '../src/trigger/support.ts';
 import { tick } from '../src/trigger/tick.ts';
 import {
@@ -70,6 +71,38 @@ describe('ticket-ready Trigger', () => {
     expect((await h.registry.list())[0]?.branch).toBe('feat/2-fix-login');
   });
 
+  it('queues Ready Tickets in Ticket order, whatever order the source lists them in', async () => {
+    const h = await makeHarness({ maxConcurrentRuns: 0 });
+    // Like the GitHub source: newest first.
+    for (const n of [10, 9, 3, 2, 1]) h.source.tickets.set(`github:me/app#${n}`, makeTicket(n));
+    await tick(h.deps);
+    const runs = (await h.registry.list()).sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+    expect(runs.map((r) => r.ticketRef)).toEqual([
+      'github:me/app#1',
+      'github:me/app#2',
+      'github:me/app#3',
+      'github:me/app#9',
+      'github:me/app#10',
+    ]);
+    expect(h.source.statusCalls.map(([ref]) => ref)).toEqual(runs.map((r) => r.ticketRef));
+  });
+
+  it('orders Jira and GitHub refs by number, not as text', () => {
+    const refs = ['jira:ABC-10', 'jira:ABC-9', 'jira:ABC-100', 'jira:AB-2'] as const;
+    const sorted = refs.map((ref) => ({ ref })).sort(byTicketOrder);
+    expect(sorted.map((t) => t.ref)).toEqual([
+      'jira:AB-2',
+      'jira:ABC-9',
+      'jira:ABC-10',
+      'jira:ABC-100',
+    ]);
+    const gh = ['github:me/my-app#12', 'github:me/my-app#3'].map((ref) => ({ ref }));
+    expect(gh.sort(byTicketOrder).map((t) => t.ref)).toEqual([
+      'github:me/my-app#3',
+      'github:me/my-app#12',
+    ]);
+  });
+
   it('drops a title that would trip the Work Mode outbound policy', () => {
     expect(branchFor('github:me/app#3', 'Ask Claude to fix it', 'work')).toBe('feat/3');
     expect(branchFor('jira:ABC-12', 'Add login', 'work')).toBe('feat/abc-12-add-login');
@@ -77,10 +110,13 @@ describe('ticket-ready Trigger', () => {
 });
 
 describe('blockers hold a Ready Ticket', () => {
-  const blocked = (n: number, ...blockers: string[]) => ({
-    ...makeTicket(n),
-    body: `What to build\n\n${blockers.map((b) => `Blocked by ${b}`).join('\n')}`,
-  });
+  const blocked = (n: number, ...blockers: string[]) => {
+    const base = makeTicket(n);
+    const body = `What to build\n\n${blockers.map((b) => `Blocked by ${b}`).join('\n')}`;
+    // The adapters parse the Relations a body declares; the fake source stands in for them.
+    const { errors, ...relations } = parseRelations(body, base.ref);
+    return { ...base, body, ...relations, relationErrors: errors };
+  };
   const readHost = async (path: string) => JSON.parse(await readFile(path, 'utf8'));
 
   it('starts a Ticket that records no blocker as before', async () => {
@@ -519,6 +555,200 @@ describe('Re-run requests', () => {
     await seed(h);
     await request(h, 'failed-1');
     expect((await h.registry.list()).map((r) => r.id)).toEqual(['failed-1']);
+  });
+});
+
+describe('Answer requests', () => {
+  type H = Awaited<ReturnType<typeof makeHarness>>;
+  const answer = (h: H, runId: string, text = 'Use the second reading.') =>
+    writeJson(answerRequestPath(h.factory.registryDir, runId), {
+      version: 1,
+      answeredAt: '2026-06-01T09:00:00.000Z',
+      answer: text,
+    });
+  const seed = async (h: H, overrides: Parameters<typeof makeRun>[0] = {}) => {
+    await h.registry.write(
+      makeRun({
+        id: 'asked-1',
+        status: 'needs-human',
+        branch: 'fractory/1-kept',
+        mode: 'personal',
+        flow: 'build',
+        result: { outcome: 'needs-human', reason: 'ambiguous-spec', question: 'Which reading?' },
+        ...overrides,
+      }),
+    );
+    h.source.tickets.set('github:me/app#1', makeTicket(1, 'in_progress'));
+  };
+
+  it('queues one answer Run on the Ticket branch with the Answer key and moves the Ticket', async () => {
+    const h = await makeHarness();
+    await seed(h);
+    await answer(h, 'asked-1');
+    const summary = await tick(h.deps);
+    expect(summary.queued).toEqual(['run-1']);
+    expect(await h.registry.get('run-1')).toMatchObject({
+      key: 'github:me/app#1:answer:asked-1',
+      trigger: { kind: 'answer', runId: 'asked-1' },
+      branch: 'fractory/1-kept',
+      ticketRef: 'github:me/app#1',
+      mode: 'personal',
+      flow: 'build',
+    });
+    expect(h.launched).toEqual(['run-1']);
+    expect(h.source.statusCalls).toContainEqual(['github:me/app#1', 'in_progress']);
+    expect(h.source.comments).toEqual([
+      ['github:me/app#1', 'Answer to "Which reading?":\n\nUse the second reading.'],
+    ]);
+  });
+
+  it('queues nothing and posts nothing on a second tick over the same request', async () => {
+    const h = await makeHarness();
+    await seed(h);
+    await answer(h, 'asked-1');
+    await tick(h.deps);
+    await h.registry.update('run-1', { status: 'done' });
+    const again = await tick(h.deps);
+    expect(again.queued).toEqual([]);
+    expect(await h.registry.list()).toHaveLength(2);
+    expect(h.source.comments).toHaveLength(1);
+    expect(h.log.lines.join('\n')).toMatch(/answer for Run asked-1 skipped: .* already exists/);
+  });
+
+  it('skips a Run that is not the latest of its Ticket, and logs why', async () => {
+    const h = await makeHarness();
+    await seed(h);
+    await h.registry.write(
+      makeRun({
+        id: 'newer',
+        key: 'other',
+        status: 'done',
+        createdAt: '2026-05-31T12:00:00.000Z',
+        updatedAt: '2026-05-31T12:00:00.000Z',
+      }),
+    );
+    await answer(h, 'asked-1');
+    expect((await tick(h.deps)).queued).toEqual([]);
+    expect(h.source.comments).toEqual([]);
+    expect(h.log.lines.join('\n')).toMatch(
+      /answer for Run asked-1 skipped: it is not the latest Run/,
+    );
+  });
+
+  it.each(['done', 'failed'] as const)('skips a %s Run, and logs why', async (status) => {
+    const h = await makeHarness();
+    await seed(h, { status, result: { outcome: 'failed', summary: 'x' } });
+    await answer(h, 'asked-1');
+    expect((await tick(h.deps)).queued).toEqual([]);
+    expect(h.source.comments).toEqual([]);
+    expect(h.log.lines.join('\n')).toMatch(
+      new RegExp(`answer for Run asked-1 skipped: the Run is ${status}`),
+    );
+  });
+
+  it('waits silently while a Run on the Ticket is active, then queues once it is idle', async () => {
+    const h = await makeHarness();
+    await seed(h);
+    await h.registry.write(
+      makeRun({
+        id: 'busy',
+        key: 'busy',
+        status: 'running',
+        pid: 900,
+        createdAt: '2026-05-30T10:00:00.000Z',
+        updatedAt: '2026-05-30T10:00:00.000Z',
+      }),
+    );
+    await answer(h, 'asked-1');
+    const first = await tick(h.deps);
+    expect(first.queued).toEqual([]);
+    expect(h.source.comments).toEqual([]);
+    expect(h.log.lines.join('\n')).not.toMatch(/answer for Run asked-1/);
+
+    await h.registry.update('busy', { status: 'done' });
+    const second = await tick(h.deps);
+    expect(second.queued).toEqual(['run-1']);
+    expect((await h.registry.get('run-1'))?.trigger).toEqual({ kind: 'answer', runId: 'asked-1' });
+  });
+
+  it('never posts rejected text in Work Mode, and still queues the Run', async () => {
+    const h = await makeHarness({ config: workRepo });
+    await seed(h, { mode: 'work', branch: 'feat/1-kept' });
+    await answer(h, 'asked-1', 'Let Claude pick the second reading.');
+    const summary = await tick(h.deps);
+    expect(h.source.comments).toEqual([]);
+    expect(summary.queued).toEqual(['run-1']);
+    expect(h.log.lines.join('\n')).toMatch(/could not post the answer for Run asked-1/);
+  });
+
+  it('posts an allowed answer in Work Mode', async () => {
+    const h = await makeHarness({ config: workRepo });
+    await seed(h, { mode: 'work', branch: 'feat/1-kept' });
+    await answer(h, 'asked-1');
+    await tick(h.deps);
+    expect(h.source.comments).toHaveLength(1);
+  });
+
+  it('logs a failing tracker comment and still queues the Run', async () => {
+    const h = await makeHarness();
+    await seed(h);
+    h.source.commentError = new Error('tracker down');
+    await answer(h, 'asked-1');
+    const summary = await tick(h.deps);
+    expect(summary.queued).toEqual(['run-1']);
+    expect(summary.errors).toBe(0);
+    expect(h.log.lines.join('\n')).toMatch(/could not post the answer .*tracker down/);
+  });
+
+  it('skips an invalid answer file and an unknown Run without stopping the tick', async () => {
+    const h = await makeHarness();
+    await seed(h);
+    await writeJson(answerRequestPath(h.factory.registryDir, 'asked-1'), {
+      version: 1,
+      answeredAt: '2026-06-01T09:00:00.000Z',
+      answer: '',
+    });
+    await writeFile(join(h.factory.registryDir, 'half.answer.json'), '{"version":');
+    await answer(h, 'ghost');
+    h.source.tickets.set('github:me/app#2', makeTicket(2));
+    const summary = await tick(h.deps);
+    expect(summary.errors).toBe(0);
+    expect(summary.queued).toEqual(['run-1']);
+    expect((await h.registry.get('run-1'))?.trigger).toEqual({ kind: 'ticket-ready' });
+  });
+
+  it('launches answer Runs before follow-ups and newly Ready Tickets', async () => {
+    const h = await makeHarness({ maxConcurrentRuns: 1 });
+    await seed(h);
+    await answer(h, 'asked-1');
+    await h.registry.write(
+      makeRun({
+        id: 'ci',
+        ticketRef: 'github:me/app#2',
+        key: 'k-ci',
+        trigger: { kind: 'ci-failed', prNumber: 7, headSha: 's' },
+        status: 'queued',
+      }),
+    );
+    await h.registry.write(
+      makeRun({ id: 'ready', ticketRef: 'github:me/app#3', key: 'k-ready', status: 'queued' }),
+    );
+    h.source.tickets.set('github:me/app#4', makeTicket(4));
+    await tick(h.deps);
+    expect(h.launched).toEqual(['run-1']);
+    expect((await h.registry.get('run-1'))?.trigger.kind).toBe('answer');
+  });
+
+  it('never modifies or deletes the answer file, and the registry does not list it', async () => {
+    const h = await makeHarness();
+    await seed(h);
+    await answer(h, 'asked-1');
+    const path = answerRequestPath(h.factory.registryDir, 'asked-1');
+    const before = await readFile(path, 'utf8');
+    await tick(h.deps);
+    await tick(h.deps);
+    expect(await readFile(path, 'utf8')).toBe(before);
+    expect((await h.registry.list()).map((r) => r.id).sort()).toEqual(['asked-1', 'run-1']);
   });
 });
 

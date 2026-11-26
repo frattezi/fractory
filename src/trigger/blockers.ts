@@ -1,4 +1,3 @@
-import { parseBlockers } from '../adapters/shared.ts';
 import type { RepoConfig, TicketSourceConfig } from '../contracts/repo-config.ts';
 import type { Ticket, TicketRef, TicketSource } from '../contracts/ticket.ts';
 
@@ -71,19 +70,21 @@ export const createBlockerResolver = (
   };
 };
 
-/** The blockers recorded in a Ticket's body that are not resolved; empty means it may start. */
+/**
+ * The blockers a Ticket declares that are not resolved; empty means it may start. A relation the
+ * adapter could not read holds the Ticket too: an unreadable line is not proof of no blocker.
+ */
 export const holdingBlockers = async (
-  ticket: Pick<Ticket, 'ref' | 'body'>,
+  ticket: Pick<Ticket, 'blockedBy' | 'relationErrors'>,
   resolve: (ref: TicketRef) => Promise<BlockerState>,
 ): Promise<HoldingBlocker[]> => {
-  const holding: HoldingBlocker[] = [];
-  for (const line of parseBlockers(ticket.body, ticket.ref)) {
-    if (!line.ref) {
-      holding.push({ blocker: line.label, state: 'unowned' });
-      continue;
-    }
-    const state = await resolve(line.ref);
-    if (state !== 'resolved') holding.push({ blocker: line.ref, state });
+  const holding: HoldingBlocker[] = (ticket.relationErrors ?? []).map((message) => ({
+    blocker: message,
+    state: 'unowned' as const,
+  }));
+  for (const ref of ticket.blockedBy ?? []) {
+    const state = await resolve(ref);
+    if (state !== 'resolved') holding.push({ blocker: ref, state });
   }
   return holding;
 };

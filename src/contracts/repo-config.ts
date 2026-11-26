@@ -45,6 +45,8 @@ export const RepoConfigSchema = z.object({
     .string()
     .regex(/^[a-z][a-z0-9-]*$/)
     .default('build'),
+  /** `fractory rebuild`: shell commands run in order from the repo root. Absent means none. */
+  rebuild: z.array(z.string().min(1)).optional(),
 });
 export type RepoConfig = z.infer<typeof RepoConfigSchema>;
 

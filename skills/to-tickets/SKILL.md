@@ -29,7 +29,11 @@ Break an approved **Spec** into **Tickets**: tracer-bullet vertical slices, each
    fractory tickets create --title "<title>" --body-file <path> --status <backlog|ready> [--blocked-by <ref>]... [--parent <ref>]
    ```
 
-   It prints the created Ticket as JSON (`{"ref": "...", "url": "..."}`); use `ref` in later `--blocked-by` flags. Each `--blocked-by` is written into the body as a `Blocked by <ref>` line, and that line gates the Run: the tick holds a Ready Ticket, without touching it in the tracker, until every blocker it records is closed in its own ticket source (a closed GitHub issue, or the configured done status in Jira), and `fractory status` lists it as waiting on its blockers. A blocker no configured repo owns holds the Ticket until the owner fixes the line. Declare only genuine blocking edges. `--status` is `backlog` when the Ticket Gate is on and `ready` when it is off. Never create a Ticket as `ready` when the gate is on: a Ticket becoming Ready is what starts a Run.
+   It prints the created Ticket as JSON (`{"ref": "...", "url": "..."}`); use `ref` in later `--blocked-by` flags. `--status` is `backlog` when the Ticket Gate is on and `ready` when it is off. Never create a Ticket as `ready` when the gate is on: a Ticket becoming Ready is what starts a Run.
+
+   `--blocked-by` and `--parent` are written into a `## Relations` section at the end of the body, as full Ticket refs, and read back from there: a blocker is data the factory can act on, not a note for the reader. Edit that section in the tracker and the factory sees the change.
+
+   **What the factory does with a blocker** (Spec 0004 is landing in slices): the tick holds a Ready Ticket, without touching it in the tracker, until every blocker it records is closed in its own ticket source (a closed GitHub issue, or the configured done status in Jira), and `fractory status` lists it as waiting on its blockers. Ready Tickets are queued blockers first, by ascending Ticket order, so a chain never starts backwards. A blocker no configured repo owns holds the Ticket until the owner fixes the line. Declare only genuine blocking edges.
 6. **Report.** Tell the owner how many Tickets were created and their refs. When the Ticket Gate is on, say that they are in backlog and that moving them to Ready is the owner's approval at the Ticket Gate. Do not do it for them.
 
 In a Work Mode repo, Ticket titles and bodies go to a shared tracker: write them as a developer would, with no mention of Fractory, agents, Claude or AI tooling. The CLI rejects text that does.

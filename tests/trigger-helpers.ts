@@ -34,6 +34,8 @@ export const makeTicket = (
   url: `https://github.com/me/app/issues/${n}`,
   status,
   updatedAt: '2026-01-01T00:00:00.000Z',
+  blockedBy: [],
+  relationErrors: [],
 });
 
 export class FakeSource implements TicketSource {
@@ -57,7 +59,13 @@ export class FakeSource implements TicketSource {
     const t = this.tickets.get(ref);
     if (t && !this.stickyReady) this.tickets.set(ref, { ...t, status });
   }
-  async comment(): Promise<void> {}
+  comments: [string, string][] = [];
+  /** When set, `comment` throws it instead of recording the comment. */
+  commentError: Error | undefined;
+  async comment(ref: TicketRef, body: string): Promise<void> {
+    if (this.commentError) throw this.commentError;
+    this.comments.push([ref, body]);
+  }
 }
 
 export const makePr = (overrides: Record<string, unknown> = {}): PrView =>

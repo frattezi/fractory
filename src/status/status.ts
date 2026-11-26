@@ -30,7 +30,14 @@ export interface RepoStatus {
   openPrs: { ticketRef: string; branch: string; prUrl: string }[];
   /** Held Tickets from the last tick: Ready, but not started while their blockers are open. */
   waitingOnBlockers: { ticketRef: string; blockers: string[] }[];
-  needsHuman: { ticketRef: string; reason: NeedsHumanReason; question: string; runId: string }[];
+  needsHuman: {
+    ticketRef: string;
+    reason: NeedsHumanReason;
+    question: string;
+    runId: string;
+    /** The owner has answered; the next tick queues the Run that carries the Answer. */
+    answered?: boolean;
+  }[];
   /** Every branch an agent must not commit to, push to, check out or rebase by hand. */
   factoryBranches: string[];
 }
@@ -53,6 +60,8 @@ export const repoStatus = (input: {
   runs: RunRecord[];
   /** `heldTickets` of the last tick's host state, for every repo. */
   heldTickets?: HostState['heldTickets'];
+  /** Run ids with an answer request in the registry dir. The caller reads them; this stays pure. */
+  answeredRunIds?: readonly string[];
 }): RepoStatus => {
   const repoPath = resolve(input.repoPath);
   const listed = input.factoryRepos.some((r) => resolve(r) === repoPath);
@@ -73,6 +82,7 @@ export const repoStatus = (input: {
   status.prGate = requiresPrGate(config);
   status.autoMerge = config.mode === 'personal';
 
+  const answered = new Set(input.answeredRunIds ?? []);
   const branches = new Set<string>();
   for (const run of latestPerTicket(input.runs, repoPath)) {
     if (ACTIVE_STATUSES.includes(run.status)) {
@@ -97,6 +107,7 @@ export const repoStatus = (input: {
         reason: run.result.reason,
         question: run.result.question,
         runId: run.id,
+        ...(answered.has(run.id) && { answered: true }),
       });
     }
   }
@@ -131,7 +142,10 @@ export const formatStatus = (s: RepoStatus): string => {
   );
   section(
     'Waiting on the owner',
-    s.needsHuman.map((n) => `${n.ticketRef} ${n.reason}: ${n.question}`),
+    s.needsHuman.map(
+      (n) =>
+        `${n.ticketRef} ${n.reason}: ${n.question}${n.answered ? ' (answered, waiting for the next tick)' : ''}`,
+    ),
   );
   section('Hands-off branches', s.factoryBranches);
   return lines.join('\n');

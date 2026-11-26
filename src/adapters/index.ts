@@ -13,7 +13,6 @@ export type {
   SleepFn,
 } from './shared.ts';
 export { flattenAdf } from './jira.ts';
-export { BLOCKED_BY, type BlockerLine, parseBlockers } from './shared.ts';
 
 const build = (config: TicketSourceConfig, options?: AdapterOptions) =>
   config.kind === 'github'

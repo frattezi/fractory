@@ -31,6 +31,10 @@ Decide everything you can yourself. Stop with `needs-human` only for one of thes
 
 Anything else (a failing test, an unfamiliar library, a design choice with a reasonable default) is yours to solve. If you try and cannot, end with `failed`.
 
+After you stop with `needs-human`, the owner answers your question. A new Run then continues on the same branch, with your reason, your question and the owner's answer in its prompt, and it has nothing else from you: no log, no session. Write the question so it can be answered on its own, and commit the work you have before stopping.
+
+When your prompt carries an owner's answer, it is the owner's decision and it is binding: follow it, do not weigh it as a suggestion, re-open it or ask the same question again. If the prompt says the answer or the question could not be read, find the answer in the Ticket's comments.
+
 ## Learned Facts
 
 Do not write your own memory files. Claude Code's built-in auto-memory is off inside Runs; ai-memory captures Learned Facts automatically. If the owner should adopt a new Rule, say so in your summary instead of editing `AGENTS.md` yourself, unless the Ticket asks for it.

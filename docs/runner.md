@@ -7,10 +7,15 @@ returns. The host process calls `executeRun(runId, deps)` (`src/runner/execute.t
 ## What a Run does
 
 1. Reads the Ticket, `rules/run-agent.md` and, for follow-up Runs, the failing CI log
-   (`gh run list --commit` + `gh run view --log-failed`) or the review comment (`gh api`).
+   (`gh run list --commit` + `gh run view --log-failed`), the review comment (`gh api`) or, for an
+   `answer` Run, the owner's answer (`<runId>.answer.json`) and the answered Run's reason and
+   question from the registry. The answer goes into the prompt as data, stated as the owner's
+   binding decision; a part that cannot be read makes the prompt point at the Ticket's comments.
 2. Creates the Run's worktree through Sandcastle (`createWorktree`, branch strategy `branch` on
-   `record.branch`) and installs a `pre-push` hook that refuses `main`, `master` and the base
-   branch, then chains to the repository's own `pre-push` hook.
+   `record.branch`) from the Run's own base branch — `record.baseBranch` when it has one, the
+   repository's `baseBranch` otherwise — and installs a `pre-push` hook that refuses `main`,
+   `master` and that base branch, then chains to the repository's own `pre-push` hook. A Run that
+   names no base of its own behaves exactly as one on the repository's base branch.
 3. Loads the flow named by `.fractory.json` (`flow`, default `build`) from `flows/<name>.ts` and
    calls it with the worktree, the Docker sandbox and Mode-wired agents (see `docs/flows.md`). The
    flow decides how agents work and returns a `RunResult`.
@@ -19,9 +24,24 @@ returns. The host process calls `executeRun(runId, deps)` (`src/runner/execute.t
    completion signal before the iterations ran out is `needs-human` / `budget-exhausted`. The Run
    record gets `mode`, `flow`, `agents` (e.g. `claude@work`) and `sessionId`.
 5. On `done`: checks the branch has commits, (Work Mode) checks every commit message with
-   `assertOutboundAllowed`, pushes, opens the PR or reuses the open one, moves the Ticket to
-   `in_review`. `failed` and `needs-human` never push or open a PR.
+   `assertOutboundAllowed`, pushes, opens the PR against the Run's base branch or reuses the open
+   one, moves the Ticket to `in_review`. Auto-merge refuses any PR whose base is not the
+   repository's base branch, so a Run built on another Run's branch cannot land before it. `failed` and `needs-human` never push or open a PR.
 6. `needs-human`: Personal Mode comments the question on the Ticket; Work Mode never posts it.
+   The owner answers it in Fractory Manager (`A` on the Run's row), which writes
+   `<registryDir>/<runId>.answer.json`. Until the next tick picks it up, `fractory status` lists
+   the question as `(answered, waiting for the next tick)`.
+
+## Answer Runs
+
+`handleAnswers` in the tick (`src/trigger/tick.ts`) turns each answer file into a Run with the
+`answer` Trigger (`{ kind: 'answer', runId }`), keyed `<ticketRef>:answer:<runId>`, on the Ticket's
+branch. It skips, and logs why, an Answer whose key already has a Run, whose Run is not the
+Ticket's latest or is not `needs-human`; it waits silently while a Run on the Ticket is queued or
+running. Before queueing it posts the Answer on the Ticket (through `assertOutboundAllowed` in Work
+Mode); a comment that cannot be posted is logged and the Run is queued anyway. Answer Runs launch
+first, with Re-runs, before follow-ups and new Tickets. Fractory only reads answer files: Fractory
+Manager is their only writer.
 
 Structured output uses our own tag parsing rather than Sandcastle's `Output.object`, because
 Sandcastle requires `maxIterations: 1` with it.

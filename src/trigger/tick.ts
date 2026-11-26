@@ -8,13 +8,16 @@ import {
   AM_COMMENT_PREFIX,
   type RunRecord,
   type Trigger,
+  answerKey,
   rerunKey,
   runKey,
 } from '../contracts/run.ts';
 import type { TicketSource } from '../contracts/ticket.ts';
 import { type Gh, feedbackItems, summarizeChecks } from '../github/gh.ts';
+import { assertOutboundAllowed } from '../policy/outbound.ts';
 import { type HostLoad, checkResources } from '../policy/resources.ts';
 import { mayAutoMerge } from '../policy/workflow.ts';
+import { listAnswerRequests, readAnswerRequest } from '../registry/answers.ts';
 import { AutomationStore } from '../registry/automations.ts';
 import { consumedCommentIds, pendingComments, readRunComments } from '../registry/comments.ts';
 import { readHostState, writeHostState } from '../registry/host-state.ts';
@@ -28,7 +31,7 @@ import {
   describeHolding,
   holdingBlockers,
 } from './blockers.ts';
-import { branchFor, queueRun } from './queue.ts';
+import { branchFor, byTicketOrder, queueRun } from './queue.ts';
 import { type Logger, type PidState, acquireLock } from './support.ts';
 
 export interface TickDeps {
@@ -80,6 +83,7 @@ export interface TickSummary {
 const launchGroup = (run: RunRecord): number => {
   switch (run.trigger.kind) {
     case 'manual':
+    case 'answer':
       return 0;
     case 'ci-failed':
     case 'review-comment':
@@ -435,12 +439,83 @@ export const tick = async (deps: TickDeps): Promise<TickSummary> => {
     }
   };
 
+  /**
+   * Answer requests (`<runId>.answer.json`, written by Fractory Manager) become an `answer` Run on
+   * the Ticket's branch, keyed `<ticketRef>:answer:<runId>` so one answer yields one Run. The answer
+   * is first posted on the Ticket so it outlives the Run; a comment that cannot be posted never
+   * holds the Run back. The files are never modified or deleted.
+   */
+  const handleAnswers = async (
+    repoPath: string,
+    config: RepoConfig,
+    source: TicketSource,
+  ): Promise<void> => {
+    for (const runId of await listAnswerRequests(factory.registryDir)) {
+      try {
+        const target = await registry.get(runId);
+        if (!target || target.repoPath !== repoPath) continue;
+        const key = answerKey(target.ticketRef, runId);
+        const all = await registry.list();
+        if (all.some((r) => r.key === key)) {
+          log.info(`answer for Run ${runId} skipped: Run ${key} already exists`);
+          continue;
+        }
+        const ticketRuns = all.filter((r) => r.ticketRef === target.ticketRef);
+        // Same rule as review comments: wait, silently, until the Ticket is idle.
+        if (ticketRuns.some((r) => r.status === 'queued' || r.status === 'running')) continue;
+        const latest = [...ticketRuns].sort(byCreatedAt).at(-1);
+        if (latest?.id !== target.id) {
+          log.info(`answer for Run ${runId} skipped: it is not the latest Run of its Ticket`);
+          continue;
+        }
+        if (target.status !== 'needs-human') {
+          log.info(`answer for Run ${runId} skipped: the Run is ${target.status}`);
+          continue;
+        }
+        const request = await readAnswerRequest(factory.registryDir, runId);
+        if (!request) continue;
+        try {
+          const question =
+            target.result?.outcome === 'needs-human' ? target.result.question : undefined;
+          const body =
+            question === undefined
+              ? `Answer:\n\n${request.answer}`
+              : `Answer to "${question}":\n\n${request.answer}`;
+          assertOutboundAllowed(body, config.mode);
+          await source.comment(target.ticketRef, body);
+        } catch (error) {
+          log.warn(
+            `could not post the answer for Run ${runId} on ${target.ticketRef}: ${message(error)}`,
+          );
+        }
+        const { record, created } = await queueRun(deps, {
+          ticketRef: target.ticketRef,
+          repoPath,
+          trigger: { kind: 'answer', runId },
+          key,
+          branch: target.branch,
+          mode: target.mode,
+          flow: target.flow,
+        });
+        if (!created) continue;
+        summary.queued.push(record.id);
+        log.info(`queued answer Run ${record.id} of Run ${runId} for ${target.ticketRef}`);
+        await source
+          .setStatus(target.ticketRef, 'in_progress')
+          .catch((e) => fail(`status ${target.ticketRef}`, e));
+      } catch (error) {
+        fail(`answer request ${runId}`, error);
+      }
+    }
+  };
+
   const queueReadyTickets = async (
     repoPath: string,
     config: RepoConfig,
     source: TicketSource,
   ): Promise<void> => {
-    const ready = await source.listReady();
+    // Queue in Ticket order, not tracker order: GitHub lists newest first.
+    const ready = [...(await source.listReady())].sort(byTicketOrder);
     for (const ticket of ready) {
       try {
         // A Ticket still marked Ready may already have a Run (e.g. `fractory run`): never a second.
@@ -622,6 +697,7 @@ export const tick = async (deps: TickDeps): Promise<TickSummary> => {
         sources.set(repoPath, source);
         await markDead(repoPath);
         await handleReruns(repoPath, source);
+        await handleAnswers(repoPath, config, source);
         await handlePrs(repoPath, config, source, me);
         await handleAmComments(repoPath, source);
         await queueReadyTickets(repoPath, config, source);

@@ -31,6 +31,23 @@ This writes and validates `<repo>/.fractory.json` (Mode, Ticket source, CI, Tick
 branch, sandbox image, iteration budget). It refuses to overwrite an existing file unless `--force`
 is passed. Commit the file: the Mode belongs to the repository.
 
+### Rebuild lists
+
+A repository whose installed tool runs from a build can declare how to refresh it, in
+`.fractory.json`:
+
+```json
+{ "rebuild": ["pnpm install --frozen-lockfile", "pnpm typecheck"] }
+```
+
+`rebuild` is optional: an array of non-empty shell commands. `fractory rebuild` runs the list of
+every configured repo that has one, in config order; `fractory rebuild <repoPath>...` runs only
+those repos, and fails if one is not configured or has no list. Commands run in order from the repo
+root through a shell (so `~` works), with their output shown. The first command that fails stops
+that repo and every repo after it, and the command exits non-zero. It performs no git operation:
+whatever is checked out, dirty or on a Run's branch, is built as it stands. `fractory config show`
+reports the list.
+
 ## 3. Learned Facts: ai-memory
 
 Learned Facts are captured only by ai-memory (ADR 0004).
@@ -65,6 +82,10 @@ cd ~/Work/Personal/agent-manager
 make build VERSION=0.50.0-fractory
 install -m 755 agent-manager ~/.local/bin/fractory-manager && rm agent-manager
 ```
+
+Give the fork's `.fractory.json` these steps as its `rebuild` list; then after the factory merges
+work into it, `fractory rebuild` (or `fractory rebuild ~/Work/Personal/agent-manager`) refreshes
+the installed binary.
 
 It reads Runs from `$FRACTORY_HOME/runs` (default `~/.fractory/runs`) and shares Agent Manager's
 config, sessions and tmux namespace, so run one of the two at a time, not both. Review comments
