@@ -4,7 +4,7 @@ import { describe, expect, it } from 'vitest';
 import { ResourceLimitsSchema } from '../src/contracts/factory-config.ts';
 import { type Trigger, rerunRequestPath, runKey } from '../src/contracts/run.ts';
 import type { HostLoad } from '../src/policy/resources.ts';
-import { branchFor } from '../src/trigger/queue.ts';
+import { branchFor, byTicketOrder } from '../src/trigger/queue.ts';
 import { acquireLock } from '../src/trigger/support.ts';
 import { tick } from '../src/trigger/tick.ts';
 import {
@@ -65,6 +65,38 @@ describe('ticket-ready Trigger', () => {
     h.source.tickets.set('github:me/app#2', makeTicket(2, 'ready', 'Fix login'));
     await tick(h.deps);
     expect((await h.registry.list())[0]?.branch).toBe('feat/2-fix-login');
+  });
+
+  it('queues Ready Tickets in Ticket order, whatever order the source lists them in', async () => {
+    const h = await makeHarness({ maxConcurrentRuns: 0 });
+    // Like the GitHub source: newest first.
+    for (const n of [10, 9, 3, 2, 1]) h.source.tickets.set(`github:me/app#${n}`, makeTicket(n));
+    await tick(h.deps);
+    const runs = (await h.registry.list()).sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+    expect(runs.map((r) => r.ticketRef)).toEqual([
+      'github:me/app#1',
+      'github:me/app#2',
+      'github:me/app#3',
+      'github:me/app#9',
+      'github:me/app#10',
+    ]);
+    expect(h.source.statusCalls.map(([ref]) => ref)).toEqual(runs.map((r) => r.ticketRef));
+  });
+
+  it('orders Jira and GitHub refs by number, not as text', () => {
+    const refs = ['jira:ABC-10', 'jira:ABC-9', 'jira:ABC-100', 'jira:AB-2'] as const;
+    const sorted = refs.map((ref) => ({ ref })).sort(byTicketOrder);
+    expect(sorted.map((t) => t.ref)).toEqual([
+      'jira:AB-2',
+      'jira:ABC-9',
+      'jira:ABC-10',
+      'jira:ABC-100',
+    ]);
+    const gh = ['github:me/my-app#12', 'github:me/my-app#3'].map((ref) => ({ ref }));
+    expect(gh.sort(byTicketOrder).map((t) => t.ref)).toEqual([
+      'github:me/my-app#3',
+      'github:me/my-app#12',
+    ]);
   });
 
   it('drops a title that would trip the Work Mode outbound policy', () => {
