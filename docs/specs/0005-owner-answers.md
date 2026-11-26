@@ -1,7 +1,7 @@
-# Spec 0004: Owner Answers
+# Spec 0005: Owner Answers
 
 Status: accepted (2026-11-26). Vocabulary: [GLOSSARY.md](../../GLOSSARY.md). Builds on
-[Spec 0002](0002-host-limits-and-re-runs.md) and ADR 0002.
+[Spec 0002](0002-host-limits-and-re-runs.md), [Spec 0004](0004-ticket-dependencies.md) and ADR 0002.
 
 ## Goal
 
