@@ -92,12 +92,23 @@ export const installPrePushHook = async (options: {
     (await exec('git', args, { cwd: worktreePath })).stdout.trim();
 
   const gitDir = await git('rev-parse', '--absolute-git-dir');
-  const ownHook = await git('rev-parse', '--git-path', 'hooks/pre-push');
-  const repoHookPath = isAbsolute(ownHook) ? ownHook : resolve(worktreePath, ownHook);
-
   const hooksDir = join(gitDir, 'fractory-hooks');
-  await mkdir(hooksDir, { recursive: true });
   const hookFile = join(hooksDir, 'pre-push');
+
+  // The repository's own hook, read from the repo config and the shared git dir, never through
+  // `--git-path hooks`: once a Run reuses this worktree, that follows the worktree's
+  // core.hooksPath to this very hook, which would then call itself until fork() fails.
+  const commonDir = await git('rev-parse', '--path-format=absolute', '--git-common-dir');
+  const configured = await git('config', '--local', '--get', 'core.hooksPath').catch(() => '');
+  const repoHooksDir = configured
+    ? isAbsolute(configured)
+      ? configured
+      : resolve(worktreePath, configured)
+    : join(commonDir, 'hooks');
+  const candidate = join(repoHooksDir, 'pre-push');
+  const repoHookPath = resolve(candidate) === resolve(hookFile) ? '' : candidate;
+
+  await mkdir(hooksDir, { recursive: true });
   await writeFile(hookFile, renderPrePushHook({ baseBranch, repoHookPath }));
   await chmod(hookFile, 0o755);
 
