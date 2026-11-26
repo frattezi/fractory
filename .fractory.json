@@ -9,8 +9,5 @@
   "baseBranch": "main",
   "sandboxImage": "sandcastle:fractory",
   "maxIterations": 10,
-  "rebuild": [
-    "pnpm install --frozen-lockfile",
-    "pnpm typecheck"
-  ]
+  "rebuild": ["pnpm install --frozen-lockfile", "pnpm typecheck"]
 }
