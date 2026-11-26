@@ -37,5 +37,11 @@ export const FactoryConfigSchema = z.object({
     .default(() => ResourceLimitsSchema.parse({})),
   /** Host state written by every tick, read by Fractory Manager and `fractory status`. */
   hostStatePath: z.string().default(join(FACTORY_HOME, 'host.json')),
+  /**
+   * Automation state (Spec 0003): Fractory Manager drops requests in `requests/`; Fractory writes
+   * each Automation Run's record, log and output under `<automationId>/`, and refused requests
+   * under `refused/`.
+   */
+  automationsDir: z.string().default(join(FACTORY_HOME, 'automations')),
 });
 export type FactoryConfig = z.infer<typeof FactoryConfigSchema>;

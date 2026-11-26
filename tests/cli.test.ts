@@ -22,6 +22,7 @@ const setup = async () => {
       registryDir,
       logDir: join(root, 'logs'),
       hostStatePath: join(root, 'host.json'),
+      automationsDir: join(root, 'automations'),
       resources: false,
     }),
   );
@@ -167,6 +168,7 @@ describe('fractory CLI', () => {
         registryDir: join(root, 'runs'),
         logDir: join(root, 'logs'),
         hostStatePath: join(root, 'host.json'),
+        automationsDir: join(root, 'automations'),
       }),
     );
     const calls: string[] = [];
