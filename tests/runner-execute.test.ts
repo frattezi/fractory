@@ -55,6 +55,8 @@ interface Setup {
   commitsAhead?: string;
   commitBody?: string;
   existingPr?: string;
+  /** Whether `git ls-remote` finds the base branch on the remote. Default: yes. */
+  baseOnRemote?: boolean;
   failOn?: (file: string, args: string[]) => boolean;
   /** Keychain items present, by service. Default: the Claude items for both accounts. */
   keychain?: Record<string, string>;
@@ -105,6 +107,8 @@ const setup = async (options: Setup = {}) => {
     if (key.includes('rev-list --count')) return out(options.commitsAhead ?? '2');
     if (key.startsWith('git log'))
       return out(`abc\x1f${options.commitBody ?? 'Add the thing'}\x1e`);
+    if (key.startsWith('git ls-remote'))
+      return out(options.baseOnRemote === false ? '' : `abc123\t${args.at(-1)}\n`);
     if (key.startsWith('gh pr list'))
       return out(options.existingPr ? JSON.stringify([{ url: options.existingPr }]) : '[]');
     if (key.startsWith('gh pr create')) return out('https://github.com/me/repo/pull/9\n');
@@ -230,6 +234,51 @@ describe('executeRun', () => {
     expect(pushed(t.calls)[0]?.args.slice(-3)).toEqual(['--set-upstream', 'mine', 'fractory/1']);
     const create = t.calls.find((c) => c.args.slice(0, 2).join(' ') === 'pr create');
     expect(create?.args.slice(2, 4)).toEqual(['--repo', 'me/repo']);
+  });
+
+  it('checks the base branch on the push remote once, then opens the PR', async () => {
+    const t = await setup({
+      remotes:
+        'origin\thttps://github.com/upstream/repo.git (push)\nmine\tgit@github.com:Me/Repo.git (push)\n',
+    });
+    expect((await executeRun('run1', t.deps)).status).toBe('done');
+    const checks = t.calls.filter((c) => c.args[0] === 'ls-remote');
+    expect(checks.map((c) => c.args)).toEqual([
+      ['ls-remote', '--heads', 'mine', 'refs/heads/main'],
+    ]);
+    const order = t.calls.map((c) => `${c.file} ${c.args.slice(0, 2).join(' ')}`);
+    expect(order.indexOf('git ls-remote --heads')).toBeLessThan(order.indexOf('gh pr create'));
+    expect(t.calls.some((c) => c.args.slice(0, 2).join(' ') === 'pr create')).toBe(true);
+  });
+
+  it('fails naming the base branch and remote, without a PR call, when the base is not on the remote', async () => {
+    const t = await setup({ baseOnRemote: false });
+    const record = await executeRun('run1', t.deps);
+    expect(record.status).toBe('failed');
+    expect(record.prUrl).toBeUndefined();
+    const summary = record.result?.outcome === 'failed' ? record.result.summary : '';
+    expect(summary).toContain('base branch main is not on remote origin');
+    expect(summary).toContain('push it');
+    expect(summary).not.toContain('GraphQL');
+    expect(t.calls.some((c) => c.args.slice(0, 2).join(' ') === 'pr create')).toBe(false);
+    // The Run's branch was pushed and nothing deleted or rewrote it.
+    expect(pushed(t.calls)).toHaveLength(1);
+    expect(t.calls.some((c) => c.args.includes('--delete') || c.args.includes('-D'))).toBe(false);
+    expect(t.statuses).toEqual([]);
+  });
+
+  it('opens the PR on a Re-run once the base branch is pushed', async () => {
+    const missing = await setup({ baseOnRemote: false });
+    expect((await executeRun('run1', missing.deps)).status).toBe('failed');
+    const present = await setup({ baseOnRemote: true });
+    const record = await executeRun('run1', present.deps);
+    expect(record.status).toBe('done');
+    expect(record.prUrl).toBe('https://github.com/me/repo/pull/9');
+  });
+
+  it('does not treat a failed ls-remote as a missing base branch', async () => {
+    const t = await setup({ failOn: (file, args) => file === 'git' && args[0] === 'ls-remote' });
+    expect((await executeRun('run1', t.deps)).status).toBe('done');
   });
 
   it('fails before any work when no remote points at the repo', async () => {
