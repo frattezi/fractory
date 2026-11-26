@@ -72,17 +72,37 @@ ${input.ticket.body}`,
 
 const FENCE = /^```(?:json)?\s*([\s\S]*?)\s*```$/;
 
-/** The last `<result>` block in the agent's output, validated; undefined when missing or invalid. */
-export const parseRunResult = (stdout: string): RunResult | undefined => {
-  const pattern = new RegExp(`<${RESULT_TAG}>([\\s\\S]*?)</${RESULT_TAG}>`, 'g');
-  const raw = [...stdout.matchAll(pattern)].at(-1)?.[1]?.trim();
-  if (!raw) return undefined;
+const parseBlock = (raw: string): RunResult | undefined => {
   try {
-    const parsed = RunResultSchema.safeParse(JSON.parse(raw.replace(FENCE, '$1')));
+    const parsed = RunResultSchema.safeParse(JSON.parse(raw.trim().replace(FENCE, '$1')));
     return parsed.success ? parsed.data : undefined;
   } catch {
     return undefined;
   }
+};
+
+const indexesOf = (text: string, needle: string): number[] => {
+  const found: number[] = [];
+  for (let at = text.indexOf(needle); at !== -1; at = text.indexOf(needle, at + 1)) found.push(at);
+  return found;
+};
+
+/**
+ * The last well-formed `<result>` block in the agent's output; undefined when there is none.
+ * Tags the agent mentions in prose are stray, so candidates are tried from the end: each closing
+ * tag, paired with the nearest opening tag before it first, until one parses into a valid result.
+ */
+export const parseRunResult = (stdout: string): RunResult | undefined => {
+  const open = `<${RESULT_TAG}>`;
+  const opens = indexesOf(stdout, open);
+  const closes = indexesOf(stdout, `</${RESULT_TAG}>`);
+  for (const close of closes.reverse()) {
+    for (const start of opens.filter((at) => at + open.length <= close).reverse()) {
+      const result = parseBlock(stdout.slice(start + open.length, close));
+      if (result) return result;
+    }
+  }
+  return undefined;
 };
 
 const GhCommentSchema = z.object({
