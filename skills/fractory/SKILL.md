@@ -44,6 +44,7 @@ to work this out yourself.
 | A Run's change adjusted | a review comment on the PR, or the owner's comments in Fractory Manager; never a hand commit on its branch |
 | A Run that stopped with needs-human unblocked | show the `question` and help the owner decide; they answer it in Fractory Manager (`A` on the Run's row), and the next tick starts a Run on the Ticket's branch with the Answer. An entry marked `answered` is already waiting: do not ask again |
 | To know what happened | `fractory runs`; the Run's log is its `logPath` |
+| To know what Runs cost | `fractory tokens [--since <date>] [--repo <path>] [--json]`: tokens per Run, per repository and per day; unmeasured Runs are counted, never estimated |
 | The installed tools refreshed after merges | `fractory rebuild` (see below) |
 
 Doing the work yourself is fine when the owner asks for it: do it on a branch that is not in

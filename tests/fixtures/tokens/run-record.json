@@ -1,0 +1,20 @@
+{
+  "version": 1,
+  "id": "20261120-101500-139",
+  "key": "github:me/app#139:ticket-ready",
+  "ticketRef": "github:me/app#139",
+  "repoPath": "/repo/app",
+  "trigger": { "kind": "ticket-ready" },
+  "status": "done",
+  "branch": "fractory/139-report-what-runs-cost",
+  "worktreePath": "/home/me/.fractory/worktrees/app-139",
+  "sessionId": "5b1f0c7e-2d4a-4e7b-9a1c-0f3e8d2b6a91",
+  "logPath": "/home/me/.fractory/logs/20261120-101500-139.log",
+  "mode": "personal",
+  "flow": "build",
+  "agents": ["claude@personal"],
+  "result": { "outcome": "done", "summary": "Added the report." },
+  "createdAt": "2026-11-20T10:15:00.000Z",
+  "updatedAt": "2026-11-20T10:41:00.000Z",
+  "finishedAt": "2026-11-20T10:41:00.000Z"
+}
