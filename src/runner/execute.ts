@@ -303,18 +303,181 @@ class Executor {
     }
   }
 
+  /** `-c user.name=… -c user.email=…` of the branch tip's committer, so a rebase keeps it. */
+  private async tipCommitter(cwd: string): Promise<string[]> {
+    const [name = '', email = ''] = (await this.git(cwd, 'log', '-1', '--format=%cn%x1f%ce')).split(
+      '\x1f',
+    );
+    return name && email ? ['-c', `user.name=${name}`, '-c', `user.email=${email}`] : [];
+  }
+
+  /**
+   * Why a stacked Run's base is no longer the branch to publish against: the remote no longer has
+   * it, or its pull request merged. Undefined when the base still stands or could not be read: a
+   * failed read proves nothing, so the recorded base is kept.
+   */
+  private async baseLanded(
+    record: RunRecord,
+    worktree: string,
+    target: PushTarget,
+    base: string,
+  ): Promise<string | undefined> {
+    let refs: string;
+    try {
+      refs = (
+        await this.exec('git', ['ls-remote', '--heads', target.remote, `refs/heads/${base}`], {
+          cwd: worktree,
+        })
+      ).stdout;
+    } catch (error) {
+      await this.log(record, `could not list ${base} on ${target.remote}: ${message(error)}`);
+      return undefined;
+    }
+    if (refs.trim() === '') return `${base} is no longer on ${target.remote}`;
+    try {
+      const merged = GhPrListSchema.parse(
+        JSON.parse(
+          (
+            await this.exec(
+              'gh',
+              [
+                'pr',
+                'list',
+                ...(target.repo ? ['--repo', target.repo] : []),
+                '--head',
+                base,
+                '--state',
+                'merged',
+                '--json',
+                'url',
+                '--limit',
+                '1',
+              ],
+              { cwd: worktree },
+            )
+          ).stdout,
+        ),
+      );
+      if (merged[0]) return `the pull request of ${base} merged (${merged[0].url})`;
+    } catch (error) {
+      await this.log(record, `could not read the pull requests of ${base}: ${message(error)}`);
+    }
+    return undefined;
+  }
+
+  /**
+   * The base a finished Run publishes against, read again now rather than trusted from when it was
+   * queued: a stacked Run's blocker may have merged while it worked. A blocker that landed leaves
+   * the repository's base branch as the Run's base, and only the Run's own commits (those after
+   * the recorded `baseSha`) are rebased onto it, so a blocker merged as a squash is not brought
+   * back as different commits. A rebase that conflicts is aborted and the branch is pushed as it
+   * was, so the work reaches the remote, and publishing fails for the owner.
+   */
+  private async settleBase(
+    record: RunRecord,
+    config: RepoConfig,
+    worktree: string,
+    baseRef: string,
+    hooksDir: string,
+    target: PushTarget,
+  ): Promise<{ record: RunRecord; baseRef: string; base: string; lease?: string; moved: boolean }> {
+    const recorded = runBaseBranch(record, config.baseBranch);
+    const kept = { record, baseRef, base: recorded, moved: false };
+    if (recorded === config.baseBranch) return kept;
+    const landed = await this.baseLanded(record, worktree, target, recorded);
+    if (landed === undefined) return kept;
+
+    const base = config.baseBranch;
+    const { remote } = target;
+    const { branch } = record;
+    await this.log(record, `${landed}; publishing ${branch} against ${base}`);
+    const newRef = await this.resolveBaseRef(record, remote, base);
+    const tipSha = await this.git(worktree, 'rev-parse', newRef);
+    const ownCommitsFrom =
+      record.baseSha === undefined
+        ? undefined
+        : await this.exec('git', ['merge-base', '--is-ancestor', record.baseSha, 'HEAD'], {
+            cwd: worktree,
+          }).then(
+            () => record.baseSha,
+            () => undefined,
+          );
+    // A branch a follow-up Run already pushed is replaced only if it is still where it was read.
+    const pushedSha = await this.exec(
+      'git',
+      ['ls-remote', '--heads', remote, `refs/heads/${branch}`],
+      { cwd: worktree },
+    ).then(
+      (out) => out.stdout.trim().split(/\s/)[0] || undefined,
+      async (error) => {
+        await this.log(record, `could not list ${branch} on ${remote}: ${message(error)}`);
+        return undefined;
+      },
+    );
+    const identity = await this.tipCommitter(worktree);
+    await this.log(record, `rebasing ${branch} onto ${newRef} (${tipSha.slice(0, 8)})`);
+    try {
+      await this.exec(
+        'git',
+        [
+          ...identity,
+          'rebase',
+          ...(ownCommitsFrom ? ['--onto', newRef, ownCommitsFrom] : [newRef]),
+        ],
+        { cwd: worktree },
+      );
+    } catch (error) {
+      const conflicted = await this.git(worktree, 'diff', '--name-only', '--diff-filter=U').catch(
+        () => '',
+      );
+      await this.exec('git', ['rebase', '--abort'], { cwd: worktree }).catch(async (abortError) => {
+        await this.log(record, `could not abort the rebase: ${message(abortError)}`);
+      });
+      const files = conflicted.split('\n').filter(Boolean);
+      let left = `${branch} was pushed as it was for the owner`;
+      try {
+        await this.exec(
+          'git',
+          ['-c', `core.hooksPath=${hooksDir}`, 'push', '--set-upstream', remote, branch],
+          { cwd: worktree },
+        );
+      } catch (pushError) {
+        left = `${branch} could not be pushed (${message(pushError)}) and is left in ${worktree}`;
+      }
+      throw new Error(
+        `${landed}, and rebasing ${branch} onto ${base} (${tipSha.slice(0, 8)}) conflicts${files.length > 0 ? ` in ${files.join(', ')}` : ''}; the rebase was aborted and ${left}. ${message(error)}`,
+      );
+    }
+    const updated = await this.registry.update(record.id, { baseBranch: base, baseSha: tipSha });
+    return {
+      record: updated,
+      baseRef: newRef,
+      base,
+      moved: true,
+      ...(pushedSha === undefined ? {} : { lease: pushedSha }),
+    };
+  }
+
   /** Push the branch and open the PR, or reuse the open one. Returns the PR url. */
   private async publish(
-    record: RunRecord,
+    queued: RunRecord,
     config: RepoConfig,
     ticket: Ticket,
     worktree: string,
-    baseRef: string,
+    queuedBaseRef: string,
     hooksDir: string,
     summary: string,
     target: PushTarget,
   ): Promise<string> {
     const repoArgs = target.repo ? ['--repo', target.repo] : [];
+    const { record, baseRef, base, lease, moved } = await this.settleBase(
+      queued,
+      config,
+      worktree,
+      queuedBaseRef,
+      hooksDir,
+      target,
+    );
     const ahead = Number(
       await this.git(worktree, 'rev-list', '--count', `${baseRef}..${record.branch}`),
     );
@@ -334,7 +497,15 @@ class Executor {
 
     await this.exec(
       'git',
-      ['-c', `core.hooksPath=${hooksDir}`, 'push', '--set-upstream', target.remote, record.branch],
+      [
+        '-c',
+        `core.hooksPath=${hooksDir}`,
+        'push',
+        ...(lease === undefined ? [] : [`--force-with-lease=${record.branch}:${lease}`]),
+        '--set-upstream',
+        target.remote,
+        record.branch,
+      ],
       { cwd: worktree },
     );
 
@@ -361,9 +532,21 @@ class Executor {
         ).stdout,
       ),
     );
-    if (existing[0]) return existing[0].url; // pushing the branch updated it
+    if (existing[0]) {
+      // Pushing the branch updated it; one whose base landed now targets the repository's base.
+      if (moved) {
+        await this.exec('gh', ['pr', 'edit', existing[0].url, ...repoArgs, '--base', base], {
+          cwd: worktree,
+        }).catch(async (error) => {
+          await this.log(
+            record,
+            `could not retarget ${existing[0]?.url} to ${base}: ${message(error)}`,
+          );
+        });
+      }
+      return existing[0].url;
+    }
 
-    const base = runBaseBranch(record, config.baseBranch);
     await this.assertBaseOnRemote(record, worktree, target.remote, base);
 
     const key = ticketKey(ticket.ref);
@@ -502,10 +685,7 @@ class Executor {
       () => undefined,
     );
     // Rebased commits keep the committer of the branch tip, not whoever runs the host.
-    const [name = '', email = ''] = (await this.git(cwd, 'log', '-1', '--format=%cn%x1f%ce')).split(
-      '\x1f',
-    );
-    const identity = name && email ? ['-c', `user.name=${name}`, '-c', `user.email=${email}`] : [];
+    const identity = await this.tipCommitter(cwd);
     await this.log(record, `rebasing ${branch} onto ${baseRef} (${tipSha.slice(0, 8)})`);
     try {
       await this.exec(

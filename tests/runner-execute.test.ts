@@ -69,6 +69,8 @@ interface Setup {
   run?: Partial<RunRecord>;
   /** Answers a `git` call before the defaults do, when it returns a string. */
   git?: (args: string[]) => string | undefined;
+  /** Answers a `gh` call before the defaults do, when it returns a string. */
+  gh?: (args: string[]) => string | undefined;
 }
 
 const setup = async (options: Setup = {}) => {
@@ -105,7 +107,8 @@ const setup = async (options: Setup = {}) => {
       return { stdout: `${secret}\n`, stderr: '' };
     }
     const out = (stdout: string) => ({ stdout, stderr: '' });
-    const custom = file === 'git' ? options.git?.(args) : undefined;
+    const custom =
+      file === 'git' ? options.git?.(args) : file === 'gh' ? options.gh?.(args) : undefined;
     if (custom !== undefined) return out(custom);
     if (key.includes('--absolute-git-dir')) return out(gitDir);
     if (key.includes('--git-path')) return out('/repo/.git/hooks/pre-push');
@@ -289,9 +292,11 @@ describe('executeRun', () => {
         c.args.join(' ').startsWith('rev-list --count origin/fractory/4-astro..'),
       ),
     ).toBe(true);
-    expect(t.calls.filter((c) => c.args[0] === 'ls-remote').map((c) => c.args)).toEqual([
-      ['ls-remote', '--heads', 'origin', 'refs/heads/fractory/4-astro'],
-    ]);
+    // Read again at publish time, then checked before the PR call; it is still there, unmerged.
+    expect(
+      new Set(t.calls.filter((c) => c.args[0] === 'ls-remote').map((c) => c.args.join(' '))),
+    ).toEqual(new Set(['ls-remote --heads origin refs/heads/fractory/4-astro']));
+    expect(t.calls.some((c) => c.args.includes('rebase'))).toBe(false);
     const create = t.calls.find((c) => c.args.slice(0, 2).join(' ') === 'pr create');
     expect(create?.args[create.args.indexOf('--base') + 1]).toBe('fractory/4-astro');
 
@@ -849,5 +854,175 @@ describe('executeRun: a stacked Run with no recorded tip', () => {
       git: (args) => (args.join(' ') === 'rev-parse origin/fractory/4-astro' ? 'tip-a' : undefined),
     });
     expect((await executeRun('run1', t.deps)).baseSha).toBe('tip-a');
+  });
+});
+
+describe('executeRun: a stacked Run whose blocker landed while it worked', () => {
+  const BELOW = 'fractory/135-doc';
+  const stacked = (options: Setup & { belowOnRemote?: boolean; belowMerged?: boolean } = {}) => {
+    const { belowOnRemote = true, belowMerged = false, ...rest } = options;
+    return setup({
+      run: { baseBranch: BELOW, baseSha: 'blocker-tip' },
+      ...rest,
+      git: (args) => {
+        const custom = rest.git?.(args);
+        if (custom !== undefined) return custom;
+        const line = args.join(' ');
+        if (line === `ls-remote --heads origin refs/heads/${BELOW}`)
+          return belowOnRemote ? `bbb\trefs/heads/${BELOW}\n` : '';
+        // The Run's own branch was never pushed.
+        if (line === 'ls-remote --heads origin refs/heads/fractory/1') return '';
+        if (line === 'rev-parse origin/main') return 'main-tip-sha';
+        if (line === 'log -1 --format=%cn%x1f%ce') return 'Dev\x1fdev@example.com';
+        return undefined;
+      },
+      gh: (args) =>
+        args.join(' ').startsWith(`pr list --repo me/repo --head ${BELOW} --state merged`)
+          ? belowMerged
+            ? '[{"url":"https://github.com/me/repo/pull/135"}]'
+            : '[]'
+          : undefined,
+    });
+  };
+  const gitCalls = (t: Awaited<ReturnType<typeof setup>>) =>
+    t.calls.filter((c) => c.file === 'git').map((c) => c.args.join(' '));
+  const prBase = (t: Awaited<ReturnType<typeof setup>>) => {
+    const create = t.calls.find((c) => c.args.slice(0, 2).join(' ') === 'pr create');
+    return create?.args[create.args.indexOf('--base') + 1];
+  };
+
+  it('publishes against the repository base branch when the recorded base no longer resolves', async () => {
+    const t = await stacked({ belowOnRemote: false });
+    const record = await executeRun('run1', t.deps);
+
+    expect(record.status).toBe('done');
+    expect(record.result).toEqual({ outcome: 'done', summary: 'Added it' });
+    expect(record.prUrl).toBe('https://github.com/me/repo/pull/9');
+    expect(record.baseBranch).toBe('main');
+    expect(record.baseSha).toBe('main-tip-sha');
+    const git = gitCalls(t);
+    expect(git).toContain('fetch origin main');
+    expect(git).toContain(
+      '-c user.name=Dev -c user.email=dev@example.com rebase --onto origin/main blocker-tip',
+    );
+    expect(git).toContain('rev-list --count origin/main..fractory/1');
+    expect(git.some((c) => c.includes(`origin/${BELOW}..`))).toBe(false);
+    expect(pushed(t.calls)[0]?.args.slice(2)).toEqual([
+      'push',
+      '--set-upstream',
+      'origin',
+      'fractory/1',
+    ]);
+    expect(prBase(t)).toBe('main');
+    expect(t.statuses).toEqual(['in_review']);
+  });
+
+  it('publishes a Stack whose base merged as a squash without bringing back its commits', async () => {
+    const t = await stacked({ belowMerged: true });
+    const record = await executeRun('run1', t.deps);
+
+    expect(record.status).toBe('done');
+    expect(record.baseBranch).toBe('main');
+    const git = gitCalls(t);
+    // Only the commits after the blocker's tip are replayed onto main.
+    expect(git).toContain('merge-base --is-ancestor blocker-tip HEAD');
+    const rebases = git.filter((c) => c.includes(' rebase '));
+    expect(rebases).toEqual([
+      '-c user.name=Dev -c user.email=dev@example.com rebase --onto origin/main blocker-tip',
+    ]);
+    expect(git.indexOf(rebases[0] ?? '')).toBeLessThan(
+      git.indexOf('rev-list --count origin/main..fractory/1'),
+    );
+    expect(git.indexOf(rebases[0] ?? '')).toBeLessThan(git.findIndex((c) => c.includes(' push ')));
+    expect(prBase(t)).toBe('main');
+  });
+
+  it('retargets the open pull request of a follow-up Run and replaces only the branch it read', async () => {
+    const t = await stacked({
+      belowMerged: true,
+      existingPr: 'https://github.com/me/repo/pull/9',
+      git: (args) =>
+        args.join(' ') === 'ls-remote --heads origin refs/heads/fractory/1'
+          ? 'pushed-sha\trefs/heads/fractory/1\n'
+          : undefined,
+    });
+    expect((await executeRun('run1', t.deps)).status).toBe('done');
+    expect(pushed(t.calls)[0]?.args.slice(2)).toEqual([
+      'push',
+      '--force-with-lease=fractory/1:pushed-sha',
+      '--set-upstream',
+      'origin',
+      'fractory/1',
+    ]);
+    const edit = t.calls.find((c) => c.file === 'gh' && c.args.slice(0, 2).join(' ') === 'pr edit');
+    expect(edit?.args).toEqual([
+      'pr',
+      'edit',
+      'https://github.com/me/repo/pull/9',
+      '--repo',
+      'me/repo',
+      '--base',
+      'main',
+    ]);
+  });
+
+  it('replays the whole branch when the recorded tip is not in its history', async () => {
+    const t = await stacked({
+      belowOnRemote: false,
+      failOn: (file, args) => file === 'git' && args[0] === 'merge-base',
+    });
+    expect((await executeRun('run1', t.deps)).status).toBe('done');
+    expect(gitCalls(t)).toContain(
+      '-c user.name=Dev -c user.email=dev@example.com rebase origin/main',
+    );
+  });
+
+  it('still fails with "made no commits" when the Run made none', async () => {
+    const t = await stacked({ belowOnRemote: false, commitsAhead: '0' });
+    const record = await executeRun('run1', t.deps);
+    expect(record.status).toBe('failed');
+    expect(record.result?.outcome === 'failed' && record.result.summary).toContain(
+      'made no commits',
+    );
+    expect(pushed(t.calls)).toEqual([]);
+  });
+
+  it('a rebase that conflicts is aborted, the branch is pushed as it was and publishing fails', async () => {
+    const t = await stacked({
+      belowOnRemote: false,
+      failOn: (file, args) =>
+        file === 'git' && args.includes('rebase') && !args.includes('--abort'),
+      git: (args) =>
+        args.join(' ') === 'diff --name-only --diff-filter=U' ? 'src/a.ts\n' : undefined,
+    });
+    const record = await executeRun('run1', t.deps);
+    expect(record.status).toBe('failed');
+    const summary = record.result?.outcome === 'failed' ? record.result.summary : '';
+    expect(summary).toContain(`${BELOW} is no longer on origin`);
+    expect(summary).toContain('conflicts in src/a.ts');
+    expect(summary).toContain('fractory/1 was pushed as it was for the owner');
+    expect(gitCalls(t)).toContain('rebase --abort');
+    expect(pushed(t.calls)).toHaveLength(1);
+    expect(t.calls.some((c) => c.args.slice(0, 2).join(' ') === 'pr create')).toBe(false);
+  });
+
+  it('keeps the recorded base when the remote cannot be read', async () => {
+    const t = await stacked({
+      failOn: (file, args) => file === 'git' && args[0] === 'ls-remote',
+    });
+    const record = await executeRun('run1', t.deps);
+    expect(record.status).toBe('done');
+    expect(record.baseBranch).toBe(BELOW);
+    expect(gitCalls(t).some((c) => c.includes('rebase'))).toBe(false);
+    expect(prBase(t)).toBe(BELOW);
+  });
+
+  it('leaves an ordinary Run on the base branch alone', async () => {
+    const t = await setup();
+    expect((await executeRun('run1', t.deps)).status).toBe('done');
+    expect(gitCalls(t).some((c) => c.includes('rebase'))).toBe(false);
+    expect(t.calls.some((c) => c.args.includes('merged'))).toBe(false);
+    expect(t.calls.filter((c) => c.args[0] === 'ls-remote')).toHaveLength(1);
+    expect(gitCalls(t)).toContain('rev-list --count origin/main..fractory/1');
   });
 });
