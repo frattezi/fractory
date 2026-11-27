@@ -217,6 +217,7 @@ describe('fractory doctor', () => {
       home: root,
       launchAgentsDir: join(root, 'LaunchAgents'),
       uid: 501,
+      machine: () => ({ cores: 8, memoryGb: 16 }),
       exec,
       runShell,
       gh: new FakeGh(),
