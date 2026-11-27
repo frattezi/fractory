@@ -90,9 +90,25 @@ describe('TriggerSchema', () => {
     });
     expect(TriggerSchema.safeParse({ kind: 'answer' }).success).toBe(false);
   });
+
+  it('accepts the restack kind with the old and new tip of the base branch', () => {
+    const restack = { kind: 'restack', fromSha: 'old', tipSha: 'new' };
+    expect(TriggerSchema.parse(restack)).toEqual(restack);
+    expect(TriggerSchema.safeParse({ kind: 'restack', fromSha: 'old' }).success).toBe(false);
+  });
 });
 
 describe('runKey', () => {
+  it('keys a Restack by the tip it rebases onto, so one moved tip yields one Run', () => {
+    const ref = 'github:me/repo#2';
+    expect(runKey(ref, { kind: 'restack', fromSha: 'a', tipSha: 'b' })).toBe(
+      'github:me/repo#2:restack:b',
+    );
+    expect(runKey(ref, { kind: 'restack', fromSha: 'z', tipSha: 'b' })).toBe(
+      runKey(ref, { kind: 'restack', fromSha: 'a', tipSha: 'b' }),
+    );
+  });
+
   it('is stable per trigger occurrence', () => {
     const ref = 'jira:ABC-1';
     expect(runKey(ref, { kind: 'ci-failed', prNumber: 3, headSha: 's1' })).toBe(
@@ -117,5 +133,11 @@ describe('TriggerSchema', () => {
       runId: 'r1',
     });
     expect(TriggerSchema.safeParse({ kind: 'answer' }).success).toBe(false);
+  });
+
+  it('accepts the restack kind with the old and new tip of the base branch', () => {
+    const restack = { kind: 'restack', fromSha: 'old', tipSha: 'new' };
+    expect(TriggerSchema.parse(restack)).toEqual(restack);
+    expect(TriggerSchema.safeParse({ kind: 'restack', fromSha: 'old' }).success).toBe(false);
   });
 });

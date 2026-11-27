@@ -444,6 +444,125 @@ class Executor {
     return this.registry.update(id, { ...patch, finishedAt: new Date().toISOString() });
   }
 
+  /**
+   * A Restack (Spec 0004): rebase the Run's branch onto the new tip of the branch it is stacked on
+   * and push it. No agent, no prompt, no pull request. A rebase that conflicts is aborted, so the
+   * branch stays exactly as it was pushed, and the Run fails for the owner to decide.
+   */
+  private async restack(
+    initial: RunRecord,
+    config: RepoConfig,
+    source: TicketSource,
+    fromSha: string,
+  ): Promise<RunRecord> {
+    let record = initial;
+    const base = record.baseBranch;
+    if (base === undefined) throw new Error('a Restack needs the branch it is stacked on');
+    const { branch } = record;
+    const target = await this.resolveRemote(record, config);
+    const { remote } = target;
+    await this.exec('git', ['fetch', remote, base, branch], { cwd: record.repoPath });
+    const baseRef = `${remote}/${base}`;
+    const branchRef = `${remote}/${branch}`;
+    const tipSha = await this.git(record.repoPath, 'rev-parse', baseRef);
+    const pushedSha = await this.git(record.repoPath, 'rev-parse', branchRef);
+
+    const sandcastle = this.deps.sandcastle ?? (await sandcastleAdapter());
+    // A branch cleanup deleted locally is recreated from the pushed one, never from the base.
+    const worktree = await sandcastle.createWorktree({
+      repoPath: record.repoPath,
+      branch,
+      baseRef: branchRef,
+    });
+    const cwd = worktree.worktreePath;
+    record = await this.registry.update(record.id, { worktreePath: cwd });
+    const head = await this.git(cwd, 'rev-parse', 'HEAD');
+    if (head !== pushedSha) {
+      throw new Error(
+        `local ${branch} is at ${head.slice(0, 8)} but ${branchRef} is at ${pushedSha.slice(0, 8)}; not restacked, left for the owner`,
+      );
+    }
+    const { hooksDir } = await installPrePushHook({
+      worktreePath: cwd,
+      baseBranch: config.baseBranch,
+      runBaseBranch: base,
+      exec: this.exec,
+    });
+
+    // Replay only the branch's own commits when the old tip is known: the base may have been
+    // rewritten (a restacked blocker), and its old commits must not come along.
+    const ownCommitsFrom = await this.exec(
+      'git',
+      ['merge-base', '--is-ancestor', fromSha, 'HEAD'],
+      {
+        cwd,
+      },
+    ).then(
+      () => fromSha,
+      () => undefined,
+    );
+    // Rebased commits keep the committer of the branch tip, not whoever runs the host.
+    const [name = '', email = ''] = (await this.git(cwd, 'log', '-1', '--format=%cn%x1f%ce')).split(
+      '\x1f',
+    );
+    const identity = name && email ? ['-c', `user.name=${name}`, '-c', `user.email=${email}`] : [];
+    await this.log(record, `rebasing ${branch} onto ${baseRef} (${tipSha.slice(0, 8)})`);
+    try {
+      await this.exec(
+        'git',
+        [
+          ...identity,
+          'rebase',
+          ...(ownCommitsFrom ? ['--onto', baseRef, ownCommitsFrom] : [baseRef]),
+        ],
+        { cwd },
+      );
+    } catch (error) {
+      const conflicted = await this.git(cwd, 'diff', '--name-only', '--diff-filter=U').catch(
+        () => '',
+      );
+      await this.exec('git', ['rebase', '--abort'], { cwd }).catch(async (abortError) => {
+        await this.log(record, `could not abort the rebase: ${message(abortError)}`);
+      });
+      const files = conflicted.split('\n').filter(Boolean);
+      const summary = `Rebasing ${branch} onto ${base} (${tipSha.slice(0, 8)}) conflicts${files.length > 0 ? ` in ${files.join(', ')}` : ''}; the rebase was aborted and ${branch} is left as it was pushed for the owner. ${message(error)}`;
+      await this.log(record, summary);
+      return this.finish(record.id, { status: 'failed', result: { outcome: 'failed', summary } });
+    }
+
+    await this.exec(
+      'git',
+      [
+        '-c',
+        `core.hooksPath=${hooksDir}`,
+        'push',
+        `--force-with-lease=${branch}:${pushedSha}`,
+        remote,
+        branch,
+      ],
+      { cwd },
+    );
+    const newHead = await this.git(cwd, 'rev-parse', 'HEAD');
+    const prUrl = [...(await this.registry.list())]
+      .filter((r) => r.ticketRef === record.ticketRef && r.prUrl)
+      .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
+      .at(-1)?.prUrl;
+    try {
+      await source.setStatus(record.ticketRef, 'in_review');
+    } catch (error) {
+      await this.log(record, `restacked but the Ticket status was not updated: ${message(error)}`);
+    }
+    return this.finish(record.id, {
+      status: 'done',
+      baseSha: tipSha,
+      ...(prUrl === undefined ? {} : { prUrl }),
+      result: {
+        outcome: 'done',
+        summary: `Rebased ${branch} onto ${base} at ${tipSha.slice(0, 8)} and pushed it (${newHead.slice(0, 8)}).`,
+      },
+    });
+  }
+
   private async runInner(initial: RunRecord): Promise<RunRecord> {
     let record = await this.registry.update(initial.id, {
       status: 'running',
@@ -455,6 +574,10 @@ class Executor {
       typeof this.deps.ticketSource === 'function'
         ? this.deps.ticketSource(config)
         : this.deps.ticketSource;
+
+    if (record.trigger.kind === 'restack') {
+      return this.restack(record, config, source, record.trigger.fromSha);
+    }
 
     const ticket = await source.get(record.ticketRef);
     const rules = await (this.deps.readRules ?? defaultReadRules)();
@@ -469,6 +592,11 @@ class Executor {
       target.remote,
       runBaseBranch(record, config.baseBranch),
     );
+    if (record.baseBranch !== undefined && record.baseSha === undefined) {
+      // The tip the stack starts from: a later Restack compares the blocker's branch with it.
+      const baseSha = await this.git(record.repoPath, 'rev-parse', baseRef).catch(() => '');
+      if (baseSha) record = await this.registry.update(record.id, { baseSha });
+    }
     const sandcastle = this.deps.sandcastle ?? (await sandcastleAdapter());
     const worktree = await sandcastle.createWorktree({
       repoPath: record.repoPath,

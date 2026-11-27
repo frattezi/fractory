@@ -67,6 +67,8 @@ interface Setup {
   flow?: string;
   /** Overrides on the queued Run record, e.g. its own base branch. */
   run?: Partial<RunRecord>;
+  /** Answers a `git` call before the defaults do, when it returns a string. */
+  git?: (args: string[]) => string | undefined;
 }
 
 const setup = async (options: Setup = {}) => {
@@ -103,6 +105,8 @@ const setup = async (options: Setup = {}) => {
       return { stdout: `${secret}\n`, stderr: '' };
     }
     const out = (stdout: string) => ({ stdout, stderr: '' });
+    const custom = file === 'git' ? options.git?.(args) : undefined;
+    if (custom !== undefined) return out(custom);
     if (key.includes('--absolute-git-dir')) return out(gitDir);
     if (key.includes('--git-path')) return out('/repo/.git/hooks/pre-push');
     if (key === 'git remote -v')
@@ -712,5 +716,138 @@ describe('flows, accounts and the executor shell', () => {
   it('runs when .sandcastle/.env has only unrelated keys', async () => {
     const t = await setup({ sandcastleEnv: 'GH_TOKEN=x\n' });
     expect((await executeRun('run1', t.deps)).status).toBe('done');
+  });
+});
+
+describe('executeRun: Restack', () => {
+  const BELOW = 'fractory/4-astro';
+  const restack: Trigger = { kind: 'restack', fromSha: 'old-tip', tipSha: 'new-tip' };
+  /** `git rev-parse` answers: the new tip below, the pushed branch, and HEAD before and after. */
+  const shas = (heads: string[] = ['pushed', 'rebased']) => {
+    const queue = [...heads];
+    return (args: string[]): string | undefined => {
+      if (args[0] !== 'rev-parse') return undefined;
+      if (args[1] === `origin/${BELOW}`) return 'new-tip-sha';
+      if (args[1] === 'origin/fractory/1') return 'pushed';
+      if (args[1] === 'HEAD') return queue.shift() ?? 'rebased';
+      return undefined;
+    };
+  };
+  const restackSetup = (options: Setup = {}) => {
+    const rev = shas();
+    return setup({
+      trigger: restack,
+      run: { baseBranch: BELOW, baseSha: 'old-tip' },
+      git: (args) =>
+        args.join(' ') === 'log -1 --format=%cn%x1f%ce' ? 'Dev\x1fdev@example.com' : rev(args),
+      ...options,
+    });
+  };
+  const gitCalls = (t: Awaited<ReturnType<typeof setup>>) =>
+    t.calls.filter((c) => c.file === 'git').map((c) => c.args.join(' '));
+
+  it('rebases the branch onto the new tip, pushes it and opens no pull request', async () => {
+    const t = await restackSetup();
+    await t.registry.write({
+      ...t.record,
+      id: 'earlier',
+      key: 'k-earlier',
+      trigger: { kind: 'ticket-ready' },
+      status: 'done',
+      prUrl: 'https://github.com/me/repo/pull/9',
+      createdAt: '2026-01-01T00:00:00.000Z',
+    });
+    const record = await executeRun('run1', t.deps);
+
+    expect(record.status).toBe('done');
+    expect(record.result).toEqual({
+      outcome: 'done',
+      summary: `Rebased fractory/1 onto ${BELOW} at new-tip- and pushed it (rebased).`,
+    });
+    expect(record.baseSha).toBe('new-tip-sha');
+    expect(record.prUrl).toBe('https://github.com/me/repo/pull/9');
+    const git = gitCalls(t);
+    expect(git).toContain(`fetch origin ${BELOW} fractory/1`);
+    expect(git).toContain('merge-base --is-ancestor old-tip HEAD');
+    expect(git).toContain(
+      `-c user.name=Dev -c user.email=dev@example.com rebase --onto origin/${BELOW} old-tip`,
+    );
+    const push = pushed(t.calls);
+    expect(push).toHaveLength(1);
+    expect(push[0]?.args.slice(2)).toEqual([
+      'push',
+      '--force-with-lease=fractory/1:pushed',
+      'origin',
+      'fractory/1',
+    ]);
+    // A branch cleanup deleted is recreated from the pushed branch, never from the base.
+    expect(t.worktreeRequests.map((r) => r.baseRef)).toEqual(['origin/fractory/1']);
+    expect(await t.hookScript()).toContain(`refs/heads/${BELOW}`);
+    expect(t.agentRequests).toEqual([]);
+    expect(t.providers).toEqual([]);
+    expect(t.calls.some((c) => c.file === 'gh')).toBe(false);
+    expect(t.calls.some((c) => c.file === 'security')).toBe(false);
+    expect(t.statuses).toEqual(['in_review']);
+  });
+
+  it('replays the whole branch when the old tip is not in its history', async () => {
+    const t = await restackSetup({
+      failOn: (file, args) => file === 'git' && args[0] === 'merge-base',
+    });
+    expect((await executeRun('run1', t.deps)).status).toBe('done');
+    expect(gitCalls(t)).toContain(
+      `-c user.name=Dev -c user.email=dev@example.com rebase origin/${BELOW}`,
+    );
+  });
+
+  it('a rebase that conflicts is aborted, pushes nothing and fails the Run naming the conflict', async () => {
+    const t = await restackSetup({
+      failOn: (file, args) =>
+        file === 'git' && args.includes('rebase') && !args.includes('--abort'),
+      git: (args) =>
+        args.join(' ') === 'diff --name-only --diff-filter=U'
+          ? 'src/a.ts\nsrc/b.ts\n'
+          : shas()(args),
+    });
+    const record = await executeRun('run1', t.deps);
+    expect(record.status).toBe('failed');
+    expect(record.result?.outcome).toBe('failed');
+    const summary = record.result?.outcome === 'failed' ? record.result.summary : '';
+    expect(summary).toContain(
+      `Rebasing fractory/1 onto ${BELOW} (new-tip-) conflicts in src/a.ts, src/b.ts`,
+    );
+    expect(summary).toContain('left as it was pushed for the owner');
+    expect(gitCalls(t)).toContain('rebase --abort');
+    expect(pushed(t.calls)).toEqual([]);
+    expect(record.baseSha).toBe('old-tip');
+    expect(t.statuses).toEqual([]);
+  });
+
+  it('never rewrites a local branch that differs from the pushed one', async () => {
+    const t = await restackSetup({ git: shas(['local-only']) });
+    const record = await executeRun('run1', t.deps);
+    expect(record.status).toBe('failed');
+    expect(record.result?.outcome === 'failed' && record.result.summary).toContain(
+      'left for the owner',
+    );
+    expect(gitCalls(t).some((c) => c.includes('rebase'))).toBe(false);
+    expect(pushed(t.calls)).toEqual([]);
+  });
+
+  it('a fetch that fails fails the Run without touching the branch', async () => {
+    const t = await restackSetup({ failOn: (file, args) => file === 'git' && args[0] === 'fetch' });
+    expect((await executeRun('run1', t.deps)).status).toBe('failed');
+    expect(t.worktreeRequests).toEqual([]);
+    expect(pushed(t.calls)).toEqual([]);
+  });
+});
+
+describe('executeRun: a stacked Run with no recorded tip', () => {
+  it('records the tip of the base it branched from', async () => {
+    const t = await setup({
+      run: { baseBranch: 'fractory/4-astro' },
+      git: (args) => (args.join(' ') === 'rev-parse origin/fractory/4-astro' ? 'tip-a' : undefined),
+    });
+    expect((await executeRun('run1', t.deps)).baseSha).toBe('tip-a');
   });
 });

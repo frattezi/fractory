@@ -136,6 +136,10 @@ export interface Harness {
   log: ReturnType<typeof memoryLogger>;
   pids: Map<number, PidState>;
   configs: Map<string, RepoConfig | Error>;
+  /** Remote branch tips by branch; a branch not here is absent on the remote. */
+  tips: Map<string, string | Error>;
+  /** Every branch whose tip was read, in order. */
+  tipReads: string[];
   setNow(date: Date): void;
 }
 
@@ -166,6 +170,8 @@ export const makeHarness = async (
   const configs = new Map<string, RepoConfig | Error>(
     repos.map((r) => [r, options.config ?? personalRepo]),
   );
+  const tips = new Map<string, string | Error>();
+  const tipReads: string[] = [];
   let now = new Date('2026-06-01T10:00:00.000Z');
   let counter = 0;
   const deps: TickDeps = {
@@ -179,6 +185,12 @@ export const makeHarness = async (
     },
     createTicketSource: () => source,
     gh,
+    async branchTip(_repoPath, _config, branch) {
+      tipReads.push(branch);
+      const tip = tips.get(branch);
+      if (tip instanceof Error) throw tip;
+      return tip;
+    },
     async launchRun(record) {
       launched.push(record.id);
       await registry.update(record.id, { status: 'running', pid: 4000 + launched.length });
@@ -211,6 +223,8 @@ export const makeHarness = async (
     log,
     pids,
     configs,
+    tips,
+    tipReads,
     setNow: (d) => {
       now = d;
     },

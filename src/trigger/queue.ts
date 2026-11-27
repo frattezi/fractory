@@ -50,6 +50,8 @@ export interface QueueInput {
   branch: string;
   /** Branch the Run is built on when it is not the repository's base branch (a stacked Run). */
   baseBranch?: string | undefined;
+  /** Tip sha of `baseBranch` the Run is built on, when it was read. */
+  baseSha?: string | undefined;
   /** Snapshot of the repo's Mode and flow, recorded so readers need no config. */
   mode?: Mode | undefined;
   flow?: string | undefined;
@@ -84,6 +86,7 @@ export const queueRun = async (
     status: 'queued',
     branch: input.branch,
     ...(input.baseBranch === undefined ? {} : { baseBranch: input.baseBranch }),
+    ...(input.baseSha === undefined ? {} : { baseSha: input.baseSha }),
     ...(input.mode === undefined ? {} : { mode: input.mode }),
     ...(input.flow === undefined ? {} : { flow: input.flow }),
     logPath: join(deps.factory.logDir, `${id}.log`),
