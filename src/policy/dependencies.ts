@@ -1,6 +1,12 @@
 import type { RepoConfig, TicketSourceConfig } from '../contracts/repo-config.ts';
 import { ACTIVE_STATUSES, type RunRecord, type RunStatus } from '../contracts/run.ts';
-import type { Ticket, TicketRef, TicketStatus } from '../contracts/ticket.ts';
+import {
+  type Ticket,
+  TicketNotFoundError,
+  type TicketRef,
+  type TicketSource,
+  type TicketStatus,
+} from '../contracts/ticket.ts';
 
 /**
  * Which Ready Ticket may start (Spec 0004). Every rule lives here, pure: the tick reads the
@@ -321,4 +327,41 @@ export const blockersToRead = (
     }
   }
   return [...refs].sort(compareRefs);
+};
+
+/** Blockers read per repo per sweep, at most: a runaway graph holds the rest as unreadable. */
+const MAX_BLOCKER_READS = 100;
+
+/**
+ * Reads the blockers of the Ready Tickets that are not Ready themselves, and theirs in turn while
+ * they are not done, so a cycle through Tickets in progress is seen too. Only blockers in this
+ * repository are read: one in another repository holds its Ticket without a read. A read that
+ * fails other than with `TicketNotFoundError` proves nothing: it is `unreadable` and holds.
+ */
+export const readBlockers = async (
+  ready: readonly DependencyTicket[],
+  config: Pick<RepoConfig, 'ticketSource'>,
+  source: Pick<TicketSource, 'get'>,
+  onUnreadable: (ref: TicketRef, error: unknown) => void = () => {},
+): Promise<Map<TicketRef, BlockerLookup>> => {
+  const readyRefs = ready.map((t) => t.ref);
+  const lookups = new Map<TicketRef, BlockerLookup>();
+  let frontier = blockersToRead(ready, config, new Set(readyRefs));
+  while (frontier.length > 0 && lookups.size < MAX_BLOCKER_READS) {
+    for (const ref of frontier.slice(0, MAX_BLOCKER_READS - lookups.size)) {
+      try {
+        lookups.set(ref, { kind: 'found', ticket: await source.get(ref) });
+      } catch (error) {
+        if (error instanceof TicketNotFoundError) {
+          lookups.set(ref, { kind: 'missing' });
+        } else {
+          onUnreadable(ref, error);
+          lookups.set(ref, { kind: 'unreadable' });
+        }
+      }
+    }
+    const found = [...lookups.values()].flatMap((l) => (l.kind === 'found' ? [l.ticket] : []));
+    frontier = blockersToRead(found, config, new Set([...readyRefs, ...lookups.keys()]));
+  }
+  return lookups;
 };

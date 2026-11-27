@@ -12,15 +12,14 @@ import {
   rerunKey,
   runKey,
 } from '../contracts/run.ts';
-import { TicketNotFoundError, type TicketRef, type TicketSource } from '../contracts/ticket.ts';
+import type { TicketRef, TicketSource } from '../contracts/ticket.ts';
 import type { BranchTip } from '../github/branch.ts';
 import { type Gh, feedbackItems, summarizeChecks } from '../github/gh.ts';
 import {
-  type BlockerLookup,
-  blockersToRead,
   byTicketOrder,
   describeHold,
   ownerMustFix,
+  readBlockers,
   resolveDependencies,
 } from '../policy/dependencies.ts';
 import { assertOutboundAllowed } from '../policy/outbound.ts';
@@ -116,8 +115,6 @@ const prNumberOf = (runs: RunRecord[]): number | undefined => {
   const n = url?.match(/\/pull\/(\d+)/)?.[1];
   return n ? Number(n) : undefined;
 };
-/** Blockers read per repo per tick, at most: a runaway graph holds the rest as unreadable. */
-const MAX_BLOCKER_READS = 100;
 const message = (error: unknown): string =>
   error instanceof Error ? error.message : String(error);
 
@@ -548,39 +545,6 @@ export const tick = async (deps: TickDeps): Promise<TickSummary> => {
     }
   };
 
-  /**
-   * Reads the blockers of the Ready Tickets that are not Ready themselves, and theirs in turn
-   * while they are not done, so a cycle through Tickets in progress is seen too. Only blockers in
-   * this repository are read: one in another repository holds its Ticket without a read.
-   */
-  const readBlockers = async (
-    ready: TicketRef[],
-    tickets: Parameters<typeof blockersToRead>[0],
-    config: RepoConfig,
-    source: TicketSource,
-  ): Promise<Map<TicketRef, BlockerLookup>> => {
-    const lookups = new Map<TicketRef, BlockerLookup>();
-    let frontier = blockersToRead(tickets, config, new Set(ready));
-    while (frontier.length > 0 && lookups.size < MAX_BLOCKER_READS) {
-      for (const ref of frontier.slice(0, MAX_BLOCKER_READS - lookups.size)) {
-        try {
-          lookups.set(ref, { kind: 'found', ticket: await source.get(ref) });
-        } catch (error) {
-          if (error instanceof TicketNotFoundError) {
-            lookups.set(ref, { kind: 'missing' });
-          } else {
-            // A failed read proves nothing: the blocker is not known to be done, so it holds.
-            log.warn(`could not read blocker ${ref}: ${message(error)}`);
-            lookups.set(ref, { kind: 'unreadable' });
-          }
-        }
-      }
-      const found = [...lookups.values()].flatMap((l) => (l.kind === 'found' ? [l.ticket] : []));
-      frontier = blockersToRead(found, config, new Set([...ready, ...lookups.keys()]));
-    }
-    return lookups;
-  };
-
   /** Acts on the verdicts of `resolveDependencies`; it decides nothing about dependencies. */
   const queueReadyTickets = async (
     repoPath: string,
@@ -589,7 +553,10 @@ export const tick = async (deps: TickDeps): Promise<TickSummary> => {
   ): Promise<void> => {
     const ready = await source.listReady();
     const byRef = new Map(ready.map((t) => [t.ref, t]));
-    const blockers = await readBlockers([...byRef.keys()], ready, config, source);
+    const blockers = await readBlockers(ready, config, source, (ref, error) =>
+      // A failed read proves nothing: the blocker is not known to be done, so it holds.
+      log.warn(`could not read blocker ${ref}: ${message(error)}`),
+    );
     const verdicts = resolveDependencies({
       ready,
       blockers,
