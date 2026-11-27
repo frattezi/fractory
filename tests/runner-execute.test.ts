@@ -295,6 +295,22 @@ describe('executeRun', () => {
     expect(hook).toContain('refs/heads/main|refs/heads/fractory/4-astro|refs/heads/master)');
   });
 
+  it("tells a stacked Run's agent the branch it is built on and that its blocker's work is there", async () => {
+    const t = await setup({ run: { baseBranch: 'fractory/4-astro' } });
+    await executeRun('run1', t.deps);
+    const prompt = t.agentRequests[0]?.prompt ?? '';
+    expect(prompt).toContain('## Built on `fractory/4-astro`');
+    expect(prompt).toContain('not from `main`');
+    expect(prompt).toContain("That Ticket's work is already in the tree");
+    expect(prompt.indexOf('Add a thing')).toBeLessThan(prompt.indexOf('## Built on'));
+  });
+
+  it('says nothing about a stack for a Run on the base branch', async () => {
+    const t = await setup({ run: { baseBranch: 'main' } });
+    await executeRun('run1', t.deps);
+    expect(t.agentRequests[0]?.prompt).not.toContain('## Built on');
+  });
+
   it('checks the base branch on the push remote once, then opens the PR', async () => {
     const t = await setup({
       remotes:

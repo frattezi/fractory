@@ -555,12 +555,15 @@ export const tick = async (deps: TickDeps): Promise<TickSummary> => {
               repoPath,
               trigger: { kind: 'ticket-ready' },
               branch,
+              ...(verdict.stackedOn !== undefined && { baseBranch: verdict.baseBranch }),
               mode: config.mode,
               flow: config.flow,
             });
             if (!created) break;
             summary.queued.push(record.id);
-            log.info(`queued ticket-ready Run ${record.id} for ${ticket.ref}`);
+            log.info(
+              `queued ticket-ready Run ${record.id} for ${ticket.ref}${verdict.stackedOn ? ` on ${verdict.baseBranch}, the branch of ${verdict.stackedOn}` : ''}`,
+            );
             await source.setStatus(ticket.ref, 'in_progress');
             break;
           }
