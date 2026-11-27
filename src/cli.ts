@@ -44,6 +44,12 @@ import { RunRegistry } from './registry/registry.ts';
 import { launchAutomationRun } from './runner/automation.ts';
 import { launchRun } from './runner/index.ts';
 import { formatHost, formatStatus, repoStatus } from './status/status.ts';
+import {
+  fileTranscriptStore,
+  formatTokenReport,
+  parseSince,
+  tokenReport,
+} from './tokens/tokens.ts';
 import { newestFirst } from './trigger/automation-prune.ts';
 import { type Launchctl, installLaunchd, resolveBin, uninstallLaunchd } from './trigger/launchd.ts';
 import { branchFor, queueRun } from './trigger/queue.ts';
@@ -158,6 +164,7 @@ const HELP = `Usage: fractory <command>
   config show [repoPath]
   rebuild [repoPath...]
   rules [repoPath] [--json]
+  tokens [--since <date>] [--repo <path>] [--json]
   launchd install|uninstall
   init <repoPath> --mode work|personal --ci|--no-ci (--github owner/name | --jira-url ...) [--force]
   install [--target <dir>]
@@ -310,6 +317,20 @@ const commands: Record<string, (args: CliArgs, env: CliEnv) => Promise<void>> = 
         ]),
       ]),
     );
+  },
+
+  /** What Runs cost in tokens, joined to the agent's transcripts by `sessionId` (Spec 0006). */
+  async tokens(args, env) {
+    const factory = await loadFactory(env);
+    const since = flag(args, 'since');
+    const repo = flag(args, 'repo');
+    const report = await tokenReport({
+      runs: await new RunRegistry(factory.registryDir).list(),
+      store: fileTranscriptStore(join(env.home, '.claude', 'projects')),
+      ...(since !== undefined && { since: parseSince(since) }),
+      ...(repo !== undefined && { repoPath: resolve(env.cwd, repo) }),
+    });
+    env.out(args.flags.json === true ? JSON.stringify(report, null, 2) : formatTokenReport(report));
   },
 
   /** Automation Runs newest first. Records this release cannot read are left out. */
