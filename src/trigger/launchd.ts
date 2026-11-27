@@ -103,3 +103,21 @@ export const uninstallLaunchd = async (deps: LaunchdDeps): Promise<string> => {
   await rm(target, { force: true });
   return target;
 };
+
+/**
+ * Whether the tick agent is loaded in the user's launchd domain, read with `launchctl print`.
+ * Only launchd's own "could not find service" answer proves it is not loaded; any other failure
+ * (no launchctl on this machine, a permission error) proves nothing and yields `undefined`.
+ */
+export const launchdLoaded = async (
+  launchctl: Launchctl,
+  uid: number,
+): Promise<boolean | undefined> => {
+  try {
+    await launchctl(['print', `gui/${uid}/${LAUNCHD_LABEL}`]);
+    return true;
+  } catch (error) {
+    const text = error instanceof Error ? error.message : String(error);
+    return /could not find service/i.test(text) ? false : undefined;
+  }
+};
