@@ -12,6 +12,20 @@ export const FindingKindSchema = z.enum([
   'run-failed',
   /** The repository could not be read: its directory or `.fractory.json` is missing or invalid. */
   'unreachable',
+  /** The Ticket's latest Run is done and its pull request is still open, not merged. */
+  'pr-unmerged',
+  /** A Ready Ticket free to start has no Run and no pull request. */
+  'ready-not-started',
+  /** The last tick Held a Ticket on its blockers, and every one of them is now satisfied. */
+  'held-unblocked',
+  /** A Run's worktree is still on disk more than `staleWorktreeDays` after the Run ended. */
+  'stale-worktree',
+  /** The queue is Held over Host Limits; the Finding carries the reading that holds it. */
+  'host-held',
+  /** `fractory rebuild` would compile a dirty checkout, or one behind `origin/<baseBranch>`. */
+  'rebuild-stale',
+  /** The launchd agent is not loaded: no tick is running at all. */
+  'launchd-not-loaded',
 ]);
 export type FindingKind = z.infer<typeof FindingKindSchema>;
 
@@ -21,6 +35,10 @@ export type FindingSeverity = z.infer<typeof FindingSeveritySchema>;
 
 export const FindingSchema = z.object({
   kind: FindingKindSchema,
+  /**
+   * The repository the Finding concerns. A Finding about the whole machine (`host-held`,
+   * `launchd-not-loaded`) names the factory home, `~/.fractory`, instead.
+   */
   repoPath: z.string().min(1),
   severity: FindingSeveritySchema,
   /** What was observed, as a sentence. */
