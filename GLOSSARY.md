@@ -100,6 +100,14 @@ _Avoid_: paused, throttled
 Driving a repository's unfinished Tickets to merged one at a time: queueing a Run where a Ticket has none, waiting for the Run and then for the merge before the next Ticket starts. It stops at the first Ticket that needs the owner and never merges anything itself.
 _Avoid_: watching, polling, monitoring
 
+**Doctor**:
+One read-only sweep of every configured repository, reporting what the owner needs to decide or fix: Runs that stopped, work that should have started and did not, and parts of the machine that are not running. It changes nothing and starts no Run; each Finding names the command that would resolve it.
+_Avoid_: health check, monitor, audit, lint, check
+
+**Finding**:
+One thing Doctor reports: what it observed, which repository it concerns, and the remedy the owner could apply. An observation the owner acts on, never an action the factory takes.
+_Avoid_: error, alert, warning, issue
+
 ### Agents and flows
 
 **Agent Profile**:
