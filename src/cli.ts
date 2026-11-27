@@ -29,6 +29,7 @@ import {
 } from './contracts/repo-config.ts';
 import type { RunRecord } from './contracts/run.ts';
 import { type TicketRef, TicketRefSchema, type TicketSource } from './contracts/ticket.ts';
+import { createBranchTip } from './github/branch.ts';
 import { type Exec, defaultExec } from './github/exec.ts';
 import { type Gh, createGh } from './github/gh.ts';
 import { type InitOptions, initRepo } from './package/init.ts';
@@ -254,6 +255,7 @@ const commands: Record<string, (args: CliArgs, env: CliEnv) => Promise<void>> = 
       loadRepoConfig,
       createTicketSource: env.createTicketSource,
       gh: env.gh,
+      branchTip: createBranchTip(env.exec),
       launchRun: env.launchRun,
       launchAutomationRun: (record) => env.launchAutomationRun(record, factory),
       checkPid,

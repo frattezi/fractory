@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { createBranchTip } from '../src/github/branch.ts';
 import type { Exec } from '../src/github/exec.ts';
 import { createGh, feedbackItems, summarizeChecks } from '../src/github/gh.ts';
 import { makePr } from './trigger-helpers.ts';
@@ -89,5 +90,44 @@ describe('createGh', () => {
   it('rejects malformed gh output instead of guessing', async () => {
     const gh = createGh(async () => JSON.stringify({ number: 'x' }));
     await expect(gh.viewPr('/r', 'u')).rejects.toThrow();
+  });
+});
+
+describe('createBranchTip', () => {
+  const github = { ticketSource: { kind: 'github' as const, repo: 'me/app' } };
+  const remotes =
+    'upstream\thttps://github.com/other/app.git (push)\nmine\tgit@github.com:me/app.git (push)\n';
+  const fake = (lsRemote: string | Error) => {
+    const calls: string[] = [];
+    const exec: Exec = async (cmd, args, options) => {
+      calls.push(`${options?.cwd} ${cmd} ${args.join(' ')}`);
+      if (args[0] === 'remote') return remotes;
+      if (lsRemote instanceof Error) throw lsRemote;
+      return lsRemote;
+    };
+    return { exec, calls };
+  };
+
+  it('reads the tip on the remote that points at the GitHub repo', async () => {
+    const { exec, calls } = fake('abc1234def\trefs/heads/fractory/4-astro\n');
+    expect(await createBranchTip(exec)('/repo', github, 'fractory/4-astro')).toBe('abc1234def');
+    expect(calls).toContain('/repo git ls-remote --heads mine refs/heads/fractory/4-astro');
+  });
+
+  it('uses origin for a Jira repository', async () => {
+    const { exec, calls } = fake('abc1234def\trefs/heads/feat/abc-1\n');
+    const jira = { ticketSource: { kind: 'jira' as const, site: 's', projectKey: 'ABC' } };
+    await createBranchTip(exec)('/repo', jira as never, 'feat/abc-1');
+    expect(calls).toEqual(['/repo git ls-remote --heads origin refs/heads/feat/abc-1']);
+  });
+
+  it('answers undefined only when the remote has no such branch, and rejects a failed read', async () => {
+    expect(await createBranchTip(fake('').exec)('/repo', github, 'gone')).toBeUndefined();
+    await expect(
+      createBranchTip(fake(new Error('offline')).exec)('/repo', github, 'b'),
+    ).rejects.toThrow('offline');
+    await expect(
+      createBranchTip(fake('nonsense\trefs/heads/b\n').exec)('/repo', github, 'b'),
+    ).rejects.toThrow('no sha');
   });
 });

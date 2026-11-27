@@ -1232,3 +1232,206 @@ describe('PR state memory', () => {
     expect(summary.errors).toBe(0);
   });
 });
+
+describe('Restack', () => {
+  const BELOW = 'fractory/4-add-thing-4';
+  const ABOVE = 'fractory/5-add-thing-5';
+  const PR4 = 'https://github.com/me/app/pull/4';
+  const PR5 = 'https://github.com/me/app/pull/5';
+  // Checks still running: nothing merges, nothing is followed up.
+  const pending = [{ status: 'IN_PROGRESS', conclusion: null }];
+
+  /** #5 is stacked on #4's branch at `tip-a`; both Runs are done with their pull requests open. */
+  const stacked = async (options: { maxConcurrentRuns?: number } = {}) => {
+    const h = await makeHarness(options);
+    await h.registry.write(
+      makeRun({ id: 'r4', ticketRef: 'github:me/app#4', branch: BELOW, prUrl: PR4 }),
+    );
+    await h.registry.write(
+      makeRun({
+        id: 'r5',
+        ticketRef: 'github:me/app#5',
+        branch: ABOVE,
+        baseBranch: BELOW,
+        baseSha: 'tip-a',
+        prUrl: PR5,
+        createdAt: '2026-05-31T11:00:00.000Z',
+      }),
+    );
+    h.source.tickets.set('github:me/app#4', makeTicket(4, 'in_review'));
+    h.source.tickets.set('github:me/app#5', makeTicket(5, 'in_review'));
+    h.gh.prs.set(PR4, makePr({ number: 4, statusCheckRollup: pending }));
+    h.gh.prs.set(
+      PR5,
+      makePr({ number: 5, baseRefName: BELOW, headRefOid: 'h5', statusCheckRollup: pending }),
+    );
+    h.tips.set(BELOW, 'tip-a');
+    return h;
+  };
+  const restacks = async (h: Awaited<ReturnType<typeof makeHarness>>) =>
+    (await h.registry.list()).filter((r) => r.trigger.kind === 'restack');
+
+  it('queues nothing while the tip of the branch below is unchanged', async () => {
+    const h = await stacked();
+    for (let i = 0; i < 3; i++) {
+      const summary = await tick(h.deps);
+      expect(summary.queued).toEqual([]);
+      expect(summary.errors).toBe(0);
+    }
+    expect(h.tipReads).toContain(BELOW);
+    expect(await restacks(h)).toEqual([]);
+  });
+
+  it('queues exactly one Restack for a moved tip, however many ticks pass', async () => {
+    const h = await stacked();
+    h.tips.set(BELOW, 'tip-b');
+    const first = await tick(h.deps);
+    expect(first.queued).toHaveLength(1);
+    expect(first.launched).toEqual(first.queued);
+    const [run] = await restacks(h);
+    expect(run).toMatchObject({
+      key: 'github:me/app#5:restack:tip-b',
+      ticketRef: 'github:me/app#5',
+      trigger: { kind: 'restack', fromSha: 'tip-a', tipSha: 'tip-b' },
+      branch: ABOVE,
+      baseBranch: BELOW,
+      baseSha: 'tip-a',
+    });
+    expect(h.source.statusCalls).toEqual([['github:me/app#5', 'in_progress']]);
+
+    // Running, then failed for the owner, then done without moving: never a second one for tip-b.
+    expect((await tick(h.deps)).queued).toEqual([]);
+    await h.registry.update(run?.id as string, { status: 'failed' });
+    expect((await tick(h.deps)).queued).toEqual([]);
+    await h.registry.update(run?.id as string, { status: 'done' });
+    expect((await tick(h.deps)).queued).toEqual([]);
+    expect(await restacks(h)).toHaveLength(1);
+  });
+
+  it('restacks again when the tip moves again after a Restack is done', async () => {
+    const h = await stacked();
+    h.tips.set(BELOW, 'tip-b');
+    const first = await tick(h.deps);
+    // The Run rebased onto tip-b and recorded it.
+    await h.registry.update(first.queued[0] as string, { status: 'done', baseSha: 'tip-b' });
+    expect((await tick(h.deps)).queued).toEqual([]);
+    h.tips.set(BELOW, 'tip-c');
+    const third = await tick(h.deps);
+    expect(third.queued).toHaveLength(1);
+    expect((await h.registry.get(third.queued[0] as string))?.trigger).toEqual({
+      kind: 'restack',
+      fromSha: 'tip-b',
+      tipSha: 'tip-c',
+    });
+  });
+
+  it('a follow-up Run on the branch below is followed by one Restack once it is done', async () => {
+    const h = await stacked();
+    // A failing check on #4 starts a follow-up Run on its branch.
+    h.gh.prs.set(
+      PR4,
+      makePr({ number: 4, headRefOid: 'tip-a', statusCheckRollup: [{ state: 'FAILURE' }] }),
+    );
+    const first = await tick(h.deps);
+    expect(first.queued).toHaveLength(1);
+    expect((await h.registry.get(first.queued[0] as string))?.trigger.kind).toBe('ci-failed');
+    // While it runs and pushes, the stack above waits.
+    h.tips.set(BELOW, 'tip-b');
+    expect((await tick(h.deps)).queued).toEqual([]);
+    await h.registry.update(first.queued[0] as string, { status: 'done', prUrl: PR4 });
+    h.gh.prs.set(PR4, makePr({ number: 4, headRefOid: 'tip-b', statusCheckRollup: pending }));
+    const third = await tick(h.deps);
+    expect(third.queued).toHaveLength(1);
+    expect((await restacks(h)).map((r) => r.ticketRef)).toEqual(['github:me/app#5']);
+  });
+
+  it('launches a Restack ahead of Runs started by a Ticket becoming Ready', async () => {
+    const h = await stacked({ maxConcurrentRuns: 1 });
+    await h.registry.write(
+      makeRun({
+        id: 'ready',
+        ticketRef: 'github:me/app#9',
+        key: 'k-ready',
+        status: 'queued',
+        createdAt: '2026-05-01T00:00:00.000Z',
+      }),
+    );
+    h.source.tickets.set('github:me/app#8', makeTicket(8));
+    h.tips.set(BELOW, 'tip-b');
+    await tick(h.deps);
+    expect(h.launched).toHaveLength(1);
+    expect((await h.registry.get(h.launched[0] as string))?.trigger.kind).toBe('restack');
+  });
+
+  it('obeys the Host Limits: a full host holds a Restack queued', async () => {
+    const h = await stacked();
+    h.deps.factory.resources = ResourceLimitsSchema.parse({});
+    h.deps.hostLoad = async () => ({ loadPerCore: 0.92, dockerReachable: true });
+    h.tips.set(BELOW, 'tip-b');
+    const summary = await tick(h.deps);
+    expect(summary.held).toBe('CPU load 0.92 per core > 0.75');
+    expect(h.launched).toEqual([]);
+    expect((await restacks(h)).map((r) => r.status)).toEqual(['queued']);
+
+    h.deps.hostLoad = async () => ({ loadPerCore: 0.1, dockerReachable: true });
+    await tick(h.deps);
+    expect(h.launched).toEqual(summary.queued);
+  });
+
+  it('a tip that cannot be read proves nothing, and a branch gone from the remote restacks nothing', async () => {
+    const h = await stacked();
+    h.tips.set(BELOW, new Error('network down'));
+    const summary = await tick(h.deps);
+    expect(summary.queued).toEqual([]);
+    expect(h.log.lines.some((l) => l.startsWith(`WARN could not read the tip of ${BELOW}`))).toBe(
+      true,
+    );
+    h.tips.delete(BELOW);
+    expect((await tick(h.deps)).queued).toEqual([]);
+    expect(await restacks(h)).toEqual([]);
+  });
+
+  it('leaves a stack alone while its own Run is active or failed, or its pull request is closed', async () => {
+    for (const patch of [
+      { status: 'failed' as const },
+      { status: 'needs-human' as const },
+      { prState: 'CLOSED' as const },
+    ]) {
+      const h = await stacked();
+      await h.registry.update('r5', patch);
+      h.tips.set(BELOW, 'tip-b');
+      expect((await tick(h.deps)).queued).toEqual([]);
+      expect(await restacks(h)).toEqual([]);
+    }
+  });
+
+  it('never restacks onto a branch whose pull request merged', async () => {
+    const h = await stacked();
+    await h.registry.update('r4', { prState: 'MERGED' });
+    h.tips.set(BELOW, 'tip-b');
+    await tick(h.deps);
+    expect(await restacks(h)).toEqual([]);
+  });
+
+  it('never restacks a Run built on the repository base branch', async () => {
+    const h = await stacked();
+    await h.registry.update('r5', { baseBranch: 'main' });
+    h.tips.set('main', 'tip-b');
+    await tick(h.deps);
+    expect(await restacks(h)).toEqual([]);
+  });
+
+  it('a stacked Run records the tip of the branch it is built on when queued', async () => {
+    const h = await makeHarness();
+    await h.registry.write(makeRun({ id: 'r4', ticketRef: 'github:me/app#4', branch: BELOW }));
+    h.source.tickets.set('github:me/app#4', makeTicket(4, 'in_review'));
+    h.source.tickets.set('github:me/app#5', {
+      ...makeTicket(5),
+      blockedBy: ['github:me/app#4'],
+    });
+    h.tips.set(BELOW, 'tip-a');
+    await tick(h.deps);
+    const run = (await h.registry.list()).find((r) => r.ticketRef === 'github:me/app#5');
+    expect(run).toMatchObject({ baseBranch: BELOW, baseSha: 'tip-a' });
+  });
+});

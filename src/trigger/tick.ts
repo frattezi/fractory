@@ -13,10 +13,12 @@ import {
   runKey,
 } from '../contracts/run.ts';
 import { TicketNotFoundError, type TicketRef, type TicketSource } from '../contracts/ticket.ts';
+import type { BranchTip } from '../github/branch.ts';
 import { type Gh, feedbackItems, summarizeChecks } from '../github/gh.ts';
 import {
   type BlockerLookup,
   blockersToRead,
+  byTicketOrder,
   describeHold,
   ownerMustFix,
   resolveDependencies,
@@ -32,7 +34,7 @@ import type { RunRegistry } from '../registry/registry.ts';
 import { listRerunRequests } from '../registry/reruns.ts';
 import { pruneAutomationRuns } from './automation-prune.ts';
 import { acceptAutomationRequests } from './automations.ts';
-import { branchFor, queueRun } from './queue.ts';
+import { type QueueInput, branchFor, queueRun } from './queue.ts';
 import { type Logger, type PidState, acquireLock } from './support.ts';
 
 export interface TickDeps {
@@ -41,6 +43,8 @@ export interface TickDeps {
   loadRepoConfig(repoPath: string): Promise<RepoConfig>;
   createTicketSource(config: TicketSourceConfig, mode: Mode): TicketSource;
   gh: Gh;
+  /** Reads a branch's tip on the repository's remote, to notice a stacked base that moved. */
+  branchTip: BranchTip;
   launchRun(record: RunRecord, config: RepoConfig): Promise<void>;
   /** Starts a queued Automation Run's host process, recording its pid and `running`. */
   launchAutomationRun(record: AutomationRunRecord): Promise<void>;
@@ -157,12 +161,14 @@ export const tick = async (deps: TickDeps): Promise<TickSummary> => {
     source: TicketSource,
     latest: RunRecord,
     trigger: Trigger,
+    base: Pick<QueueInput, 'baseBranch' | 'baseSha'> = {},
   ): Promise<void> => {
     const { record, created } = await queueRun(deps, {
       ticketRef: latest.ticketRef,
       repoPath: latest.repoPath,
       trigger,
       branch: latest.branch,
+      ...base,
       mode: latest.mode,
       flow: latest.flow,
     });
@@ -480,6 +486,69 @@ export const tick = async (deps: TickDeps): Promise<TickSummary> => {
   };
 
   /**
+   * A Ticket stacked on another Ticket's branch whose tip moved since it was built gets one Restack
+   * per new tip (keyed by it). Only an idle stack is restacked: the Ticket's latest Run is done with
+   * its pull request open, and the latest Run on the branch below is done with its pull request
+   * open too. A Restack that failed waits for the owner; a tip that cannot be read waits a tick.
+   */
+  const handleRestacks = async (
+    repoPath: string,
+    config: RepoConfig,
+    source: TicketSource,
+  ): Promise<void> => {
+    const runs = (await registry.list()).filter((r) => r.repoPath === repoPath).sort(byCreatedAt);
+    const byTicket = new Map<TicketRef, RunRecord[]>();
+    for (const run of runs)
+      byTicket.set(run.ticketRef, [...(byTicket.get(run.ticketRef) ?? []), run]);
+    const isOpen = (ticketRuns: readonly RunRecord[]): boolean => {
+      const withPr = ticketRuns.filter((r) => r.prUrl).at(-1);
+      return withPr !== undefined && withPr.prState !== 'MERGED' && withPr.prState !== 'CLOSED';
+    };
+    const tips = new Map<string, Promise<string | undefined>>();
+    const tipOf = (branch: string): Promise<string | undefined> => {
+      let tip = tips.get(branch);
+      if (!tip) {
+        tip = deps.branchTip(repoPath, config, branch);
+        tips.set(branch, tip);
+      }
+      return tip;
+    };
+    for (const [ref, ticketRuns] of [...byTicket].sort(([a], [b]) =>
+      byTicketOrder({ ref: a }, { ref: b }),
+    )) {
+      try {
+        const latest = ticketRuns.at(-1);
+        if (latest?.status !== 'done' || !isOpen(ticketRuns)) continue;
+        const built = ticketRuns.findLast(
+          (r) => r.baseBranch !== undefined && r.baseSha !== undefined,
+        );
+        const base = built?.baseBranch;
+        const fromSha = built?.baseSha;
+        if (base === undefined || fromSha === undefined || base === config.baseBranch) continue;
+        const below = runs.filter((r) => r.branch === base && r.ticketRef !== ref);
+        if (below.at(-1)?.status !== 'done' || !isOpen(below)) continue;
+        let tip: string | undefined;
+        try {
+          tip = await tipOf(base);
+        } catch (error) {
+          // A failed read proves nothing: the tip is not known to have moved.
+          log.warn(`could not read the tip of ${base} for ${ref}: ${message(error)}`);
+          continue;
+        }
+        if (tip === undefined || tip === fromSha) continue;
+        await queueFollowUp(
+          source,
+          latest,
+          { kind: 'restack', fromSha, tipSha: tip },
+          { baseBranch: base, baseSha: fromSha },
+        );
+      } catch (error) {
+        fail(`restack of ${ref}`, error);
+      }
+    }
+  };
+
+  /**
    * Reads the blockers of the Ready Tickets that are not Ready themselves, and theirs in turn
    * while they are not done, so a cycle through Tickets in progress is seen too. Only blockers in
    * this repository are read: one in another repository holds its Ticket without a read.
@@ -554,12 +623,22 @@ export const tick = async (deps: TickDeps): Promise<TickSummary> => {
           }
           case 'start': {
             const branch = branchFor(ticket.ref, ticket.title, config.mode);
+            let baseSha: string | undefined;
+            if (verdict.stackedOn !== undefined) {
+              // The tip the stack starts from; unread, the Run records the one it branches from.
+              baseSha = await deps
+                .branchTip(repoPath, config, verdict.baseBranch)
+                .catch((error: unknown) => {
+                  log.warn(`could not read the tip of ${verdict.baseBranch}: ${message(error)}`);
+                  return undefined;
+                });
+            }
             const { record, created } = await queueRun(deps, {
               ticketRef: ticket.ref,
               repoPath,
               trigger: { kind: 'ticket-ready' },
               branch,
-              ...(verdict.stackedOn !== undefined && { baseBranch: verdict.baseBranch }),
+              ...(verdict.stackedOn !== undefined && { baseBranch: verdict.baseBranch, baseSha }),
               mode: config.mode,
               flow: config.flow,
             });
@@ -719,6 +798,7 @@ export const tick = async (deps: TickDeps): Promise<TickSummary> => {
         await handleAnswers(repoPath, config, source);
         await handlePrs(repoPath, config, source, me);
         await handleAmComments(repoPath, source);
+        await handleRestacks(repoPath, config, source);
         await queueReadyTickets(repoPath, config, source);
       } catch (error) {
         fail(`repo ${repoPath}`, error);
