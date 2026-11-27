@@ -50,7 +50,7 @@ export interface RepoStatus {
 }
 
 /** Latest Run per Ticket, for one repository. */
-const latestPerTicket = (runs: RunRecord[], repoPath: string): RunRecord[] => {
+export const latestPerTicket = (runs: RunRecord[], repoPath: string): RunRecord[] => {
   const latest = new Map<string, RunRecord>();
   for (const run of runs) {
     if (resolve(run.repoPath) !== repoPath) continue;

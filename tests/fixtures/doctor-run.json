@@ -1,0 +1,24 @@
+{
+  "version": 1,
+  "id": "run-needs-human",
+  "key": "github:me/app#7:ticket-ready",
+  "ticketRef": "github:me/app#7",
+  "repoPath": "/repos/app",
+  "trigger": { "kind": "ticket-ready" },
+  "status": "needs-human",
+  "branch": "fractory/7-add-export",
+  "worktreePath": "/repos/app/.worktrees/7",
+  "sessionId": "6f1c2a",
+  "logPath": "/logs/run-needs-human.log",
+  "mode": "personal",
+  "flow": "default",
+  "agents": ["claude@personal"],
+  "result": {
+    "outcome": "needs-human",
+    "reason": "ambiguous-spec",
+    "question": "Should the export include archived rows?"
+  },
+  "createdAt": "2026-11-20T10:00:00.000Z",
+  "updatedAt": "2026-11-20T10:40:00.000Z",
+  "finishedAt": "2026-11-20T10:40:00.000Z"
+}

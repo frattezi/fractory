@@ -29,6 +29,7 @@ import {
 } from './contracts/repo-config.ts';
 import type { RunRecord } from './contracts/run.ts';
 import { type TicketRef, TicketRefSchema, type TicketSource } from './contracts/ticket.ts';
+import { doctor, renderFindings } from './doctor/doctor.ts';
 import { createBranchTip } from './github/branch.ts';
 import { type Exec, defaultExec } from './github/exec.ts';
 import { type Gh, createGh } from './github/gh.ts';
@@ -157,6 +158,7 @@ const HELP = `Usage: fractory <command>
   babysit [repoPath] [--ticket <ref>]... [--poll <seconds>] [--timeout-min <minutes>]
   config show [repoPath]
   rebuild [repoPath...]
+  doctor [repoPath...] [--json]
   rules [repoPath] [--json]
   launchd install|uninstall
   init <repoPath> --mode work|personal --ci|--no-ci (--github owner/name | --jira-url ...) [--force]
@@ -453,6 +455,25 @@ const commands: Record<string, (args: CliArgs, env: CliEnv) => Promise<void>> = 
       { repos: factory.repos, loadRepoConfig, runShell: env.runShell, out: env.out },
       args.positionals.map((p) => resolve(env.cwd, p)),
     );
+  },
+
+  /**
+   * Read-only sweep of every configured repo, or only the named ones: what needs the owner.
+   * Exits 0 whenever the sweep completed, however much it found.
+   */
+  async doctor(args, env) {
+    const factory = await loadFactory(env);
+    const registry = new RunRegistry(factory.registryDir);
+    const findings = await doctor(
+      {
+        repos: factory.repos,
+        loadRepoConfig,
+        listRuns: () => registry.list(),
+        listAnswerRequests: () => listAnswerRequests(factory.registryDir),
+      },
+      args.positionals.map((p) => resolve(env.cwd, p)),
+    );
+    env.out(renderFindings(findings, { json: args.flags.json === true }));
   },
 
   /** What an interactive agent checks before working in a repo: Mode, Runs, hands-off branches. */
