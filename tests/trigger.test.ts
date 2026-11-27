@@ -5,8 +5,8 @@ import { parseRelations } from '../src/adapters/relations.ts';
 import { ResourceLimitsSchema } from '../src/contracts/factory-config.ts';
 import type { RepoConfig } from '../src/contracts/repo-config.ts';
 import { type Trigger, answerRequestPath, rerunRequestPath, runKey } from '../src/contracts/run.ts';
+import type { Ticket } from '../src/contracts/ticket.ts';
 import type { HostLoad } from '../src/policy/resources.ts';
-import { ownsRef } from '../src/trigger/blockers.ts';
 import { branchFor, byTicketOrder } from '../src/trigger/queue.ts';
 import { acquireLock } from '../src/trigger/support.ts';
 import { tick } from '../src/trigger/tick.ts';
@@ -118,6 +118,8 @@ describe('blockers hold a Ready Ticket', () => {
     return { ...base, body, ...relations, relationErrors: errors };
   };
   const readHost = async (path: string) => JSON.parse(await readFile(path, 'utf8'));
+  const heldRefs = (summary: { heldTickets: { ticketRef: string }[] }) =>
+    summary.heldTickets.map((t) => t.ticketRef);
 
   it('starts a Ticket that records no blocker as before', async () => {
     const h = await makeHarness();
@@ -128,7 +130,7 @@ describe('blockers hold a Ready Ticket', () => {
     expect((await readHost(h.factory.hostStatePath)).heldTickets).toBeUndefined();
   });
 
-  it('holds a Ticket while a blocker is open, logs it and leaves the tracker alone', async () => {
+  it('holds a Ticket while a blocker is not done: no Run, still Ready, nothing written', async () => {
     const h = await makeHarness();
     h.source.tickets.set('github:me/app#4', makeTicket(4, 'in_progress'));
     h.source.tickets.set('github:me/app#5', blocked(5, '#4'));
@@ -136,16 +138,36 @@ describe('blockers hold a Ready Ticket', () => {
 
     expect(await h.registry.list()).toEqual([]);
     expect(h.source.statusCalls).toEqual([]);
+    expect(h.source.comments).toEqual([]);
+    expect(h.source.tickets.get('github:me/app#5')?.status).toBe('ready');
     expect(summary.heldTickets).toEqual([
-      { repoPath: '/repo/app', ticketRef: 'github:me/app#5', blockers: ['github:me/app#4'] },
+      {
+        repoPath: '/repo/app',
+        ticketRef: 'github:me/app#5',
+        blockers: ['github:me/app#4'],
+        holds: [{ blocker: 'github:me/app#4', reason: 'not done: in progress, no Run yet' }],
+      },
     ]);
     expect(h.log.lines).toContain(
-      'INFO holding github:me/app#5: waiting on blockers github:me/app#4 (open)',
+      'INFO holding github:me/app#5: waiting on github:me/app#4 (not done: in progress, no Run yet)',
     );
     expect((await readHost(h.factory.hostStatePath)).heldTickets).toEqual(summary.heldTickets);
   });
 
-  it('holds while any blocker is open and starts on the next tick once all are closed', async () => {
+  it('names the state of the blocker Run it waits on', async () => {
+    const h = await makeHarness();
+    await h.registry.write(
+      makeRun({ id: 'r4', ticketRef: 'github:me/app#4', status: 'needs-human' }),
+    );
+    h.source.tickets.set('github:me/app#4', makeTicket(4, 'in_progress'));
+    h.source.tickets.set('github:me/app#5', blocked(5, '#4'));
+    const summary = await tick(h.deps);
+    expect(summary.heldTickets[0]?.holds).toEqual([
+      { blocker: 'github:me/app#4', reason: 'not done: in progress, its latest Run needs-human' },
+    ]);
+  });
+
+  it('holds while any blocker is not done and starts on the next tick once all are', async () => {
     const h = await makeHarness();
     h.source.tickets.set('github:me/app#3', makeTicket(3, 'done'));
     h.source.tickets.set('github:me/app#4', makeTicket(4, 'in_review'));
@@ -162,83 +184,164 @@ describe('blockers hold a Ready Ticket', () => {
     expect(h.source.statusCalls).toEqual([['github:me/app#5', 'in_progress']]);
   });
 
+  it('works a chain created Ready together one at a time, in order', async () => {
+    const h = await makeHarness();
+    // GitHub lists newest first: the chain arrives backwards.
+    for (const n of [4, 3, 2]) h.source.tickets.set(`github:me/app#${n}`, blocked(n, `#${n - 1}`));
+    h.source.tickets.set('github:me/app#1', makeTicket(1));
+
+    const started: string[] = [];
+    for (let step = 1; step <= 4; step++) {
+      const summary = await tick(h.deps);
+      expect(summary.queued).toHaveLength(1);
+      const run = (await h.registry.list()).find((r) => r.id === summary.queued[0]);
+      started.push(run?.ticketRef ?? '');
+      expect(heldRefs(summary)).toEqual(
+        [2, 3, 4].filter((n) => n > step).map((n) => `github:me/app#${n}`),
+      );
+      // Nothing else starts while the current Ticket is not done.
+      const idle = await tick(h.deps);
+      expect(idle.queued).toEqual([]);
+      // The Run finishes and its pull request merges: the Ticket is done.
+      if (run) await h.registry.update(run.id, { status: 'done' });
+      const ref = `github:me/app#${step}`;
+      h.source.tickets.set(ref, { ...(h.source.tickets.get(ref) as Ticket), status: 'done' });
+    }
+    expect(started).toEqual([1, 2, 3, 4].map((n) => `github:me/app#${n}`));
+  });
+
+  it('queues unblocked Tickets blockers first, whatever order the tracker lists them in', async () => {
+    const h = await makeHarness({ maxConcurrentRuns: 5 });
+    h.source.tickets.set('github:me/app#9', makeTicket(9));
+    h.source.tickets.set('github:me/app#2', blocked(2, '#1'));
+    h.source.tickets.set('github:me/app#1', makeTicket(1, 'done'));
+    h.source.tickets.set('github:me/app#3', makeTicket(3));
+    const summary = await tick(h.deps);
+    const refs = (await h.registry.list())
+      .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
+      .map((r) => r.ticketRef);
+    expect(refs).toEqual(['github:me/app#2', 'github:me/app#3', 'github:me/app#9']);
+    expect(summary.heldTickets).toEqual([]);
+  });
+
+  it('holds every Ticket in a cycle and those depending on it, queues nothing, reports it', async () => {
+    const h = await makeHarness();
+    h.source.tickets.set('github:me/app#4', blocked(4, '#5'));
+    h.source.tickets.set('github:me/app#5', blocked(5, '#4'));
+    h.source.tickets.set('github:me/app#6', blocked(6, '#5'));
+    h.source.tickets.set('github:me/app#7', blocked(7, '#7'));
+    const summary = await tick(h.deps);
+
+    expect(await h.registry.list()).toEqual([]);
+    expect(h.source.statusCalls).toEqual([]);
+    expect(summary.heldTickets.map(({ ticketRef, holds }) => [ticketRef, holds])).toEqual([
+      ['github:me/app#7', [{ blocker: 'github:me/app#7', reason: 'the Ticket blocks itself' }]],
+      [
+        'github:me/app#4',
+        [
+          {
+            blocker: 'github:me/app#5',
+            reason: 'dependency cycle: github:me/app#4, github:me/app#5',
+          },
+        ],
+      ],
+      [
+        'github:me/app#5',
+        [
+          {
+            blocker: 'github:me/app#4',
+            reason: 'dependency cycle: github:me/app#4, github:me/app#5',
+          },
+        ],
+      ],
+      [
+        'github:me/app#6',
+        [{ blocker: 'github:me/app#5', reason: 'depends on a dependency cycle' }],
+      ],
+    ]);
+    expect(h.log.lines).toContain(
+      'WARN holding github:me/app#6: waiting on github:me/app#5 (depends on a dependency cycle)',
+    );
+  });
+
+  it('sees a cycle through a blocker that is no longer Ready', async () => {
+    const h = await makeHarness();
+    h.source.tickets.set('github:me/app#4', { ...blocked(4, '#3'), status: 'in_progress' });
+    h.source.tickets.set('github:me/app#3', { ...blocked(3, '#4'), status: 'backlog' });
+    h.source.tickets.set('github:me/app#5', blocked(5, '#4'));
+    const summary = await tick(h.deps);
+    expect(summary.heldTickets[0]?.holds).toEqual([
+      { blocker: 'github:me/app#4', reason: 'depends on a dependency cycle' },
+    ]);
+  });
+
   it('takes no launch slot: the next candidate starts under the cap', async () => {
     const h = await makeHarness({ maxConcurrentRuns: 1 });
     h.source.tickets.set('github:me/app#4', makeTicket(4, 'backlog'));
     h.source.tickets.set('github:me/app#5', blocked(5, '#4'));
     h.source.tickets.set('github:me/app#6', makeTicket(6));
     const summary = await tick(h.deps);
-    expect(summary.heldTickets.map((t) => t.ticketRef)).toEqual(['github:me/app#5']);
+    expect(heldRefs(summary)).toEqual(['github:me/app#5']);
     expect((await h.registry.list()).map((r) => r.ticketRef)).toEqual(['github:me/app#6']);
     expect(h.launched).toHaveLength(1);
   });
 
-  it('resolves a blocker owned by another configured repo through that repo source', async () => {
+  it('holds on a blocker in another repository without reading it, even a configured one', async () => {
     const h = await makeHarness({ repos: ['/repo/app', '/repo/lib'] });
     const lib: RepoConfig = { ...personalRepo, ticketSource: { kind: 'github', repo: 'me/lib' } };
     h.configs.set('/repo/lib', lib);
-    const libSource = new FakeSource([{ ...makeTicket(9, 'in_progress'), ref: 'github:me/lib#9' }]);
-    const asked: string[] = [];
-    h.deps.createTicketSource = (config) => {
-      asked.push(config.kind === 'github' ? config.repo : config.projectKey);
-      return config.kind === 'github' && config.repo === 'me/lib' ? libSource : h.source;
-    };
-    h.source.tickets.set('github:me/app#5', blocked(5, 'me/lib#9'));
-    // `get` is never asked of the wrong source for the blocker
-    const appGet = h.source.get.bind(h.source);
-    h.source.get = async (ref) => {
-      expect(ref).not.toBe('github:me/lib#9');
-      return appGet(ref);
-    };
-
-    const first = await tick(h.deps);
-    expect(first.heldTickets[0]?.blockers).toEqual(['github:me/lib#9']);
-    expect(asked).toContain('me/lib');
-
-    libSource.tickets.set('github:me/lib#9', {
-      ...makeTicket(9, 'done'),
-      ref: 'github:me/lib#9',
-    });
-    const second = await tick(h.deps);
-    expect(second.launched).toHaveLength(1);
-  });
-
-  it('holds on a reference no configured repo owns, names it, and moves on', async () => {
-    const h = await makeHarness();
-    h.source.tickets.set('github:me/app#5', blocked(5, 'other/repo#2', 'XYZ-3'));
+    const libSource = new FakeSource([{ ...makeTicket(9, 'done'), ref: 'github:me/lib#9' }]);
+    h.deps.createTicketSource = (config) =>
+      config.kind === 'github' && config.repo === 'me/lib' ? libSource : h.source;
+    h.source.tickets.set('github:me/app#5', blocked(5, 'me/lib#9', 'XYZ-3'));
     h.source.tickets.set('github:me/app#6', makeTicket(6));
     const summary = await tick(h.deps);
     expect(summary.errors).toBe(0);
-    expect(summary.heldTickets[0]?.blockers).toEqual(['github:other/repo#2', 'jira:XYZ-3']);
+    expect(summary.heldTickets[0]?.holds).toEqual([
+      { blocker: 'github:me/lib#9', reason: 'in another repository' },
+      { blocker: 'jira:XYZ-3', reason: 'in another repository' },
+    ]);
+    expect([...h.source.gets, ...libSource.gets]).toEqual([]);
     expect(h.log.lines).toContain(
-      'INFO holding github:me/app#5: waiting on blockers github:other/repo#2 (not owned by any configured repo), jira:XYZ-3 (not owned by any configured repo)',
+      'WARN holding github:me/app#5: waiting on github:me/lib#9 (in another repository), jira:XYZ-3 (in another repository)',
     );
     expect((await h.registry.list()).map((r) => r.ticketRef)).toEqual(['github:me/app#6']);
   });
 
-  it('finds the owner of a ref by GitHub repo or Jira project key', () => {
-    const jira = {
-      kind: 'jira',
-      baseUrl: 'https://acme.atlassian.net',
-      projectKey: 'ABC',
-      statuses: { ready: 'Ready', inProgress: 'Doing', inReview: 'Review', done: 'Shipped' },
-    } as const;
-    expect(ownsRef(jira, 'jira:ABC-3')).toBe(true);
-    expect(ownsRef(jira, 'jira:ABCD-3')).toBe(false);
-    expect(ownsRef(jira, 'github:me/app#3')).toBe(false);
-    expect(ownsRef({ kind: 'github', repo: 'Me/App' }, 'github:me/app#3')).toBe(true);
-    expect(ownsRef({ kind: 'github', repo: 'me/app' }, 'github:me/lib#3')).toBe(false);
+  it('holds on a blocker that does not exist and reports it', async () => {
+    const h = await makeHarness();
+    h.source.missing.add('github:me/app#40');
+    h.source.tickets.set('github:me/app#5', blocked(5, '#40'));
+    const summary = await tick(h.deps);
+    expect(summary.heldTickets[0]?.holds).toEqual([
+      { blocker: 'github:me/app#40', reason: 'does not exist' },
+    ]);
+    expect(h.log.lines).toContain(
+      'WARN holding github:me/app#5: waiting on github:me/app#40 (does not exist)',
+    );
+    expect(h.launched).toEqual([]);
   });
 
   it('holds when a blocker cannot be read: a failed read proves nothing', async () => {
     const h = await makeHarness();
     h.source.tickets.set('github:me/app#5', blocked(5, '#4'));
     const summary = await tick(h.deps);
-    expect(summary.heldTickets[0]?.blockers).toEqual(['github:me/app#4']);
+    expect(summary.heldTickets[0]?.holds).toEqual([
+      { blocker: 'github:me/app#4', reason: 'could not be read' },
+    ]);
     expect(
       h.log.lines.some((l) => l.startsWith('WARN could not read blocker github:me/app#4')),
     ).toBe(true);
     expect(h.launched).toEqual([]);
+  });
+
+  it('reads a blocker shared by many Tickets once', async () => {
+    const h = await makeHarness();
+    h.source.tickets.set('github:me/app#4', makeTicket(4, 'in_progress'));
+    h.source.tickets.set('github:me/app#5', blocked(5, '#4'));
+    h.source.tickets.set('github:me/app#6', blocked(6, '#4'));
+    await tick(h.deps);
+    expect(h.source.gets.filter((r) => r === 'github:me/app#4')).toHaveLength(1);
   });
 });
 

@@ -28,8 +28,15 @@ export interface RepoStatus {
   }[];
   /** Open PRs Fractory made: a review comment or red CI starts a follow-up Run on that branch. */
   openPrs: { ticketRef: string; branch: string; prUrl: string }[];
-  /** Held Tickets from the last tick: Ready, but not started while their blockers are open. */
-  waitingOnBlockers: { ticketRef: string; blockers: string[] }[];
+  /**
+   * Held Tickets from the last tick: Ready, but not started because of their blockers. `holds`
+   * says why each blocker holds it; host states written before it existed carry only `blockers`.
+   */
+  waitingOnBlockers: {
+    ticketRef: string;
+    blockers: string[];
+    holds?: { blocker: string; reason: string }[];
+  }[];
   needsHuman: {
     ticketRef: string;
     reason: NeedsHumanReason;
@@ -113,7 +120,7 @@ export const repoStatus = (input: {
   }
   status.waitingOnBlockers = (input.heldTickets ?? [])
     .filter((held) => resolve(held.repoPath) === repoPath)
-    .map(({ ticketRef, blockers }) => ({ ticketRef, blockers }));
+    .map(({ ticketRef, blockers, holds }) => ({ ticketRef, blockers, ...(holds && { holds }) }));
   status.factoryBranches = [...branches].sort();
   return status;
 };
@@ -138,7 +145,14 @@ export const formatStatus = (s: RepoStatus): string => {
   );
   section(
     'Waiting on blockers',
-    s.waitingOnBlockers.map((w) => `${w.ticketRef} held by ${w.blockers.join(', ')}`),
+    s.waitingOnBlockers.map(
+      (w) =>
+        `${w.ticketRef} held by ${
+          w.holds
+            ? w.holds.map((h) => `${h.blocker} (${h.reason})`).join(', ')
+            : w.blockers.join(', ')
+        }`,
+    ),
   );
   section(
     'Waiting on the owner',

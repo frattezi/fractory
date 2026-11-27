@@ -12,8 +12,15 @@ import {
   rerunKey,
   runKey,
 } from '../contracts/run.ts';
-import type { TicketSource } from '../contracts/ticket.ts';
+import { TicketNotFoundError, type TicketRef, type TicketSource } from '../contracts/ticket.ts';
 import { type Gh, feedbackItems, summarizeChecks } from '../github/gh.ts';
+import {
+  type BlockerLookup,
+  blockersToRead,
+  describeHold,
+  ownerMustFix,
+  resolveDependencies,
+} from '../policy/dependencies.ts';
 import { assertOutboundAllowed } from '../policy/outbound.ts';
 import { type HostLoad, checkResources } from '../policy/resources.ts';
 import { mayAutoMerge } from '../policy/workflow.ts';
@@ -25,13 +32,7 @@ import type { RunRegistry } from '../registry/registry.ts';
 import { listRerunRequests } from '../registry/reruns.ts';
 import { pruneAutomationRuns } from './automation-prune.ts';
 import { acceptAutomationRequests } from './automations.ts';
-import {
-  type ConfiguredRepo,
-  createBlockerResolver,
-  describeHolding,
-  holdingBlockers,
-} from './blockers.ts';
-import { branchFor, byTicketOrder, queueRun } from './queue.ts';
+import { branchFor, queueRun } from './queue.ts';
 import { type Logger, type PidState, acquireLock } from './support.ts';
 
 export interface TickDeps {
@@ -61,7 +62,7 @@ export interface TickSummary {
   merged: string[];
   ticketsDone: string[];
   errors: number;
-  /** Held Tickets: Ready Tickets not queued this tick because a blocker is unresolved. */
+  /** Held Tickets: Ready Tickets not queued this tick because of their blockers. */
   heldTickets: NonNullable<HostState['heldTickets']>;
   /** Why queued Runs were held back this tick by the resource limits. */
   held?: string;
@@ -107,6 +108,8 @@ const prNumberOf = (runs: RunRecord[]): number | undefined => {
   const n = url?.match(/\/pull\/(\d+)/)?.[1];
   return n ? Number(n) : undefined;
 };
+/** Blockers read per repo per tick, at most: a runaway graph holds the rest as unreadable. */
+const MAX_BLOCKER_READS = 100;
 const message = (error: unknown): string =>
   error instanceof Error ? error.message : String(error);
 
@@ -144,43 +147,6 @@ export const tick = async (deps: TickDeps): Promise<TickSummary> => {
 
   const repoConfigs = new Map<string, RepoConfig>();
   const sources = new Map<string, TicketSource>();
-
-  /** Every configured repo, read once per tick; one whose config cannot be read owns nothing. */
-  let configuredRepos: Promise<ConfiguredRepo[]> | undefined;
-  const allRepos = (): Promise<ConfiguredRepo[]> => {
-    configuredRepos ??= (async () => {
-      const repos: ConfiguredRepo[] = [];
-      for (const repoPath of factory.repos) {
-        let config = repoConfigs.get(repoPath);
-        if (!config) {
-          try {
-            config = await deps.loadRepoConfig(repoPath);
-            repoConfigs.set(repoPath, config);
-          } catch (error) {
-            log.warn(
-              `could not read the config of ${repoPath} to resolve blockers: ${message(error)}`,
-            );
-            continue;
-          }
-        }
-        repos.push({ repoPath, config });
-      }
-      return repos;
-    })();
-    return configuredRepos;
-  };
-  const resolveBlocker = createBlockerResolver({
-    repos: allRepos,
-    sourceFor: ({ repoPath, config }) => {
-      let source = sources.get(repoPath);
-      if (!source) {
-        source = deps.createTicketSource(config.ticketSource, config.mode);
-        sources.set(repoPath, source);
-      }
-      return source;
-    },
-    onReadError: (ref, error) => log.warn(`could not read blocker ${ref}: ${message(error)}`),
-  });
 
   /** Follow-up Runs reuse the branch of the Ticket's latest Run so the PR branch is continued. */
   const queueFollowUp = async (
@@ -509,50 +475,96 @@ export const tick = async (deps: TickDeps): Promise<TickSummary> => {
     }
   };
 
+  /**
+   * Reads the blockers of the Ready Tickets that are not Ready themselves, and theirs in turn
+   * while they are not done, so a cycle through Tickets in progress is seen too. Only blockers in
+   * this repository are read: one in another repository holds its Ticket without a read.
+   */
+  const readBlockers = async (
+    ready: TicketRef[],
+    tickets: Parameters<typeof blockersToRead>[0],
+    config: RepoConfig,
+    source: TicketSource,
+  ): Promise<Map<TicketRef, BlockerLookup>> => {
+    const lookups = new Map<TicketRef, BlockerLookup>();
+    let frontier = blockersToRead(tickets, config, new Set(ready));
+    while (frontier.length > 0 && lookups.size < MAX_BLOCKER_READS) {
+      for (const ref of frontier.slice(0, MAX_BLOCKER_READS - lookups.size)) {
+        try {
+          lookups.set(ref, { kind: 'found', ticket: await source.get(ref) });
+        } catch (error) {
+          if (error instanceof TicketNotFoundError) {
+            lookups.set(ref, { kind: 'missing' });
+          } else {
+            // A failed read proves nothing: the blocker is not known to be done, so it holds.
+            log.warn(`could not read blocker ${ref}: ${message(error)}`);
+            lookups.set(ref, { kind: 'unreadable' });
+          }
+        }
+      }
+      const found = [...lookups.values()].flatMap((l) => (l.kind === 'found' ? [l.ticket] : []));
+      frontier = blockersToRead(found, config, new Set([...ready, ...lookups.keys()]));
+    }
+    return lookups;
+  };
+
+  /** Acts on the verdicts of `resolveDependencies`; it decides nothing about dependencies. */
   const queueReadyTickets = async (
     repoPath: string,
     config: RepoConfig,
     source: TicketSource,
   ): Promise<void> => {
-    // Queue in Ticket order, not tracker order: GitHub lists newest first.
-    const ready = [...(await source.listReady())].sort(byTicketOrder);
-    for (const ticket of ready) {
+    const ready = await source.listReady();
+    const byRef = new Map(ready.map((t) => [t.ref, t]));
+    const blockers = await readBlockers([...byRef.keys()], ready, config, source);
+    const verdicts = resolveDependencies({
+      ready,
+      blockers,
+      runs: await registry.list(),
+      config,
+    });
+    for (const verdict of verdicts) {
+      const ticket = byRef.get(verdict.ref);
+      if (!ticket) continue;
       try {
-        // A Ticket still marked Ready may already have a Run (e.g. `fractory run`): never a second.
-        const active = (await registry.list()).find(
-          (r) => r.ticketRef === ticket.ref && (r.status === 'queued' || r.status === 'running'),
-        );
-        if (active) {
-          log.info(
-            `${ticket.ref} already has ${active.status} Run ${active.id}; not queueing another`,
-          );
-          await source.setStatus(ticket.ref, 'in_progress');
-          continue;
+        switch (verdict.kind) {
+          case 'active':
+            // A Ticket still marked Ready may already have a Run (e.g. `fractory run`).
+            log.info(
+              `${ticket.ref} already has ${verdict.run.status} Run ${verdict.run.id}; not queueing another`,
+            );
+            await source.setStatus(ticket.ref, 'in_progress');
+            break;
+          case 'hold': {
+            // A Held Ticket stays Ready and untouched in the tracker; a later tick starts it.
+            summary.heldTickets.push({
+              repoPath,
+              ticketRef: ticket.ref,
+              blockers: verdict.holds.map((h) => h.blocker),
+              holds: verdict.holds.map((h) => ({ blocker: h.blocker, reason: describeHold(h) })),
+            });
+            const text = `holding ${ticket.ref}: waiting on ${verdict.holds.map((h) => `${h.blocker} (${describeHold(h)})`).join(', ')}`;
+            if (verdict.holds.some(ownerMustFix)) log.warn(text);
+            else log.info(text);
+            break;
+          }
+          case 'start': {
+            const branch = branchFor(ticket.ref, ticket.title, config.mode);
+            const { record, created } = await queueRun(deps, {
+              ticketRef: ticket.ref,
+              repoPath,
+              trigger: { kind: 'ticket-ready' },
+              branch,
+              mode: config.mode,
+              flow: config.flow,
+            });
+            if (!created) break;
+            summary.queued.push(record.id);
+            log.info(`queued ticket-ready Run ${record.id} for ${ticket.ref}`);
+            await source.setStatus(ticket.ref, 'in_progress');
+            break;
+          }
         }
-        // A Held Ticket stays Ready and untouched in the tracker; a later tick starts it.
-        const holding = await holdingBlockers(ticket, resolveBlocker);
-        if (holding.length > 0) {
-          summary.heldTickets.push({
-            repoPath,
-            ticketRef: ticket.ref,
-            blockers: holding.map((h) => h.blocker),
-          });
-          log.info(`holding ${ticket.ref}: waiting on blockers ${describeHolding(holding)}`);
-          continue;
-        }
-        const branch = branchFor(ticket.ref, ticket.title, config.mode);
-        const { record, created } = await queueRun(deps, {
-          ticketRef: ticket.ref,
-          repoPath,
-          trigger: { kind: 'ticket-ready' },
-          branch,
-          mode: config.mode,
-          flow: config.flow,
-        });
-        if (!created) continue;
-        summary.queued.push(record.id);
-        log.info(`queued ticket-ready Run ${record.id} for ${ticket.ref}`);
-        await source.setStatus(ticket.ref, 'in_progress');
       } catch (error) {
         fail(`ready ticket ${ticket.ref}`, error);
       }
