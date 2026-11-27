@@ -15,6 +15,10 @@ Read [GLOSSARY.md](GLOSSARY.md) for vocabulary, [docs/adr/](docs/adr/) for decis
 ## Rules
 
 - No Token Architecture: anything with a right answer is code with a test. Prompts route and phrase.
+- A question or decision an agent puts to the owner travels as an **Agent Surface**: a description
+  in [A2UI](https://a2ui.org), written to the Run's output for Fractory Manager to render. Validate
+  it with `zod` and pin its version like any other contract. A Run never paints a screen, and a
+  structured ask never becomes prose in a log or a private JSON shape of its own.
 - Contracts in `src/contracts/` are shared by every part. Change them in their own commit and
   update every caller.
 - External calls go through small injected functions so tests can replace them.
