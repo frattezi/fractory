@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, readdir, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
@@ -6,6 +6,7 @@ import { type CliEnv, main } from '../src/cli.ts';
 import { ResourceLimitsSchema } from '../src/contracts/factory-config.ts';
 import type { HostState } from '../src/contracts/host-state.ts';
 import { type LimitsReaders, formatLimits, readLimits } from '../src/limits/limits.ts';
+import { LIMIT_RANGES, nodeConfigFiles, setLimits } from '../src/limits/set.ts';
 import { RunRegistry } from '../src/registry/registry.ts';
 import { FakeGh, FakeSource, makeRun, memoryLogger } from './trigger-helpers.ts';
 
@@ -215,6 +216,7 @@ describe('fractory limits', () => {
       makeLogger: () => memoryLogger(),
       now: () => now,
       newId: () => 'x',
+      machine: () => ({ cores: 8, memoryGb: 16 }),
     };
     const registry = new RunRegistry(registryDir);
     await registry.write(makeRun({ id: 'a', status: 'running', pid: 1 }));
@@ -240,6 +242,197 @@ describe('fractory limits', () => {
 
   it('refuses a subcommand it does not know', async () => {
     const { env } = await setup();
-    expect(await main(['limits', 'set', 'cpusPerRun=2'], env)).not.toBe(0);
+    expect(await main(['limits', 'bogus'], env)).not.toBe(0);
+  });
+
+  it('sets limits through the CLI and prints what changed', async () => {
+    const { env, out } = await setup();
+    expect(await main(['limits', 'set', 'cpusPerRun=2', 'maxConcurrentRuns=4'], env)).toBe(0);
+    expect(out[0]).toContain('cpusPerRun: 4 -> 2');
+    expect(out[0]).toContain('maxConcurrentRuns: 2 -> 4');
+    const written = JSON.parse(await readFile(env.factoryConfigPath, 'utf8'));
+    expect(written).toMatchObject({ maxConcurrentRuns: 4, resources: { cpusPerRun: 2 } });
+    out.length = 0;
+    expect(await main(['limits', 'set', 'maxConcurrentRuns=1', '--json'], env)).toBe(0);
+    expect(JSON.parse(out[0] as string)).toEqual({
+      changes: [{ key: 'maxConcurrentRuns', from: 4, to: 1 }],
+    });
+  });
+
+  it('exits non-zero and writes nothing when the CLI is asked for an out-of-range value', async () => {
+    const { env } = await setup();
+    const before = await readFile(env.factoryConfigPath, 'utf8');
+    expect(await main(['limits', 'set', 'cpusPerRun=32'], env)).not.toBe(0);
+    expect(await readFile(env.factoryConfigPath, 'utf8')).toBe(before);
+  });
+});
+
+describe('setLimits', () => {
+  const machine = { cores: 8, memoryGb: 16 };
+  const original = `${JSON.stringify({ repos: ['/r'], maxConcurrentRuns: 2, resources: { cpusPerRun: 4 } }, null, 2)}\n`;
+
+  const setup = async (text: string | null = original) => {
+    const root = await mkdtemp(join(tmpdir(), 'fractory-limits-set-'));
+    const path = join(root, 'config.json');
+    if (text !== null) await writeFile(path, text);
+    await writeFile(`${path}.bak`, 'the backup');
+    const read = async () => readFile(path, 'utf8');
+    return { root, path, read };
+  };
+
+  it('refuses a value outside its range, with the range in the message, and writes nothing', async () => {
+    const { path, read } = await setup();
+    await expect(setLimits(['cpusPerRun=32'], { path, machine })).rejects.toThrow(
+      'cpusPerRun=32 is outside its range 0.5..8 (maximum: the core count, 8)',
+    );
+    await expect(setLimits(['maxLoadPerCore=0'], { path, machine })).rejects.toThrow(
+      /range 0\.1\.\.2 .*Nothing was written/,
+    );
+    await expect(setLimits(['maxConcurrentRuns=1.5'], { path, machine })).rejects.toThrow(
+      /not a whole number; its range is 1\.\.2, a whole number/,
+    );
+    await expect(setLimits(['minHostMemoryFreeGb=64'], { path, machine })).rejects.toThrow(
+      "range 0..16 (maximum: the host's total memory, 16 GB)",
+    );
+    expect(await read()).toBe(original);
+  });
+
+  it('never clamps: an out-of-range request fails rather than being lowered', async () => {
+    const { path, read } = await setup();
+    await expect(setLimits(['maxConcurrentRuns=32'], { path, machine })).rejects.toThrow(
+      'maxConcurrentRuns=32 is outside its range 1..2, a whole number (maximum: 8 cores / cpusPerRun 4)',
+    );
+    expect(JSON.parse(await read()).maxConcurrentRuns).toBe(2);
+  });
+
+  it('derives the maximum from the injected core count', async () => {
+    const { path, read } = await setup();
+    await expect(
+      setLimits(['cpusPerRun=12'], { path, machine: { cores: 8, memoryGb: 16 } }),
+    ).rejects.toThrow('range 0.5..8');
+    await setLimits(['cpusPerRun=12', 'maxConcurrentRuns=1'], {
+      path,
+      machine: { cores: 16, memoryGb: 16 },
+    });
+    expect(JSON.parse(await read()).resources.cpusPerRun).toBe(12);
+
+    const ctx = (cores: number, cpusPerRun: number) => ({
+      machine: { cores, memoryGb: 16 },
+      config: { ...factory, resources: { ...limits, cpusPerRun } } as never,
+    });
+    expect(LIMIT_RANGES.maxConcurrentRuns.max(ctx(8, 4))?.value).toBe(2);
+    expect(LIMIT_RANGES.maxConcurrentRuns.max(ctx(32, 4))?.value).toBe(8);
+    expect(LIMIT_RANGES.maxConcurrentRuns.max(ctx(10, 3))?.value).toBe(3);
+    expect(LIMIT_RANGES.cpusPerRun.max(ctx(6, 4))?.value).toBe(6);
+  });
+
+  it('checks maxConcurrentRuns against the cpusPerRun set in the same call', async () => {
+    const { path, read } = await setup();
+    await setLimits(['cpusPerRun=2', 'maxConcurrentRuns=4'], { path, machine });
+    expect(JSON.parse(await read())).toMatchObject({
+      maxConcurrentRuns: 4,
+      resources: { cpusPerRun: 2 },
+    });
+    // Raising cpusPerRun alone would leave maxConcurrentRuns 4 above 8 / 4 = 2.
+    await expect(setLimits(['cpusPerRun=4'], { path, machine })).rejects.toThrow(
+      /maxConcurrentRuns=4 is outside its range 1\.\.2, a whole number .*set it in the same call/,
+    );
+  });
+
+  it('refuses when the core count could not be read, rather than guessing', async () => {
+    const { path, read } = await setup();
+    await expect(
+      setLimits(['cpusPerRun=2'], { path, machine: { cores: 0, memoryGb: 16 } }),
+    ).rejects.toThrow('could not be taken');
+    expect(await read()).toBe(original);
+  });
+
+  it('writes several keys together or not at all', async () => {
+    const { path, read } = await setup();
+    await expect(
+      setLimits(['maxLoadPerCore=1', 'cpusPerRun=32', 'maxConcurrentRuns=2'], { path, machine }),
+    ).rejects.toThrow('cpusPerRun=32');
+    expect(await read()).toBe(original);
+
+    const changes = await setLimits(['maxLoadPerCore=1', 'minDockerMemoryFreeGb=3'], {
+      path,
+      machine,
+    });
+    expect(changes).toEqual([
+      { key: 'maxLoadPerCore', from: 0.75, to: 1 },
+      { key: 'minDockerMemoryFreeGb', from: 1, to: 3 },
+    ]);
+    const written = JSON.parse(await read());
+    expect(written).toEqual({
+      repos: ['/r'],
+      maxConcurrentRuns: 2,
+      resources: { cpusPerRun: 4, maxLoadPerCore: 1, minDockerMemoryFreeGb: 3 },
+    });
+  });
+
+  it('leaves the original intact and no temporary file when the write fails', async () => {
+    const { root, path, read } = await setup();
+    const failingRename = {
+      ...nodeConfigFiles,
+      rename: async () => Promise.reject(new Error('disk full')),
+    };
+    await expect(
+      setLimits(['cpusPerRun=2'], { path, machine, files: failingRename }),
+    ).rejects.toThrow('Could not write');
+    expect(await read()).toBe(original);
+    const failingWrite = {
+      ...nodeConfigFiles,
+      write: async () => Promise.reject(new Error('EACCES')),
+    };
+    await expect(
+      setLimits(['cpusPerRun=2'], { path, machine, files: failingWrite }),
+    ).rejects.toThrow('The original is unchanged');
+    expect(await read()).toBe(original);
+    expect((await readdir(root)).sort()).toEqual(['config.json', 'config.json.bak']);
+  });
+
+  it('keeps the .bak beside the config', async () => {
+    const { root, path } = await setup();
+    await setLimits(['cpusPerRun=2'], { path, machine });
+    expect(await readFile(`${path}.bak`, 'utf8')).toBe('the backup');
+    expect((await readdir(root)).sort()).toEqual(['config.json', 'config.json.bak']);
+  });
+
+  it('creates the config when there is none, without writing the defaults into it', async () => {
+    const { path, read } = await setup(null);
+    await setLimits(['maxConcurrentRuns=1'], { path, machine });
+    expect(JSON.parse(await read())).toEqual({ maxConcurrentRuns: 1 });
+  });
+
+  it('refuses an unknown key, a repeated key or a non-number', async () => {
+    const { path, read } = await setup();
+    await expect(setLimits(['cores=2'], { path, machine })).rejects.toThrow(
+      'Unknown limit "cores"',
+    );
+    await expect(setLimits(['cpusPerRun=2', 'cpusPerRun=3'], { path, machine })).rejects.toThrow(
+      'more than once',
+    );
+    await expect(setLimits(['cpusPerRun=lots'], { path, machine })).rejects.toThrow(
+      'needs a number',
+    );
+    await expect(setLimits([], { path, machine })).rejects.toThrow('Usage');
+    expect(await read()).toBe(original);
+  });
+
+  it('refuses a Host Limit while Host Limits are off, without turning them on', async () => {
+    const off = `${JSON.stringify({ resources: false })}\n`;
+    const { path, read } = await setup(off);
+    await expect(setLimits(['cpusPerRun=2'], { path, machine })).rejects.toThrow(
+      'Host Limits are off',
+    );
+    expect(await read()).toBe(off);
+    await setLimits(['maxConcurrentRuns=8'], { path, machine });
+    expect(JSON.parse(await read())).toEqual({ resources: false, maxConcurrentRuns: 8 });
+  });
+
+  it('refuses to overwrite a config that does not parse', async () => {
+    const { path, read } = await setup('{ not json');
+    await expect(setLimits(['cpusPerRun=2'], { path, machine })).rejects.toThrow('not valid JSON');
+    expect(await read()).toBe('{ not json');
   });
 });

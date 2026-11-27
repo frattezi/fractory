@@ -63,6 +63,7 @@ const setup = async () => {
     makeLogger: () => memoryLogger(),
     now: () => new Date('2026-06-01T00:00:00.000Z'),
     newId: () => 'manual-1',
+    machine: () => ({ cores: 8, memoryGb: 16 }),
   };
   return { root, repo, env, out, source, launchctlCalls, registry: new RunRegistry(registryDir) };
 };

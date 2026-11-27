@@ -2,7 +2,7 @@
 import { execFile } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { readFile, realpath } from 'node:fs/promises';
-import { homedir } from 'node:os';
+import { cpus, homedir, totalmem } from 'node:os';
 import { join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import {
@@ -34,6 +34,7 @@ import { createBranchTip } from './github/branch.ts';
 import { type Exec, defaultExec } from './github/exec.ts';
 import { type Gh, createGh } from './github/gh.ts';
 import { formatLimits, readLimits } from './limits/limits.ts';
+import { type Machine, formatLimitChanges, setLimits } from './limits/set.ts';
 import { type InitOptions, initRepo } from './package/init.ts';
 import { installSkills } from './package/install.ts';
 import { readHostLoad } from './policy/resources.ts';
@@ -82,6 +83,8 @@ export interface CliEnv {
   makeLogger: (factory: FactoryConfig) => Logger;
   now: () => Date;
   newId: () => string;
+  /** The core count and total memory that derive the maximum of some limits. */
+  machine: () => Machine;
 }
 
 const realLaunchctl: Launchctl = (args) =>
@@ -114,6 +117,10 @@ export const defaultEnv = (): CliEnv => {
     makeLogger: (factory) => createFileLogger(join(factory.logDir, 'tick.log')),
     now: () => new Date(),
     newId: () => randomUUID(),
+    machine: () => ({
+      cores: cpus().length,
+      memoryGb: Math.floor((totalmem() / 1024 ** 3) * 10) / 10,
+    }),
   };
 };
 
@@ -163,6 +170,7 @@ const HELP = `Usage: fractory <command>
   automation-exec <automationId> <runId>
   status [repoPath] [--json]
   limits [--json]
+  limits set <key>=<value>... [--json]
   babysit [repoPath] [--ticket <ref>]... [--poll <seconds>] [--timeout-min <minutes>]
   config show [repoPath]
   rebuild [repoPath...]
@@ -539,9 +547,20 @@ const commands: Record<string, (args: CliArgs, env: CliEnv) => Promise<void>> = 
 
   /** Read-only: each Host Limit beside the current reading it is checked against. */
   async limits(args, env) {
-    if (args.positionals.length > 0) {
-      throw new Error(`Unknown limits subcommand: ${args.positionals[0]}`);
+    const [sub, ...pairs] = args.positionals;
+    if (sub === 'set') {
+      const changes = await setLimits(pairs, {
+        path: env.factoryConfigPath,
+        machine: env.machine(),
+      });
+      env.out(
+        args.flags.json === true
+          ? JSON.stringify({ changes }, null, 2)
+          : formatLimitChanges(changes),
+      );
+      return;
     }
+    if (sub !== undefined) throw new Error(`Unknown limits subcommand: ${sub}`);
     const factory = await loadFactory(env);
     const report = await readLimits(
       {
