@@ -32,6 +32,7 @@ import { type TicketRef, TicketRefSchema, type TicketSource } from './contracts/
 import { createBranchTip } from './github/branch.ts';
 import { type Exec, defaultExec } from './github/exec.ts';
 import { type Gh, createGh } from './github/gh.ts';
+import { formatLimits, readLimits } from './limits/limits.ts';
 import { type InitOptions, initRepo } from './package/init.ts';
 import { installSkills } from './package/install.ts';
 import { readHostLoad } from './policy/resources.ts';
@@ -154,6 +155,7 @@ const HELP = `Usage: fractory <command>
   automations [--json]
   automation-exec <automationId> <runId>
   status [repoPath] [--json]
+  limits [--json]
   babysit [repoPath] [--ticket <ref>]... [--poll <seconds>] [--timeout-min <minutes>]
   config show [repoPath]
   rebuild [repoPath...]
@@ -490,6 +492,35 @@ const commands: Record<string, (args: CliArgs, env: CliEnv) => Promise<void>> = 
       args.flags.json === true
         ? JSON.stringify({ ...status, host: host ?? null }, null, 2)
         : `${formatStatus(status)}\n${formatHost(host, env.now())}`,
+    );
+  },
+
+  /** Read-only: each Host Limit beside the current reading it is checked against. */
+  async limits(args, env) {
+    if (args.positionals.length > 0) {
+      throw new Error(`Unknown limits subcommand: ${args.positionals[0]}`);
+    }
+    const factory = await loadFactory(env);
+    const report = await readLimits(
+      {
+        hostLoad: () =>
+          readHostLoad({
+            sysctl: (name) => env.exec('sysctl', ['-n', name]),
+            docker: (dockerArgs) => env.exec('docker', dockerArgs),
+          }),
+        hostState: () => readHostState(factory.hostStatePath),
+        running: async () => {
+          const [runs, automationRuns] = await Promise.all([
+            new RunRegistry(factory.registryDir).list(),
+            new AutomationStore(factory.automationsDir).listAllRuns(),
+          ]);
+          return [...runs, ...automationRuns].filter((r) => r.status === 'running').length;
+        },
+      },
+      factory,
+    );
+    env.out(
+      args.flags.json === true ? JSON.stringify(report, null, 2) : formatLimits(report, env.now()),
     );
   },
 
