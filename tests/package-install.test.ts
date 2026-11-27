@@ -53,7 +53,14 @@ describe('installSkills', () => {
       .filter((e) => e.isDirectory())
       .map((e) => e.name);
     expect(names).toEqual(
-      expect.arrayContaining(['grill-with-docs', 'to-spec', 'to-tickets', 'research', 'handoff']),
+      expect.arrayContaining([
+        'grill-with-docs',
+        'to-spec',
+        'to-tickets',
+        'research',
+        'handoff',
+        'orchestrator',
+      ]),
     );
     for (const name of names) {
       const text = await readFile(join(DEFAULT_SKILLS_SOURCE, name, 'SKILL.md'), 'utf8');
