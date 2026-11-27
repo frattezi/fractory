@@ -1,7 +1,7 @@
 #!/usr/bin/env -S npx tsx
 import { execFile } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { readFile, realpath } from 'node:fs/promises';
+import { access, readFile, realpath } from 'node:fs/promises';
 import { cpus, homedir, totalmem } from 'node:os';
 import { join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -54,7 +54,13 @@ import {
   tokenReport,
 } from './tokens/tokens.ts';
 import { newestFirst } from './trigger/automation-prune.ts';
-import { type Launchctl, installLaunchd, resolveBin, uninstallLaunchd } from './trigger/launchd.ts';
+import {
+  type Launchctl,
+  installLaunchd,
+  launchdLoaded,
+  resolveBin,
+  uninstallLaunchd,
+} from './trigger/launchd.ts';
 import { branchFor, queueRun } from './trigger/queue.ts';
 import { type Logger, checkPid, createFileLogger } from './trigger/support.ts';
 import { tick } from './trigger/tick.ts';
@@ -498,9 +504,25 @@ const commands: Record<string, (args: CliArgs, env: CliEnv) => Promise<void>> = 
     const findings = await doctor(
       {
         repos: factory.repos,
+        factoryConfigPath: env.factoryConfigPath,
+        staleWorktreeDays: factory.staleWorktreeDays,
+        now: env.now,
         loadRepoConfig,
         listRuns: () => registry.list(),
         listAnswerRequests: () => listAnswerRequests(factory.registryDir),
+        readHostState: () => readHostState(factory.hostStatePath),
+        ticketSource: (config) => {
+          // Reads only: doctor never moves a Ticket or comments on one.
+          const source = env.createTicketSource(config.ticketSource, config.mode);
+          return { listReady: () => source.listReady(), get: (ref) => source.get(ref) };
+        },
+        git: (repo, gitArgs) => env.exec('git', ['-C', repo, ...gitArgs]),
+        pathExists: (path) =>
+          access(path).then(
+            () => true,
+            () => false,
+          ),
+        launchdLoaded: () => launchdLoaded(env.launchctl, env.uid),
       },
       args.positionals.map((p) => resolve(env.cwd, p)),
     );
