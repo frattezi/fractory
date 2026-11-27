@@ -32,7 +32,11 @@ export interface DependencyInput {
 
 /** Why one blocker holds a Ticket. */
 export type HoldReason =
-  | { kind: 'not-done'; status: TicketStatus; run?: RunStatus }
+  /**
+   * `pr` is the latest Run's pull request when it is no longer open: a done Run whose pull request
+   * merged or closed is not a branch to build on.
+   */
+  | { kind: 'not-done'; status: TicketStatus; run?: RunStatus; pr?: 'MERGED' | 'CLOSED' }
   /** The Ticket and this blocker sit in one cycle; `cycle` lists every Ticket in it. */
   | { kind: 'cycle'; cycle: TicketRef[] }
   /** The blocker sits in a cycle, or depends on a Ticket that does. */
@@ -50,7 +54,11 @@ export interface Hold {
 }
 
 export type Verdict =
-  | { kind: 'start'; ref: TicketRef; baseBranch: string }
+  /**
+   * `stackedOn` names the one blocker whose branch `baseBranch` is; absent, `baseBranch` is the
+   * repository's base branch.
+   */
+  | { kind: 'start'; ref: TicketRef; baseBranch: string; stackedOn?: TicketRef }
   | { kind: 'hold'; ref: TicketRef; holds: Hold[] }
   /** Already has a queued or running Run: never a second one. */
   | { kind: 'active'; ref: TicketRef; run: RunRecord };
@@ -130,8 +138,9 @@ const components = (graph: ReadonlyMap<TicketRef, readonly TicketRef[]>) => {
 };
 
 /**
- * One verdict per Ready Ticket. A Ticket starts on the repository's base branch only when every
- * blocker is done; it is held while any blocker is not done, when it sits in a dependency cycle or
+ * One verdict per Ready Ticket. A Ticket starts on the repository's base branch when every
+ * blocker is done, and on its blocker's branch when it has exactly one blocker, not done, whose
+ * latest Run is done with its pull request open; it is held while any blocker is not done, when it sits in a dependency cycle or
  * depends on a Ticket that does, and when a blocker is in another repository, does not exist,
  * could not be read or is not a Ticket ref. Verdicts come blockers first, ties in Ticket order.
  */
@@ -199,7 +208,13 @@ export const resolveDependencies = (input: DependencyInput): Verdict[] => {
       if (found) {
         if (found.status === 'done') continue;
         const run = latestRun(runs, blocker);
-        hold({ kind: 'not-done', status: found.status, ...(run && { run: run.status }) });
+        const pr = run?.prState === 'MERGED' || run?.prState === 'CLOSED' ? run.prState : undefined;
+        hold({
+          kind: 'not-done',
+          status: found.status,
+          ...(run && { run: run.status }),
+          ...(pr && { pr }),
+        });
         continue;
       }
       hold({ kind: input.blockers.get(blocker)?.kind === 'missing' ? 'missing' : 'unreadable' });
@@ -213,9 +228,30 @@ export const resolveDependencies = (input: DependencyInput): Verdict[] => {
     );
     if (active) return { kind: 'active', ref: ticket.ref, run: active };
     const holds = holdsOf(ticket);
-    return holds.length > 0
-      ? { kind: 'hold', ref: ticket.ref, holds }
-      : { kind: 'start', ref: ticket.ref, baseBranch: config.baseBranch };
+    if (holds.length === 0)
+      return { kind: 'start', ref: ticket.ref, baseBranch: config.baseBranch };
+    const stack = stackBase(ticket, holds);
+    return stack
+      ? { kind: 'start', ref: ticket.ref, baseBranch: stack.branch, stackedOn: stack.blocker }
+      : { kind: 'hold', ref: ticket.ref, holds };
+  };
+
+  /**
+   * A Ticket with exactly one blocker, held only because that blocker is not done, stacks on the
+   * blocker's branch once the blocker's latest Run is done and its pull request still open. Two or
+   * more blockers never stack: a branch has one parent.
+   */
+  const stackBase = (
+    ticket: DependencyTicket,
+    holds: readonly Hold[],
+  ): { blocker: TicketRef; branch: string } | undefined => {
+    const [blocker, ...others] = ticket.blockedBy ?? [];
+    const [hold, ...otherHolds] = holds;
+    if (blocker === undefined || others.length > 0 || !hold || otherHolds.length > 0) return;
+    if (hold.blocker !== blocker || hold.reason.kind !== 'not-done') return;
+    if (hold.reason.run !== 'done' || hold.reason.pr !== undefined) return;
+    const run = latestRun(runs, blocker);
+    return run && { blocker, branch: run.branch };
   };
 
   // Blockers first: Kahn's order over the Ready Tickets, the lowest Ticket first among the free.
@@ -253,7 +289,7 @@ export const ownerMustFix = ({ reason }: Hold): boolean =>
 export const describeHold = ({ reason }: Hold): string => {
   switch (reason.kind) {
     case 'not-done':
-      return `not done: ${STATUS_TEXT[reason.status]}, ${reason.run ? `its latest Run ${reason.run}` : 'no Run yet'}`;
+      return `not done: ${STATUS_TEXT[reason.status]}, ${reason.run ? `its latest Run ${reason.run}` : 'no Run yet'}${reason.pr ? `, its pull request ${reason.pr.toLowerCase()}` : ''}`;
     case 'cycle':
       return reason.cycle.length === 1
         ? 'the Ticket blocks itself'

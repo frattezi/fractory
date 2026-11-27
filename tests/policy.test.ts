@@ -220,7 +220,10 @@ describe('resolveDependencies', () => {
   const brief = (verdicts: Verdict[]): string[] =>
     verdicts.map((v) => {
       const n = v.ref.replace('github:me/app', '');
-      if (v.kind === 'start') return `${n} start ${v.baseBranch}`;
+      if (v.kind === 'start') {
+        const on = v.stackedOn ? ` stacked on ${v.stackedOn.replace('github:me/app', '')}` : '';
+        return `${n} start ${v.baseBranch}${on}`;
+      }
       if (v.kind === 'active') return `${n} active`;
       return `${n} hold ${v.holds.map((h) => `${h.blocker.replace('github:me/app', '')}: ${describeHold(h)}`).join('; ')}`;
     });
@@ -250,14 +253,82 @@ describe('resolveDependencies', () => {
       expected: ['#2 start trunk', '#3 hold #2: not done: ready, no Run yet'],
     },
     {
-      name: 'a diamond waits for both sides',
+      name: 'a diamond stacks each side on its top and waits for both sides at its bottom',
       ready: [t(4, [2, 3]), t(3, [1]), t(2, [1])],
       blockers: [[1, found(t(1, [], 'in_review'))]],
       runs: [run(1, 'done')],
       expected: [
-        '#2 hold #1: not done: in review, its latest Run done',
-        '#3 hold #1: not done: in review, its latest Run done',
+        '#2 start fractory/1 stacked on #1',
+        '#3 start fractory/1 stacked on #1',
         '#4 hold #2: not done: ready, no Run yet; #3: not done: ready, no Run yet',
+      ],
+    },
+    {
+      name: "one blocker whose latest Run is done stacks on the blocker's branch",
+      ready: [t(3, [2]), t(2, [1])],
+      blockers: [[1, found(t(1, [], 'in_review'))]],
+      runs: [run(1, 'done')],
+      expected: ['#2 start fractory/1 stacked on #1', '#3 hold #2: not done: ready, no Run yet'],
+    },
+    {
+      name: 'one blocker whose latest Run is queued, running, failed or needs-human holds',
+      ready: [t(10, [1]), t(11, [2]), t(12, [3]), t(13, [4])],
+      blockers: [
+        [1, found(t(1, [], 'in_progress'))],
+        [2, found(t(2, [], 'in_progress'))],
+        [3, found(t(3, [], 'in_progress'))],
+        [4, found(t(4, [], 'in_progress'))],
+      ],
+      runs: [
+        // A follow-up Run on a done blocker makes its branch a moving base again.
+        run(1, 'done', '2026-01-01T00:00:00.000Z'),
+        run(1, 'queued', '2026-01-02T00:00:00.000Z'),
+        run(2, 'done', '2026-01-01T00:00:00.000Z'),
+        run(2, 'running', '2026-01-02T00:00:00.000Z'),
+        run(3, 'done', '2026-01-01T00:00:00.000Z'),
+        run(3, 'failed', '2026-01-02T00:00:00.000Z'),
+        run(4, 'needs-human'),
+      ],
+      expected: [
+        '#10 hold #1: not done: in progress, its latest Run queued',
+        '#11 hold #2: not done: in progress, its latest Run running',
+        '#12 hold #3: not done: in progress, its latest Run failed',
+        '#13 hold #4: not done: in progress, its latest Run needs-human',
+      ],
+    },
+    {
+      name: 'one blocker whose done Run has no open pull request any more holds',
+      ready: [t(10, [1]), t(11, [2])],
+      blockers: [
+        [1, found(t(1, [], 'in_review'))],
+        [2, found(t(2, [], 'in_review'))],
+      ],
+      runs: [
+        { ...run(1, 'done'), prState: 'MERGED' },
+        { ...run(2, 'done'), prState: 'CLOSED' },
+      ],
+      expected: [
+        '#10 hold #1: not done: in review, its latest Run done, its pull request merged',
+        '#11 hold #2: not done: in review, its latest Run done, its pull request closed',
+      ],
+    },
+    {
+      name: 'two blockers with done Runs are never stacked on',
+      ready: [t(5, [1, 2])],
+      blockers: [
+        [1, found(t(1, [], 'in_review'))],
+        [2, found(t(2, [], 'done'))],
+      ],
+      runs: [run(1, 'done'), run(2, 'done')],
+      expected: ['#5 hold #1: not done: in review, its latest Run done'],
+    },
+    {
+      name: 'one blocker beside a relation that cannot be read is not stacked on',
+      ready: [{ ...t(5, [1]), relationErrors: ['Blocked by: "soon" is not a Ticket ref'] }],
+      blockers: [[1, found(t(1, [], 'in_review'))]],
+      runs: [run(1, 'done')],
+      expected: [
+        '#5 hold Blocked by: "soon" is not a Ticket ref: relation could not be read; #1: not done: in review, its latest Run done',
       ],
     },
     {

@@ -47,7 +47,7 @@ A new Run the owner asks for on a Ticket whose latest Run failed or needed a hum
 _Avoid_: retry, restart
 
 **Blocker**:
-A Ticket another Ticket declares it depends on, written as a `Blocked by` line in the Relations section of its body. A blocker is satisfied once its Ticket is done in its own ticket source; until every blocker is satisfied, the Ticket is a Held Ticket and no Run starts on it.
+A Ticket another Ticket declares it depends on, written as a `Blocked by` line in the Relations section of its body. A blocker is satisfied once its Ticket is done in its own ticket source, and ready to build on once its latest Run is done with its pull request open. A Ticket with one blocker that is ready to build on starts as a Stack on it; otherwise, until every blocker is satisfied, the Ticket is a Held Ticket and no Run starts on it.
 _Avoid_: dependency, parent, prerequisite
 
 **Stack**:

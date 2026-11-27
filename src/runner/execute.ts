@@ -492,6 +492,10 @@ class Executor {
     const tracked = trackSessions(worktree, (id) => {
       sessionId = id;
     });
+    const stack =
+      record.baseBranch !== undefined && record.baseBranch !== config.baseBranch
+        ? { baseBranch: record.baseBranch, repoBaseBranch: config.baseBranch }
+        : undefined;
     let flowResult: unknown;
     try {
       flowResult = await flow({
@@ -505,7 +509,10 @@ class Executor {
         logPath: record.logPath,
         maxIterations: config.maxIterations,
         completionSignal: COMPLETION_SIGNAL,
-        buildPrompt,
+        // A stacked Run's prompt says where it stands, whatever the flow passes.
+        buildPrompt: stack
+          ? (input) => buildPrompt({ ...input, stack: input.stack ?? stack })
+          : buildPrompt,
         parseRunResult,
       });
     } catch (error) {

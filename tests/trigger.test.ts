@@ -210,6 +210,129 @@ describe('blockers hold a Ready Ticket', () => {
     expect(started).toEqual([1, 2, 3, 4].map((n) => `github:me/app#${n}`));
   });
 
+  /** The Runs as `<ticket number> on <base branch or the repository's>`, oldest first. */
+  const queuedOn = async (h: Awaited<ReturnType<typeof makeHarness>>) =>
+    (await h.registry.list())
+      .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
+      .map((r) => `${r.ticketRef.replace('github:me/app', '')} on ${r.baseBranch ?? 'base'}`);
+
+  it("stacks a Ticket with one blocker on that blocker's branch once its latest Run is done", async () => {
+    const h = await makeHarness();
+    await h.registry.write(
+      makeRun({ id: 'r4', ticketRef: 'github:me/app#4', branch: 'fractory/4-add-thing-4' }),
+    );
+    h.source.tickets.set('github:me/app#4', makeTicket(4, 'in_review'));
+    h.source.tickets.set('github:me/app#5', blocked(5, '#4'));
+    const summary = await tick(h.deps);
+
+    expect(summary.heldTickets).toEqual([]);
+    expect(summary.launched).toHaveLength(1);
+    const run = (await h.registry.list()).find((r) => r.ticketRef === 'github:me/app#5');
+    expect(run).toMatchObject({
+      branch: 'fractory/5-add-thing-5',
+      baseBranch: 'fractory/4-add-thing-4',
+      trigger: { kind: 'ticket-ready' },
+    });
+    expect(h.source.statusCalls).toEqual([['github:me/app#5', 'in_progress']]);
+    expect(h.log.lines).toContain(
+      `INFO queued ticket-ready Run ${run?.id} for github:me/app#5 on fractory/4-add-thing-4, the branch of github:me/app#4`,
+    );
+  });
+
+  for (const status of ['queued', 'running', 'failed', 'needs-human'] as const) {
+    it(`holds a Ticket whose one blocker's latest Run is ${status}`, async () => {
+      const h = await makeHarness();
+      await h.registry.write(
+        makeRun({
+          id: 'r4-done',
+          ticketRef: 'github:me/app#4',
+          createdAt: '2026-05-30T10:00:00.000Z',
+        }),
+      );
+      await h.registry.write(
+        makeRun({
+          id: 'r4-latest',
+          ticketRef: 'github:me/app#4',
+          trigger: { kind: 'ci-failed', prNumber: 7, headSha: 'sha1' },
+          status,
+          ...(status === 'running' && { pid: 4999 }),
+        }),
+      );
+      h.source.tickets.set('github:me/app#4', makeTicket(4, 'in_progress'));
+      h.source.tickets.set('github:me/app#5', blocked(5, '#4'));
+      const summary = await tick(h.deps);
+
+      expect((await h.registry.list()).filter((r) => r.ticketRef === 'github:me/app#5')).toEqual(
+        [],
+      );
+      expect(summary.heldTickets[0]?.holds).toEqual([
+        { blocker: 'github:me/app#4', reason: `not done: in progress, its latest Run ${status}` },
+      ]);
+      expect(h.source.statusCalls).not.toContainEqual(['github:me/app#5', 'in_progress']);
+    });
+  }
+
+  it('never stacks a Ticket with two blockers: it starts on the base branch once both are done', async () => {
+    const h = await makeHarness();
+    await h.registry.write(
+      makeRun({ id: 'r3', ticketRef: 'github:me/app#3', branch: 'fractory/3-add-thing-3' }),
+    );
+    await h.registry.write(
+      makeRun({ id: 'r4', ticketRef: 'github:me/app#4', branch: 'fractory/4-add-thing-4' }),
+    );
+    h.source.tickets.set('github:me/app#3', makeTicket(3, 'in_review'));
+    h.source.tickets.set('github:me/app#4', makeTicket(4, 'in_review'));
+    h.source.tickets.set('github:me/app#5', blocked(5, '#3', '#4'));
+    const first = await tick(h.deps);
+    expect(first.heldTickets[0]?.blockers).toEqual(['github:me/app#3', 'github:me/app#4']);
+    expect(first.queued).toEqual([]);
+
+    h.source.tickets.set('github:me/app#3', makeTicket(3, 'done'));
+    const second = await tick(h.deps);
+    expect(second.heldTickets[0]?.blockers).toEqual(['github:me/app#4']);
+    expect(second.queued).toEqual([]);
+
+    h.source.tickets.set('github:me/app#4', makeTicket(4, 'done'));
+    const third = await tick(h.deps);
+    expect(third.queued).toHaveLength(1);
+    const run = (await h.registry.list()).find((r) => r.ticketRef === 'github:me/app#5');
+    expect(run?.baseBranch).toBeUndefined();
+  });
+
+  it('stacks a chain created Ready together: each Run overlaps the last, built on its branch', async () => {
+    const h = await makeHarness();
+    // GitHub lists newest first: the chain arrives backwards.
+    for (const n of [4, 3, 2]) h.source.tickets.set(`github:me/app#${n}`, blocked(n, `#${n - 1}`));
+    h.source.tickets.set('github:me/app#1', makeTicket(1));
+
+    for (let step = 1; step <= 4; step++) {
+      const summary = await tick(h.deps);
+      expect(summary.queued).toHaveLength(1);
+      expect(heldRefs(summary)).toEqual(
+        [2, 3, 4].filter((n) => n > step).map((n) => `github:me/app#${n}`),
+      );
+      // Nothing is built on a Run that is still running.
+      const idle = await tick(h.deps);
+      expect(idle.queued).toEqual([]);
+      // The Run finishes and opens its pull request; its Ticket is in review, never done.
+      await h.registry.update(summary.queued[0] as string, { status: 'done' });
+    }
+
+    const runs = (await h.registry.list()).sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+    expect(await queuedOn(h)).toEqual([
+      '#1 on base',
+      '#2 on fractory/1-add-thing-1',
+      '#3 on fractory/2-add-thing-2',
+      '#4 on fractory/3-add-thing-3',
+    ]);
+    expect(runs.map((r) => r.branch)).toEqual(
+      [1, 2, 3, 4].map((n) => `fractory/${n}-add-thing-${n}`),
+    );
+    for (const n of [1, 2, 3]) {
+      expect(h.source.tickets.get(`github:me/app#${n}`)?.status).not.toBe('done');
+    }
+  });
+
   it('queues unblocked Tickets blockers first, whatever order the tracker lists them in', async () => {
     const h = await makeHarness({ maxConcurrentRuns: 5 });
     h.source.tickets.set('github:me/app#9', makeTicket(9));

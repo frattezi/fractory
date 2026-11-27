@@ -26,6 +26,20 @@ describe('buildPrompt', () => {
     expect(prompt.indexOf('Add a thing')).toBeLessThan(prompt.indexOf('<result>'));
   });
 
+  it('names the branch a stacked Run is built on, after the Ticket and before the contract', () => {
+    const prompt = buildPrompt({
+      rules: 'R',
+      ticket,
+      stack: { baseBranch: 'fractory/4-astro', repoBaseBranch: 'main' },
+    });
+    expect(prompt).toContain(
+      "This branch was started from `fractory/4-astro`, the branch of the Ticket this one is blocked by, not from `main`. That Ticket's work is already in the tree: build on it and do not re-implement it.",
+    );
+    expect(prompt.indexOf('Add a thing')).toBeLessThan(prompt.indexOf('## Built on'));
+    expect(prompt.indexOf('## Built on')).toBeLessThan(prompt.indexOf('<result>'));
+    expect(buildPrompt({ rules: 'R', ticket })).not.toContain('## Built on');
+  });
+
   it('adds the CI log tail for a ci-failed follow-up', () => {
     const log = `${'x'.repeat(30_000)}BOOM`;
     const prompt = buildPrompt({

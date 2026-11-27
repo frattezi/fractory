@@ -78,6 +78,21 @@ ${comment}
 </review-comment>`;
 };
 
+/** Where a stacked Run stands: built on its blocker's branch, not the repository's base branch. */
+export interface Stack {
+  /** The blocker's branch this Run's branch was started from. */
+  baseBranch: string;
+  /** The repository's base branch. */
+  repoBaseBranch: string;
+}
+
+const stackSection = ({
+  baseBranch,
+  repoBaseBranch,
+}: Stack): string => `## Built on \`${baseBranch}\`
+
+This branch was started from \`${baseBranch}\`, the branch of the Ticket this one is blocked by, not from \`${repoBaseBranch}\`. That Ticket's work is already in the tree: build on it and do not re-implement it. The pull request for this branch targets \`${baseBranch}\`, so it shows only this Ticket's commits.`;
+
 /** What the host process needs back, appended after the rules so it cannot be edited away. */
 const outputContract = `## How to finish
 
@@ -94,6 +109,8 @@ export const buildPrompt = (input: {
   rules: string;
   ticket: Ticket;
   followUp?: FollowUp | undefined;
+  /** Set for a Run stacked on its blocker's branch. */
+  stack?: Stack | undefined;
 }): string =>
   [
     input.rules.trim(),
@@ -102,6 +119,7 @@ export const buildPrompt = (input: {
 ${input.ticket.url}
 
 ${input.ticket.body}`,
+    input.stack ? stackSection(input.stack) : undefined,
     input.followUp ? followUpSection(input.followUp) : undefined,
     outputContract,
   ]
