@@ -21,6 +21,15 @@ export const TriggerSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('manual') }),
   /** The owner answered the `needs-human` question of Run `runId` (Spec 0005). */
   z.object({ kind: z.literal('answer'), runId: z.string().min(1) }),
+  /**
+   * The Run's base branch (`baseBranch`) moved from `fromSha` to `tipSha`: rebase the branch onto
+   * the new tip and push it, nothing else (Spec 0004).
+   */
+  z.object({
+    kind: z.literal('restack'),
+    fromSha: z.string().min(1),
+    tipSha: z.string().min(1),
+  }),
 ]);
 export type Trigger = z.infer<typeof TriggerSchema>;
 
@@ -107,6 +116,8 @@ export const runKey = (ticketRef: string, trigger: Trigger): string => {
       return `${ticketRef}:manual:${Date.now()}`;
     case 'answer':
       return answerKey(ticketRef, trigger.runId);
+    case 'restack':
+      return `${ticketRef}:restack:${trigger.tipSha}`;
   }
 };
 

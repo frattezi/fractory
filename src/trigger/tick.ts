@@ -80,7 +80,10 @@ export interface TickSummary {
   };
 }
 
-/** Launch priority: what the owner asked for, then follow-ups, then newly Ready Tickets. */
+/**
+ * Launch priority: what the owner asked for, then follow-ups and Restacks (a stale stack holds back
+ * everything above it), then newly Ready Tickets.
+ */
 const launchGroup = (run: RunRecord): number => {
   switch (run.trigger.kind) {
     case 'manual':
@@ -88,6 +91,7 @@ const launchGroup = (run: RunRecord): number => {
       return 0;
     case 'ci-failed':
     case 'review-comment':
+    case 'restack':
       return 1;
     case 'ticket-ready':
       return 2;
