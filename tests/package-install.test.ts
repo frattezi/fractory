@@ -61,6 +61,7 @@ describe('installSkills', () => {
         'research',
         'handoff',
         'orchestrator',
+        'reviewer',
       ]),
     );
     for (const name of names) {
