@@ -1,7 +1,7 @@
 #!/usr/bin/env -S npx tsx
 import { execFile } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { access, readFile, realpath } from 'node:fs/promises';
+import { access, readFile, realpath, stat } from 'node:fs/promises';
 import { cpus, homedir, totalmem } from 'node:os';
 import { join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -474,15 +474,27 @@ const commands: Record<string, (args: CliArgs, env: CliEnv) => Promise<void>> = 
     if (maxIterations && !/^[1-9]\d*$/.test(maxIterations)) {
       throw new Error('--max-iterations must be a positive integer');
     }
-    const config = await loadRepoConfig(repoPath);
     const factory = await loadFactory(env);
+    if (!factory.repos.some((r) => resolve(r) === repoPath)) {
+      throw new Error(`the factory does not know the repository ${repoPath}`);
+    }
+    const config = await loadRepoConfig(repoPath);
+    const agentCwd = cwd ? resolve(env.cwd, cwd) : repoPath;
+    if (
+      !(await stat(agentCwd).then(
+        (s) => s.isDirectory(),
+        () => false,
+      ))
+    ) {
+      throw new Error(`${agentCwd} is not a directory`);
+    }
     const output = await runAgent(
       {
         config,
         repoPath,
         // Absolute: Sandcastle resolves it against the process working directory, not the agent's.
         promptFile: resolve(env.cwd, promptFile),
-        cwd: cwd ? resolve(env.cwd, cwd) : repoPath,
+        cwd: agentCwd,
         ...(model && { model }),
         ...(name && { name }),
         ...(maxIterations && { maxIterations: Number(maxIterations) }),
