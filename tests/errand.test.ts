@@ -163,9 +163,32 @@ describe('fractory errand', () => {
   it('refuses an unreadable prompt file before touching the Keychain', async () => {
     const s = await setup({ mode: 'work' });
     const err = vi.spyOn(console, 'error').mockImplementation(() => {});
-    expect(
-      await main(['errand', '--repo', s.repo, '--prompt-file', 'missing.md'], s.env),
-    ).toBe(1);
+    expect(await main(['errand', '--repo', s.repo, '--prompt-file', 'missing.md'], s.env)).toBe(1);
+    expect(s.keychainReads).toEqual([]);
+    err.mockRestore();
+  });
+
+  it('defaults to one iteration and passes --max-iterations through', async () => {
+    const s = await setup({ mode: 'work', maxIterations: 7 });
+    await main(argv(s), s.env);
+    await main(argv(s, '--max-iterations', '4'), s.env);
+    expect(s.requests.map((r) => r.maxIterations)).toEqual([1, 4]);
+  });
+
+  it('returns output that is not JSON unaltered', async () => {
+    const s = await setup({ mode: 'work' });
+    await main(argv(s, '--json'), s.env);
+    expect(JSON.parse(s.out[0] ?? '').text).toBe('FINDINGS');
+  });
+
+  it('refuses an unknown repository and a --cwd that is not a directory, starting no agent', async () => {
+    const s = await setup({ mode: 'work' });
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+    expect(await main(argv({ ...s, repo: s.root }), s.env)).toBe(1);
+    expect(err.mock.calls[0]?.[0]).toContain('does not know the repository');
+    expect(await main(argv(s, '--cwd', join(s.root, 'prompt.md')), s.env)).toBe(1);
+    expect(err.mock.calls[1]?.[0]).toContain('is not a directory');
+    expect(s.requests).toEqual([]);
     expect(s.keychainReads).toEqual([]);
     err.mockRestore();
   });

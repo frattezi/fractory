@@ -63,7 +63,7 @@ export const runAgent = async (
     agent,
     promptFile: input.promptFile,
     sandbox: sandboxed ? deps.sandcastle.sandbox(config.sandboxImage, input.cpus) : undefined,
-    maxIterations: input.maxIterations ?? config.maxIterations,
+    maxIterations: input.maxIterations ?? 1,
     completionSignal: COMPLETION_SIGNAL,
     logPath: input.logPath,
     ...(input.name !== undefined && { name: input.name }),
