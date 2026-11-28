@@ -90,3 +90,19 @@ the installed binary.
 It reads Runs from `$FRACTORY_HOME/runs` (default `~/.fractory/runs`) and shares Agent Manager's
 config, sessions and tmux namespace, so run one of the two at a time, not both. Review comments
 on a Run are saved to `<id>.comments.json`; the next `tick` turns them into a follow-up Run.
+
+## Reviewer Bot Profile
+
+The Reviewer is a Bot Profile whose Specialization is the `reviewer` skill, shipped by
+`fractory install`. Create it once, after the skill is installed:
+
+```
+agent-manager bots create --name Reviewer --emoji 🔍 --color blue --tool claude \
+  --dir ~/Work/Bots/reviewer --specialization reviewer --memory reviewer
+```
+
+No model is set, so it follows the CLI's default. The directory is its own, outside any
+repository, so the manager binds its memory with a marker there. It reaches the
+repositories through the `reviewer` CLI, which must be installed on the host. The
+orchestrator Profile is `🤖`; `🔍` and blue read as distinct from it on the rail. If your
+`agent-manager` names the colour flag differently, check `agent-manager bots create --help`.
