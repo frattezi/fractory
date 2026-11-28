@@ -18,10 +18,14 @@ const setup = async (remotes = ORIGIN_IS_APP) => {
   const gh = new FakeGh();
   const calls: string[][] = [];
   const dirty = new Set<string>();
+  let stacked: { number: number }[] = [];
+  let editFails = false;
   const exec: Exec = async (_cmd, args) => {
     calls.push(args);
     if (args.includes('status')) return dirty.has(args[1] as string) ? ' M file.ts\n' : '';
     if (args.includes('remote')) return remotes;
+    if (args[0] === 'pr' && args[1] === 'list') return JSON.stringify(stacked);
+    if (args[0] === 'pr' && args[1] === 'edit' && editFails) throw new Error('boom');
     return '';
   };
   const now = new Date('2026-06-20T00:00:00.000Z');
@@ -43,7 +47,19 @@ const setup = async (remotes = ORIGIN_IS_APP) => {
     log: memoryLogger(),
   };
   const removals = () => calls.filter((a) => a.includes('remove'));
-  return { worktree, registry, gh, calls, dirty, deps, removals };
+  return {
+    worktree,
+    registry,
+    gh,
+    calls,
+    dirty,
+    deps,
+    removals,
+    stackOn: (prs: { number: number }[], fails = false) => {
+      stacked = prs;
+      editFails = fails;
+    },
+  };
 };
 
 describe('cleanup', () => {
@@ -71,6 +87,28 @@ describe('cleanup', () => {
     t.gh.prs.set(PR_URL, makePr({ state: 'MERGED' }));
     await cleanup(t.deps);
     expect(t.calls.some((a) => a.includes('branch') || a.includes('push'))).toBe(false);
+  });
+
+  it('retargets open PRs stacked on the merged branch before deleting it', async () => {
+    const s = await setup();
+    s.stackOn([{ number: 7 }]);
+    await s.registry.write(makeRun({ worktreePath: s.worktree, prUrl: PR_URL }));
+    s.gh.prs.set(PR_URL, makePr({ state: 'MERGED' }));
+    await cleanup(s.deps);
+    const edit = s.calls.findIndex((a) => a[0] === 'pr' && a[1] === 'edit');
+    expect(s.calls[edit]).toEqual(['pr', 'edit', '7', '--repo', 'me/app', '--base', 'main']);
+    expect(edit).toBeGreaterThan(-1);
+    expect(edit).toBeLessThan(s.calls.findIndex((a) => a.includes('--delete')));
+  });
+
+  it('keeps the remote branch when a stacked PR could not be retargeted', async () => {
+    const s = await setup();
+    s.stackOn([{ number: 7 }], true);
+    await s.registry.write(makeRun({ worktreePath: s.worktree, prUrl: PR_URL }));
+    s.gh.prs.set(PR_URL, makePr({ state: 'MERGED' }));
+    await cleanup(s.deps);
+    expect(s.calls.some((a) => a.includes('--delete'))).toBe(false);
+    expect(s.calls).toContainEqual(['-C', '/repo/app', 'branch', '-D', 'fractory/1-add-thing-1']);
   });
 
   it('deletes the remote branch on the remote that points at the PR repo, not an upstream origin', async () => {

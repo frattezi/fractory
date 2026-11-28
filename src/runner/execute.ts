@@ -322,18 +322,38 @@ class Executor {
     target: PushTarget,
     base: string,
   ): Promise<string | undefined> {
-    let refs: string;
+    const missing = await this.baseMissing(record, worktree, target, base);
+    if (missing === undefined) return undefined;
+    if (missing) return `${base} is no longer on ${target.remote}`;
+    return this.baseMerged(record, worktree, target, base);
+  }
+
+  /** True when the remote lists no such branch; undefined when it could not be read. */
+  private async baseMissing(
+    record: RunRecord,
+    worktree: string,
+    target: PushTarget,
+    base: string,
+  ): Promise<boolean | undefined> {
     try {
-      refs = (
+      const refs = (
         await this.exec('git', ['ls-remote', '--heads', target.remote, `refs/heads/${base}`], {
           cwd: worktree,
         })
       ).stdout;
+      return refs.trim() === '';
     } catch (error) {
       await this.log(record, `could not list ${base} on ${target.remote}: ${message(error)}`);
       return undefined;
     }
-    if (refs.trim() === '') return `${base} is no longer on ${target.remote}`;
+  }
+
+  private async baseMerged(
+    record: RunRecord,
+    worktree: string,
+    target: PushTarget,
+    base: string,
+  ): Promise<string | undefined> {
     try {
       const merged = GhPrListSchema.parse(
         JSON.parse(
@@ -918,12 +938,32 @@ class Executor {
         }
       }
     }
+    let startedOnBase = false;
+    const stackedOn = runBaseBranch(record, config.baseBranch);
+    if (!adopted && stackedOn !== config.baseBranch) {
+      // A blocker that merged first has no branch left to build on; its work is on the base branch.
+      if ((await this.baseMissing(record, record.repoPath, target, stackedOn)) === true) {
+        const merged = await this.baseMerged(record, record.repoPath, target, stackedOn);
+        if (merged === undefined) {
+          throw new Error(
+            `${stackedOn} is no longer on ${target.remote} and its pull request is not known to have merged, so ${record.branch} has nothing to build on`,
+          );
+        }
+        await this.log(record, `${merged}; building ${record.branch} on ${config.baseBranch}`);
+        record = await this.registry.update(record.id, { baseBranch: config.baseBranch });
+        startedOnBase = true;
+      }
+    }
     const baseRef = await this.resolveBaseRef(
       record,
       target.remote,
       runBaseBranch(record, config.baseBranch),
     );
-    if (!adopted && record.baseBranch !== undefined && record.baseSha === undefined) {
+    if (
+      !adopted &&
+      record.baseBranch !== undefined &&
+      (record.baseSha === undefined || startedOnBase)
+    ) {
       // The tip the stack starts from: a later Restack compares the blocker's branch with it.
       const baseSha = await this.git(record.repoPath, 'rev-parse', baseRef).catch(() => '');
       if (baseSha) record = await this.registry.update(record.id, { baseSha });
