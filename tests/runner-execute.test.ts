@@ -16,6 +16,7 @@ import type { Flow } from '../src/flows/types.ts';
 import { RunRegistry } from '../src/registry/registry.ts';
 import type { Exec } from '../src/runner/exec.ts';
 import { type ExecuteDeps, executeRun } from '../src/runner/execute.ts';
+import { isIdleTimeout } from '../src/runner/silence.ts';
 import type { SandcastleAdapter } from '../src/runner/types.ts';
 
 const ticket = (overrides: Partial<Ticket> = {}): Ticket => ({
@@ -41,6 +42,7 @@ const done = '<result>{"outcome":"done","summary":"Added it"}</result>';
 interface AgentRequest {
   prompt: string;
   maxIterations: number;
+  idleTimeoutSeconds?: number;
   completionSignal: string;
   logging: { type: string; path: string };
   agent: { name: string; env: Record<string, string> };
@@ -65,6 +67,10 @@ interface Setup {
   keychain?: Record<string, string>;
   sandcastleEnv?: string;
   flow?: string;
+  /** `idleTimeoutSeconds` in `.fractory.json`; default: left out. */
+  idleTimeoutSeconds?: number;
+  /** What `worktree.run` throws instead of returning. */
+  runError?: unknown;
   /** Overrides on the queued Run record, e.g. its own base branch. */
   run?: Partial<RunRecord>;
   /** Answers a `git` call before the defaults do, when it returns a string. */
@@ -152,12 +158,16 @@ const setup = async (options: Setup = {}) => {
     hasCi: true,
     maxIterations: 4,
     ...(options.flow ? { flow: options.flow } : {}),
+    ...(options.idleTimeoutSeconds === undefined
+      ? {}
+      : { idleTimeoutSeconds: options.idleTimeoutSeconds }),
   });
   const worktree = {
     branch: 'fractory/1',
     worktreePath: join(dir, 'wt'),
     run: async (request: AgentRequest) => {
       agentRequests.push(request);
+      if (options.runError !== undefined) throw options.runError;
       return {
         stdout: options.stdout ?? done,
         iterations: [{ sessionId: 'sess-1' }],
@@ -1024,5 +1034,121 @@ describe('executeRun: a stacked Run whose blocker landed while it worked', () =>
     expect(t.calls.some((c) => c.args.includes('merged'))).toBe(false);
     expect(t.calls.filter((c) => c.args[0] === 'ls-remote')).toHaveLength(1);
     expect(gitCalls(t)).toContain('rev-list --count origin/main..fractory/1');
+  });
+});
+
+/** What Sandcastle's `worktree.run` rejects with when the agent prints nothing for too long. */
+const idleError = (seconds: number): Error =>
+  Object.assign(
+    new Error(
+      `Agent idle for ${seconds} seconds — no output received. Increase the idleTimeoutSeconds option to allow longer silences.`,
+    ),
+    { name: '(FiberFailure) AgentIdleTimeoutError' },
+  );
+
+describe('the idle timeout', () => {
+  it('passes the default to the agent run, which is longer than a quiet test suite', async () => {
+    const t = await setup();
+    await executeRun('run1', t.deps);
+    expect(t.agentRequests[0]?.idleTimeoutSeconds).toBe(1800);
+  });
+
+  it("passes the repository's value, and lets a flow that sets its own keep it", async () => {
+    const t = await setup({ idleTimeoutSeconds: 2400 });
+    await executeRun('run1', t.deps);
+    expect(t.agentRequests[0]?.idleTimeoutSeconds).toBe(2400);
+
+    const own = await setup({ idleTimeoutSeconds: 2400 });
+    own.deps.loadFlow = flowOf(async (ctx) => {
+      expect(ctx.idleTimeoutSeconds).toBe(2400);
+      const agent = await ctx.agents.claude();
+      await ctx.worktree.run({ agent, sandbox: ctx.sandbox, prompt: 'x' });
+      await ctx.worktree.run({ agent, sandbox: ctx.sandbox, prompt: 'y', idleTimeoutSeconds: 60 });
+      return { outcome: 'failed', summary: 'x' };
+    });
+    await executeRun('run1', own.deps);
+    expect(own.agentRequests.map((r) => r.idleTimeoutSeconds)).toEqual([2400, 60]);
+  });
+
+  it('says a Run was stopped for silence, names the setting and lists the unpushed work', async () => {
+    const t = await setup({
+      idleTimeoutSeconds: 900,
+      runError: idleError(900),
+      git: (args) => {
+        if (args[0] === 'log' && args.includes('--not')) return 'abc1234 Add it\ndef5678 Test it\n';
+        if (args[0] === 'status') return ' M src/a.ts\n?? notes.md\n';
+        return undefined;
+      },
+    });
+    const record = await executeRun('run1', t.deps);
+    expect(record.status).toBe('failed');
+    expect(record.stoppedForSilence).toEqual({ idleTimeoutSeconds: 900 });
+    const summary = record.result?.outcome === 'failed' ? record.result.summary : '';
+    expect(summary).toMatch(/^Stopped for silence, not failed/);
+    expect(summary).not.toContain('The flow "build" failed');
+    expect(summary).toContain('900 seconds');
+    expect(summary).toContain('Raise idleTimeoutSeconds in .fractory.json');
+    expect(summary).toContain('2 commits on fractory/1 never reached a remote');
+    expect(summary).toContain('abc1234 Add it; def5678 Test it');
+    expect(summary).toContain('a Re-run continues from them');
+    expect(summary).toContain('Uncommitted changes to 2 files');
+    expect(summary).toContain('src/a.ts, notes.md');
+    expect(summary).toContain(join(t.dir, 'wt'));
+    expect(pushed(t.calls)).toHaveLength(0);
+
+    const log = t.calls.find((c) => c.file === 'git' && c.args[0] === 'log');
+    expect(log?.args).toEqual([
+      'log',
+      '--format=%h %s',
+      'fractory/1',
+      '--not',
+      'origin/main',
+      '--remotes=origin',
+    ]);
+    expect(log?.cwd).toBe(join(t.dir, 'wt'));
+  });
+
+  it('says when a Run stopped for silence left nothing unpushed', async () => {
+    const t = await setup({
+      runError: idleError(1800),
+      git: (args) => (args[0] === 'log' || args[0] === 'status' ? '' : undefined),
+    });
+    const record = await executeRun('run1', t.deps);
+    expect(JSON.stringify(record.result)).toContain(
+      'has no commits that are not already on a remote',
+    );
+  });
+
+  it('never claims nothing was lost when the worktree cannot be read', async () => {
+    const t = await setup({
+      runError: idleError(1800),
+      failOn: (file, args) => file === 'git' && args[0] === 'log',
+    });
+    const record = await executeRun('run1', t.deps);
+    const summary = JSON.stringify(record.result);
+    expect(record.stoppedForSilence).toEqual({ idleTimeoutSeconds: 1800 });
+    expect(summary).toContain('could not be read');
+    expect(summary).not.toContain('no commits');
+  });
+
+  it('keeps reporting other flow errors as the flow failing', async () => {
+    const t = await setup({ runError: new Error('docker went away') });
+    const record = await executeRun('run1', t.deps);
+    expect(record.stoppedForSilence).toBeUndefined();
+    expect(JSON.stringify(record.result)).toContain(
+      'The flow \\"build\\" failed: docker went away',
+    );
+  });
+});
+
+describe('isIdleTimeout', () => {
+  it("recognises Sandcastle's idle timeout by tag, name or message, and nothing else", () => {
+    expect(isIdleTimeout(idleError(600))).toBe(true);
+    expect(isIdleTimeout({ _tag: 'AgentIdleTimeoutError' })).toBe(true);
+    expect(isIdleTimeout(new Error('Agent idle for 600 seconds — no output received.'))).toBe(true);
+    expect(isIdleTimeout(new Error('Agent idle for 3 minutes'))).toBe(false);
+    expect(isIdleTimeout(new Error('kaboom'))).toBe(false);
+    expect(isIdleTimeout(undefined)).toBe(false);
+    expect(isIdleTimeout('Agent idle for 600 seconds')).toBe(false);
   });
 });

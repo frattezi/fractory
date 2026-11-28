@@ -12,6 +12,7 @@ const build: Flow = async (ctx) => {
     sandbox: ctx.sandbox,
     prompt,
     maxIterations: ctx.maxIterations,
+    idleTimeoutSeconds: ctx.idleTimeoutSeconds,
     completionSignal: ctx.completionSignal,
     logging: { type: 'file', path: ctx.logPath },
   });

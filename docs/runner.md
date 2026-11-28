@@ -27,7 +27,17 @@ returns. The host process calls `executeRun(runId, deps)` (`src/runner/execute.t
    `assertOutboundAllowed`, pushes, opens the PR against the Run's base branch or reuses the open
    one, moves the Ticket to `in_review`. Auto-merge refuses any PR whose base is not the
    repository's base branch, so a Run built on another Run's branch cannot land before it. `failed` and `needs-human` never push or open a PR.
-6. `needs-human`: Personal Mode comments the question on the Ticket; Work Mode never posts it.
+6. Stopped for silence: Sandcastle stops an agent that prints nothing for `idleTimeoutSeconds`
+   (`.fractory.json`, default 1800, at most 86400), which is what a long quiet command such as a
+   test suite, a `-race` run or a container build looks like from outside. Fractory passes the
+   repository's value to every `worktree.run`. Such a Run ends `failed` with `stoppedForSilence`
+   on its record and a summary that says it was stopped rather than failed, names
+   `idleTimeoutSeconds`, and lists what was not pushed: the branch's commits no remote has and the
+   worktree's uncommitted files. Both stay where they are, and a Re-run continues on the branch.
+   If the worktree cannot be read, the summary says so rather than claiming nothing was lost.
+   Fractory sees only the agent's output stream, so it cannot tell a command still running from
+   an agent that stopped: raise the setting for a repository whose commands are quiet for longer.
+7. `needs-human`: Personal Mode comments the question on the Ticket; Work Mode never posts it.
    The owner answers it in Fractory Manager (`A` on the Run's row), which writes
    `<registryDir>/<runId>.answer.json`. Until the next tick picks it up, `fractory status` lists
    the question as `(answered, waiting for the next tick)`.

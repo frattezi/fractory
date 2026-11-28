@@ -48,6 +48,7 @@ export type RuleId =
   | 'account'
   | 'flow'
   | 'max-iterations'
+  | 'idle-timeout'
   | 'concurrency';
 
 export interface WorkflowRule {
@@ -144,6 +145,12 @@ export const describeWorkflow = (
       label: 'Max iterations',
       value: String(config.maxIterations),
       why: 'A Run stops with budget-exhausted after this many agent iterations.',
+    },
+    {
+      id: 'idle-timeout',
+      label: 'Idle timeout',
+      value: `${config.idleTimeoutSeconds}s`,
+      why: 'A Run is stopped for silence when its agent prints nothing for this long (idleTimeoutSeconds).',
     },
   ];
   if (options.maxConcurrentRuns !== undefined) {

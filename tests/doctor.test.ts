@@ -132,6 +132,19 @@ describe('doctor', () => {
     expect(findings[0]?.observed).toContain('exhausted its budget');
   });
 
+  it('reports a Run stopped for silence as such, naming the setting to raise', async () => {
+    const run = makeRun({
+      repoPath: APP,
+      status: 'failed',
+      result: { outcome: 'failed', summary: 'Stopped for silence, not failed.' },
+      stoppedForSilence: { idleTimeoutSeconds: 1800 },
+    });
+    const findings = await doctor(readers({ listRuns: async () => [run] }));
+    expect(findings.map((f) => f.kind)).toEqual(['run-failed']);
+    expect(findings[0]?.observed).toContain('was stopped for silence after 1800 seconds');
+    expect(findings[0]?.remedy).toContain('raise idleTimeoutSeconds in .fractory.json');
+  });
+
   it('has no run-failed Finding once a later Run on the Ticket is done', async () => {
     const failed = makeRun({ id: 'a', repoPath: APP, status: 'failed' });
     const done = makeRun({

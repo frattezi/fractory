@@ -27,6 +27,7 @@ type Flow = (ctx: FlowContext) => Promise<RunResult>;
 | `agents.opencode(model?, options?)` | Same for `opencode(...)`. Personal Mode only |
 | `logPath` | Pass as `logging: { type: 'file', path: ctx.logPath }` |
 | `maxIterations` | From `.fractory.json` |
+| `idleTimeoutSeconds` | From `.fractory.json` (default 1800). `worktree.run` gets it when the flow leaves it out; a sandbox from `worktree.createSandbox` does not, so pass it there yourself |
 | `completionSignal` | The string `buildPrompt` tells the agent to print; pass it as `completionSignal` |
 | `buildPrompt(...)` | Rules + Ticket + follow-up + the "how to finish" block (the `<result>` JSON contract) |
 | `parseRunResult(stdout)` | The last valid `<result>` block of the agent's output, or `undefined` |
@@ -84,6 +85,7 @@ const hello: Flow = async (ctx) => {
     sandbox: ctx.sandbox,
     prompt: ctx.buildPrompt({ rules: ctx.rules, ticket: ctx.ticket, followUp: ctx.followUp }),
     maxIterations: ctx.maxIterations,
+    idleTimeoutSeconds: ctx.idleTimeoutSeconds,
     completionSignal: ctx.completionSignal,
     logging: { type: 'file', path: ctx.logPath },
   });

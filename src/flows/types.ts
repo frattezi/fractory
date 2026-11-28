@@ -36,6 +36,11 @@ export interface FlowContext {
   /** Pass as `logging: { type: 'file', path: ctx.logPath }`. */
   logPath: string;
   maxIterations: number;
+  /**
+   * Pass as `idleTimeoutSeconds`: the repository's limit on how long the agent may print nothing.
+   * `worktree.run` gets it anyway when a flow leaves it out.
+   */
+  idleTimeoutSeconds: number;
   /** Pass as `completionSignal`; the prompt from `buildPrompt` asks the agent to print it. */
   completionSignal: string;
   buildPrompt: typeof buildPrompt;

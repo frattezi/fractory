@@ -77,5 +77,13 @@ describe('describeWorkflow', () => {
     const d = describeWorkflow({ ...personalRepo, ticketGate: true });
     expect(byId(d, 'ticket-gate')?.why).toMatch(/ticketGate/);
     expect(formatWorkflow(d)).toContain('Max iterations');
+    expect(formatWorkflow(d)).toContain('Idle timeout');
+  });
+
+  it('shows the idle timeout a Run will get', () => {
+    expect(byId(describeWorkflow(personalRepo), 'idle-timeout')?.value).toBe('1800s');
+    const slow = describeWorkflow({ ...personalRepo, idleTimeoutSeconds: 3600 });
+    expect(byId(slow, 'idle-timeout')?.value).toBe('3600s');
+    expect(byId(slow, 'idle-timeout')?.why).toContain('idleTimeoutSeconds');
   });
 });

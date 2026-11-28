@@ -97,6 +97,7 @@ describe('fractory CLI', () => {
     expect(JSON.parse(out[0] as string)).toMatchObject({
       mode: 'work',
       baseBranch: 'main',
+      idleTimeoutSeconds: 1800,
       requiresTicketGate: true,
       requiresPrGate: true,
     });

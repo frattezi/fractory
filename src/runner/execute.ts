@@ -37,6 +37,7 @@ import {
 } from './prompt.ts';
 import { remoteFor } from './remote.ts';
 import { sandcastleAdapter } from './sandcastle.ts';
+import { isIdleTimeout, silenceSummary } from './silence.ts';
 import type { SandcastleAdapter } from './types.ts';
 
 export interface ExecuteDeps {
@@ -78,13 +79,23 @@ const outboundText = (preferred: string, fallback: string, mode: RepoConfig['mod
   return fallback;
 };
 
-/** The real worktree, except `run` also reports the agent session id of the latest iteration. */
-const trackSessions = (worktree: Worktree, onSession: (id: string) => void): Worktree =>
+/**
+ * The real worktree, except `run` reports the agent session id of the latest iteration and gets
+ * the repository's idle timeout unless the flow passed its own.
+ */
+const wrapWorktree = (
+  worktree: Worktree,
+  idleTimeoutSeconds: number,
+  onSession: (id: string) => void,
+): Worktree =>
   new Proxy(worktree, {
     get(target, prop) {
       if (prop === 'run') {
         return async (options: Parameters<Worktree['run']>[0]) => {
-          const result = await target.run(options);
+          const result = await target.run({
+            ...options,
+            idleTimeoutSeconds: options.idleTimeoutSeconds ?? idleTimeoutSeconds,
+          });
           const id = [...result.iterations].reverse().find((i) => i.sessionId)?.sessionId;
           if (id) onSession(id);
           return result;
@@ -576,6 +587,48 @@ class Executor {
     return z.string().url().parse(url);
   }
 
+  /**
+   * Why a Run stopped for silence and what it leaves: its commits no remote has and its
+   * uncommitted files. A failed read is reported as unread, never as "nothing was lost".
+   */
+  private async silenceSummary(
+    record: RunRecord,
+    config: RepoConfig,
+    worktreePath: string,
+    baseRef: string,
+    target: PushTarget,
+  ): Promise<string> {
+    const report = {
+      idleTimeoutSeconds: config.idleTimeoutSeconds,
+      branch: record.branch,
+      worktreePath,
+    };
+    try {
+      const log = await this.git(
+        worktreePath,
+        'log',
+        '--format=%h %s',
+        record.branch,
+        '--not',
+        baseRef,
+        `--remotes=${target.remote}`,
+      );
+      const status = (await this.exec('git', ['status', '--porcelain'], { cwd: worktreePath }))
+        .stdout;
+      const left = {
+        commits: log.split('\n').filter(Boolean),
+        uncommitted: status
+          .split('\n')
+          .map((line) => line.slice(3).trim())
+          .filter(Boolean),
+      };
+      return silenceSummary({ ...report, left });
+    } catch (error) {
+      await this.log(record, `could not read what the Run left: ${message(error)}`);
+      return silenceSummary({ ...report, left: undefined, readError: message(error) });
+    }
+  }
+
   private agents(sandcastle: SandcastleAdapter, config: RepoConfig, used: Set<string>): FlowAgents {
     const wire = async <O extends { env?: Record<string, string> | undefined }>(
       kind: AgentKind,
@@ -797,7 +850,7 @@ class Executor {
 
     const usedAgents = new Set<string>();
     let sessionId: string | undefined;
-    const tracked = trackSessions(worktree, (id) => {
+    const tracked = wrapWorktree(worktree, config.idleTimeoutSeconds, (id) => {
       sessionId = id;
     });
     const stack =
@@ -805,6 +858,7 @@ class Executor {
         ? { baseBranch: record.baseBranch, repoBaseBranch: config.baseBranch }
         : undefined;
     let flowResult: unknown;
+    let silenced = false;
     try {
       flowResult = await flow({
         ticket,
@@ -816,6 +870,7 @@ class Executor {
         agents: this.agents(sandcastle, config, usedAgents),
         logPath: record.logPath,
         maxIterations: config.maxIterations,
+        idleTimeoutSeconds: config.idleTimeoutSeconds,
         completionSignal: COMPLETION_SIGNAL,
         // A stacked Run's prompt says where it stands, whatever the flow passes.
         buildPrompt: stack
@@ -824,13 +879,28 @@ class Executor {
         parseRunResult,
       });
     } catch (error) {
-      flowResult =
-        error instanceof MissingCredentialError
-          ? { outcome: 'needs-human', reason: 'needs-access', question: error.question }
-          : {
-              outcome: 'failed',
-              summary: `The flow "${config.flow}" failed: ${message(error)}`,
-            };
+      silenced = isIdleTimeout(error);
+      if (silenced) {
+        await this.log(record, `stopped for silence: ${message(error)}`);
+        flowResult = {
+          outcome: 'failed',
+          summary: await this.silenceSummary(
+            record,
+            config,
+            worktree.worktreePath,
+            baseRef,
+            target,
+          ),
+        };
+      } else {
+        flowResult =
+          error instanceof MissingCredentialError
+            ? { outcome: 'needs-human', reason: 'needs-access', question: error.question }
+            : {
+                outcome: 'failed',
+                summary: `The flow "${config.flow}" failed: ${message(error)}`,
+              };
+      }
     }
     record = await this.registry.update(record.id, {
       ...(usedAgents.size > 0 ? { agents: [...usedAgents] } : {}),
@@ -859,7 +929,11 @@ class Executor {
       return this.finish(record.id, { status: 'needs-human', result });
     }
     if (result.outcome === 'failed') {
-      return this.finish(record.id, { status: 'failed', result });
+      return this.finish(record.id, {
+        status: 'failed',
+        result,
+        ...(silenced && { stoppedForSilence: { idleTimeoutSeconds: config.idleTimeoutSeconds } }),
+      });
     }
 
     try {

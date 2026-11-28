@@ -93,12 +93,23 @@ const runFindings = (input: {
         : result?.outcome === 'needs-human'
           ? `: ${result.question}`
           : '';
+    const silence = run.stoppedForSilence;
+    const what = budget
+      ? 'exhausted its budget'
+      : silence
+        ? `was stopped for silence after ${silence.idleTimeoutSeconds} seconds`
+        : 'failed';
+    const raise = budget
+      ? ' (or raise maxIterations in .fractory.json)'
+      : silence
+        ? ' (raise idleTimeoutSeconds in .fractory.json first if a command needs longer)'
+        : '';
     findings.push({
       kind: 'run-failed',
       repoPath,
       severity: 'needs-owner',
-      observed: `${run.ticketRef}: Run ${run.id} ${budget ? 'exhausted its budget' : 'failed'}${detail}`,
-      remedy: `Read the log at ${run.logPath}, then \`fractory run ${run.ticketRef}\` to start the Ticket again on ${run.branch}${budget ? ' (or raise maxIterations in .fractory.json)' : ''}.`,
+      observed: `${run.ticketRef}: Run ${run.id} ${what}${detail}`,
+      remedy: `Read the log at ${run.logPath}, then \`fractory run ${run.ticketRef}\` to start the Ticket again on ${run.branch}${raise}.`,
     });
   }
   return findings;
