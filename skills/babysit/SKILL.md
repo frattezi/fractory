@@ -32,6 +32,15 @@ fractory babysit [repoPath] [--ticket <ref>]... [--poll <seconds>] [--timeout-mi
   discovering Tickets. Pull request state comes from the tick, so the factory must be running
   (`fractory launchd install`), or nothing will ever merge.
 
+In a Fractory Manager session, run it through the manager so your row shows 🍼 while it runs:
+
+```
+agent-manager mark babysit -- fractory babysit [repoPath] [--ticket <ref>]...
+```
+
+The mark lasts exactly as long as the command and passes its exit status through. Outside a
+managed session, or where `agent-manager` is not installed, run `fractory babysit` bare.
+
 Run it in the background and report what it prints. Never rebuild the loop out of `fractory runs`,
 `sleep` and `gh` calls: the ordering, the adoption of an existing Run and the stop conditions are
 code with tests, and a hand-rolled version gets them wrong.
