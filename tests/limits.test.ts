@@ -213,6 +213,12 @@ describe('fractory limits', () => {
       createTicket: async () => ({ ref: 'github:me/app#1', url: 'https://example.test' }),
       launchRun: vi.fn(async () => {}),
       launchAutomationRun: vi.fn(async () => {}),
+      agents: {
+        sandcastle: async () => {
+          throw new Error('unused');
+        },
+        exec: async () => ({ stdout: '', stderr: '' }),
+      },
       makeLogger: () => memoryLogger(),
       now: () => now,
       newId: () => 'x',

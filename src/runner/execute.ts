@@ -30,6 +30,7 @@ import { installPrePushHook } from './hook.ts';
 import {
   BASE_AGENT_ENV,
   COMPLETION_SIGNAL,
+  DEFAULT_CLAUDE_MODEL,
   type FollowUp,
   buildPrompt,
   formatReviewComment,
@@ -65,7 +66,6 @@ const defaultLoadRepoConfig = async (repoPath: string): Promise<RepoConfig> =>
 const defaultReadRules = (): Promise<string> =>
   readFile(join(FRACTORY_ROOT, 'rules', 'run-agent.md'), 'utf8');
 
-const DEFAULT_CLAUDE_MODEL = 'claude-opus-5-5';
 const DEFAULT_OPENCODE_MODEL = 'opencode-go/kimi-k3';
 
 const message = (error: unknown): string =>
