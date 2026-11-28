@@ -2,7 +2,7 @@ import { join } from 'node:path';
 import type { FactoryConfig } from '../contracts/factory-config.ts';
 import type { Mode } from '../contracts/repo-config.ts';
 import { RUN_RECORD_VERSION, type RunRecord, type Trigger, runKey } from '../contracts/run.ts';
-import type { TicketRef } from '../contracts/ticket.ts';
+import type { TicketRef, TicketSource } from '../contracts/ticket.ts';
 import { assertOutboundAllowed } from '../policy/outbound.ts';
 import type { RunRegistry } from '../registry/registry.ts';
 
@@ -43,6 +43,12 @@ export const branchFor = (ref: TicketRef, title: string, mode: Mode): string => 
   throw lastError;
 };
 
+/** The Ticket's blockers as the tracker reports them now; a failed read proves nothing, so none. */
+export const readBlockedBy = async (
+  source: Pick<TicketSource, 'get'>,
+  ref: TicketRef,
+): Promise<TicketRef[]> => (await source.get(ref).catch(() => undefined))?.blockedBy ?? [];
+
 export interface QueueInput {
   ticketRef: TicketRef;
   repoPath: string;
@@ -55,6 +61,8 @@ export interface QueueInput {
   /** Snapshot of the repo's Mode and flow, recorded so readers need no config. */
   mode?: Mode | undefined;
   flow?: string | undefined;
+  /** The Ticket's blockers when queued; empty or absent records none. */
+  blockedBy?: readonly TicketRef[] | undefined;
   /** Overrides the key derived from the Trigger (Re-runs need a deterministic manual key). */
   key?: string | undefined;
 }
@@ -87,6 +95,7 @@ export const queueRun = async (
     branch: input.branch,
     ...(input.baseBranch === undefined ? {} : { baseBranch: input.baseBranch }),
     ...(input.baseSha === undefined ? {} : { baseSha: input.baseSha }),
+    ...(input.blockedBy?.length ? { blockedBy: [...input.blockedBy] } : {}),
     ...(input.mode === undefined ? {} : { mode: input.mode }),
     ...(input.flow === undefined ? {} : { flow: input.flow }),
     logPath: join(deps.factory.logDir, `${id}.log`),

@@ -42,6 +42,19 @@ describe('ticket-ready Trigger', () => {
     expect(summary.launched).toHaveLength(1);
   });
 
+  it('records the Ticket blockers on the Run, and none for a Ticket without', async () => {
+    const h = await makeHarness();
+    h.source.tickets.set('github:me/app#3', makeTicket(3, 'done'));
+    h.source.tickets.set('github:me/app#1', makeTicket(1));
+    h.source.tickets.set('github:me/app#2', { ...makeTicket(2), blockedBy: ['github:me/app#3'] });
+    await tick(h.deps);
+    const runs = await h.registry.list();
+    expect(runs.find((r) => r.ticketRef === 'github:me/app#1')?.blockedBy).toBeUndefined();
+    expect(runs.find((r) => r.ticketRef === 'github:me/app#2')?.blockedBy).toEqual([
+      'github:me/app#3',
+    ]);
+  });
+
   it('is idempotent: two ticks never create a duplicate Run, even if the tracker still says ready', async () => {
     const h = await makeHarness();
     h.source.stickyReady = true;
