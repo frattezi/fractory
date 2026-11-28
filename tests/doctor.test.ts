@@ -610,6 +610,12 @@ describe('fractory doctor', () => {
       },
       launchRun: vi.fn(async () => {}),
       launchAutomationRun: vi.fn(async () => {}),
+      agents: {
+        sandcastle: async () => {
+          throw new Error('unused');
+        },
+        exec: async () => ({ stdout: '', stderr: '' }),
+      },
       makeLogger: () => memoryLogger(),
       now: () => new Date('2026-11-27T00:00:00.000Z'),
       newId: () => 'id',

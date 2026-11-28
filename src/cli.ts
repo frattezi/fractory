@@ -44,8 +44,11 @@ import { listAnswerRequests } from './registry/answers.ts';
 import { AutomationStore } from './registry/automations.ts';
 import { readHostState } from './registry/host-state.ts';
 import { RunRegistry } from './registry/registry.ts';
+import { agentLogPath, runAgent } from './runner/agent.ts';
 import { launchAutomationRun } from './runner/automation.ts';
+import { type Exec as RunnerExec, defaultExec as defaultRunnerExec } from './runner/exec.ts';
 import { launchRun } from './runner/index.ts';
+import type { SandcastleAdapter } from './runner/types.ts';
 import { formatHost, formatStatus, repoStatus } from './status/status.ts';
 import {
   fileTranscriptStore,
@@ -87,6 +90,8 @@ export interface CliEnv {
   launchRun: (record: RunRecord, config: RepoConfig) => Promise<void>;
   launchAutomationRun: (record: AutomationRunRecord, factory: FactoryConfig) => Promise<void>;
   makeLogger: (factory: FactoryConfig) => Logger;
+  /** What `agents run` starts an agent with: Sandcastle (lazy) and the runner's command runner. */
+  agents: { sandcastle: () => Promise<SandcastleAdapter>; exec: RunnerExec };
   now: () => Date;
   newId: () => string;
   /** The core count and total memory that derive the maximum of some limits. */
@@ -121,6 +126,10 @@ export const defaultEnv = (): CliEnv => {
     launchAutomationRun: (record, factory) =>
       launchAutomationRun(record, { store: new AutomationStore(factory.automationsDir) }),
     makeLogger: (factory) => createFileLogger(join(factory.logDir, 'tick.log')),
+    agents: {
+      sandcastle: async () => (await import('./runner/sandcastle.ts')).sandcastleAdapter(),
+      exec: defaultRunnerExec,
+    },
     now: () => new Date(),
     newId: () => randomUUID(),
     machine: () => ({
@@ -182,6 +191,8 @@ const HELP = `Usage: fractory <command>
   rebuild [repoPath...]
   doctor [repoPath...] [--json]
   rules [repoPath] [--json]
+  agents run --repo <path> --prompt-file <path> [--model <id>] [--cwd <dir>] [--name <label>]
+            [--max-iterations <n>] [--json]
   tokens [--since <date>] [--repo <path>] [--json]
   launchd install|uninstall
   init <repoPath> --mode work|personal --ci|--no-ci (--github owner/name | --jira-url ...) [--force]
@@ -450,6 +461,42 @@ const commands: Record<string, (args: CliArgs, env: CliEnv) => Promise<void>> = 
   },
 
   /** The host process of a launched Automation Run: runs it to completion and records the end. */
+  /** One agent on the repository's Account, outside a Run: nothing is recorded. */
+  async agents(args, env) {
+    const [sub] = args.positionals;
+    if (sub !== 'run')
+      throw new Error('Usage: fractory agents run --repo <path> --prompt-file <path>');
+    const repo = flag(args, 'repo');
+    const promptFile = flag(args, 'prompt-file');
+    if (!repo || !promptFile) throw new Error('agents run needs --repo and --prompt-file');
+    const repoPath = resolve(env.cwd, repo);
+    const maxIterations = flag(args, 'max-iterations');
+    const name = flag(args, 'name');
+    const model = flag(args, 'model');
+    const cwd = flag(args, 'cwd');
+    if (maxIterations && !/^[1-9]\d*$/.test(maxIterations)) {
+      throw new Error('--max-iterations must be a positive integer');
+    }
+    const config = await loadRepoConfig(repoPath);
+    const factory = await loadFactory(env);
+    const output = await runAgent(
+      {
+        config,
+        repoPath,
+        // Absolute: Sandcastle resolves it against the process working directory, not the agent's.
+        promptFile: resolve(env.cwd, promptFile),
+        cwd: cwd ? resolve(env.cwd, cwd) : repoPath,
+        ...(model && { model }),
+        ...(name && { name }),
+        ...(maxIterations && { maxIterations: Number(maxIterations) }),
+        ...(factory.resources && { cpus: factory.resources.cpusPerRun }),
+        logPath: agentLogPath(factory.logDir, env.newId(), name),
+      },
+      { sandcastle: await env.agents.sandcastle(), exec: env.agents.exec },
+    );
+    env.out(args.flags.json === true ? JSON.stringify(output, null, 2) : output.text);
+  },
+
   async 'automation-exec'(args, env) {
     const [automationId, runId] = args.positionals;
     if (!automationId || !runId) {
