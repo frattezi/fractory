@@ -1,3 +1,4 @@
+import { existsSync } from 'node:fs';
 import { mkdir, mkdtemp, readFile, readdir, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -63,6 +64,8 @@ describe('installSkills', () => {
       ]),
     );
     for (const name of names) {
+      // `fractory install` skips a directory without a SKILL.md (a skill still being built).
+      if (!existsSync(join(DEFAULT_SKILLS_SOURCE, name, 'SKILL.md'))) continue;
       const text = await readFile(join(DEFAULT_SKILLS_SOURCE, name, 'SKILL.md'), 'utf8');
       expect(text).toMatch(new RegExp(`^---\\nname: ${name}\\n`));
     }
