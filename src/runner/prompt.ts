@@ -3,7 +3,7 @@ import { type NeedsHumanReason, type RunResult, RunResultSchema } from '../contr
 import type { Ticket } from '../contracts/ticket.ts';
 
 export const RESULT_TAG = 'result';
-/** The model a Run, or `fractory agents run`, uses when `FRACTORY_MODEL` and the caller name none. */
+/** The model a Run, or `fractory errand`, uses when `FRACTORY_MODEL` and the caller name none. */
 export const DEFAULT_CLAUDE_MODEL = 'claude-opus-5-5';
 
 export const COMPLETION_SIGNAL = '<promise>COMPLETE</promise>';

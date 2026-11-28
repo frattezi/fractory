@@ -1,4 +1,4 @@
-# Spec 0007: An agent on the repository's Account, outside a Run
+# Spec 0007: Errand, an agent on the repository's Account outside a Run
 
 Status: accepted (2026-11-27). Vocabulary: [GLOSSARY.md](../../GLOSSARY.md).
 
@@ -11,7 +11,7 @@ thing that can reach an Account is a Flow inside a Run. A Run is one agent attem
 one Ticket, and a colleague's pull request has no Ticket — so the reviewer cannot use
 the factory at all without pretending its pull requests are Tickets.
 
-So Fractory gains one command that starts a single agent on demand: on the Account its
+So Fractory gains one command, `fractory errand`, that starts an **Errand**, a single agent on demand: on the Account its
 repository's Mode selects, in the sandbox that repository declares, in a directory the
 caller names, with a prompt the caller wrote, returning what the agent produced. It
 owns no branch, no worktree, no Ticket and no Run record, and it decides nothing about
@@ -20,7 +20,7 @@ found — stays outside Fractory, in the tool that calls this.
 
 ## Non-goals
 
-- **Not a Run.** Nothing is written to the Run registry, no Ticket status moves, no
+- **Not a Run.** An Errand is not a Run. Nothing is written to the Run registry, no Ticket status moves, no
   pull request is opened, no Trigger fires, and `fractory runs` does not list it.
 - **No worktree, no branch.** The caller provides the directory. Fractory does not
   create, move, clean up or reason about it, and never pushes.
@@ -35,7 +35,7 @@ found — stays outside Fractory, in the tool that calls this.
 ## Solution
 
 ```
-fractory agents run --repo <path> --prompt-file <path> [--model <id>] [--cwd <dir>]
+fractory errand --repo <path> --prompt-file <path> [--model <id>] [--cwd <dir>]
                     [--name <label>] [--max-iterations <n>] [--json]
 ```
 
@@ -91,7 +91,7 @@ same evidence.
 
 ## Implementation decisions
 
-A new `agents run` branch in `src/cli.ts`, dispatching to a new module beside the
+A new `errand` branch in `src/cli.ts`, dispatching to a new module beside the
 runner. It reuses, unchanged: `loadRepoConfig` for the Mode and `sandboxImage`,
 `profileFor` and `accountFor` for the Account and the Work Mode restriction,
 `resolveCredentials` for the Keychain read and its `MissingCredentialError`, the
@@ -135,7 +135,7 @@ One seam, and it already exists: `SandcastleAdapter` is the slice of Sandcastle 
 executor uses and tests replace it with a fake, no Docker needed. The second existing
 seam is `Exec`, which `tests/credentials.test.ts` already fakes for the Keychain read.
 The command is therefore tested end to end from its argument list, with both fakes, in
-`tests/agents-run.test.ts`, asserting external behaviour only:
+`tests/errand.test.ts`, asserting external behaviour only:
 
 - a Work Mode repository resolves `claude@work` and a Personal Mode one `claude@personal`,
   read from the asserted Keychain service name;
@@ -159,11 +159,6 @@ rules, `tests/agents.test.ts` and `tests/credentials.test.ts`.
 
 ## Open questions
 
-- **What the concept is called.** A Run is one agent attempt at one Ticket, so this is
-  not one, and `agents run` puts the word `run` on something that is deliberately not a
-  Run. `Errand` is proposed for the glossary — one agent started on demand outside any
-  Run, on the Account its repository's Mode selects — which would make the command
-  `fractory errand`. Naming does not block the work.
 - Whether a later Flow should call this command rather than `ctx.agents`, so that there
   is one path to an agent. Not now: a Flow has a worktree and a Run record and this does
   not.
