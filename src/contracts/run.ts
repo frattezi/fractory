@@ -73,6 +73,8 @@ export const RunRecordSchema = z.object({
   baseBranch: z.string().min(1).optional(),
   /** Tip sha of `baseBranch` the Run started from. Optional: still version 1. */
   baseSha: z.string().min(1).optional(),
+  /** Ticket Refs the Ticket was blocked by when the Run was queued; absent when none. Optional: still version 1. */
+  blockedBy: z.array(TicketRefSchema).min(1).optional(),
   worktreePath: z.string().optional(),
   prUrl: z.string().url().optional(),
   /** Agent conversation id captured by Sandcastle, for resume/fork. */

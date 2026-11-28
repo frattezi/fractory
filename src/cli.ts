@@ -64,7 +64,7 @@ import {
   resolveBin,
   uninstallLaunchd,
 } from './trigger/launchd.ts';
-import { branchFor, queueRun } from './trigger/queue.ts';
+import { branchFor, queueRun, readBlockedBy } from './trigger/queue.ts';
 import { type Logger, checkPid, createFileLogger } from './trigger/support.ts';
 import { tick } from './trigger/tick.ts';
 
@@ -271,6 +271,7 @@ const queueManualRun = async (
       repoPath,
       trigger: { kind: 'manual' },
       branch,
+      blockedBy: await readBlockedBy(source, ref),
       mode: config.mode,
       flow: config.flow,
     },

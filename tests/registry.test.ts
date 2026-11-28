@@ -70,6 +70,17 @@ describe('RunRegistry', () => {
     expect(runBaseBranch(stacked as RunRecord, 'develop')).toBe('fractory/4-astro');
   });
 
+  it('round-trips optional blockedBy at the same version; older records still parse', async () => {
+    const registry = new RunRegistry(await mkdtemp(join(tmpdir(), 'reg-')));
+    await registry.write(record('plain'));
+    await registry.write(record('blocked', { blockedBy: ['github:me/repo#7'] }));
+    expect((await registry.get('plain'))?.blockedBy).toBeUndefined();
+    expect(await registry.get('blocked')).toMatchObject({
+      version: RUN_RECORD_VERSION,
+      blockedBy: ['github:me/repo#7'],
+    });
+  });
+
   it('rejects invalid records', async () => {
     const registry = new RunRegistry(await mkdtemp(join(tmpdir(), 'reg-')));
     await expect(registry.write({ ...record('x'), status: 'weird' } as never)).rejects.toThrow();

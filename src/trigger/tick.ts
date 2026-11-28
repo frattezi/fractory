@@ -33,7 +33,7 @@ import type { RunRegistry } from '../registry/registry.ts';
 import { listRerunRequests } from '../registry/reruns.ts';
 import { pruneAutomationRuns } from './automation-prune.ts';
 import { acceptAutomationRequests } from './automations.ts';
-import { type QueueInput, branchFor, queueRun } from './queue.ts';
+import { type QueueInput, branchFor, queueRun, readBlockedBy } from './queue.ts';
 import { type Logger, type PidState, acquireLock } from './support.ts';
 
 export interface TickDeps {
@@ -165,6 +165,7 @@ export const tick = async (deps: TickDeps): Promise<TickSummary> => {
       repoPath: latest.repoPath,
       trigger,
       branch: latest.branch,
+      blockedBy: await readBlockedBy(source, latest.ticketRef),
       ...base,
       mode: latest.mode,
       flow: latest.flow,
@@ -398,6 +399,7 @@ export const tick = async (deps: TickDeps): Promise<TickSummary> => {
           trigger: { kind: 'manual' },
           key,
           branch: target.branch,
+          blockedBy: await readBlockedBy(source, target.ticketRef),
           mode: target.mode,
           flow: target.flow,
         });
@@ -467,6 +469,7 @@ export const tick = async (deps: TickDeps): Promise<TickSummary> => {
           trigger: { kind: 'answer', runId },
           key,
           branch: target.branch,
+          blockedBy: await readBlockedBy(source, target.ticketRef),
           mode: target.mode,
           flow: target.flow,
         });
@@ -605,6 +608,7 @@ export const tick = async (deps: TickDeps): Promise<TickSummary> => {
               repoPath,
               trigger: { kind: 'ticket-ready' },
               branch,
+              blockedBy: ticket.blockedBy,
               ...(verdict.stackedOn !== undefined && { baseBranch: verdict.baseBranch, baseSha }),
               mode: config.mode,
               flow: config.flow,
