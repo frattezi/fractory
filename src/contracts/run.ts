@@ -86,6 +86,11 @@ export const RunRecordSchema = z.object({
   /** Host process running the Run, to detect dead Runs. */
   pid: z.number().int().optional(),
   result: RunResultSchema.optional(),
+  /**
+   * Set when the Run was stopped for printing nothing for `idleTimeoutSeconds`, rather than
+   * failing on its own terms. Optional: still version 1.
+   */
+  stoppedForSilence: z.object({ idleTimeoutSeconds: z.number().int().positive() }).optional(),
   createdAt: z.string().datetime(),
   updatedAt: z.string().datetime(),
   finishedAt: z.string().datetime().optional(),

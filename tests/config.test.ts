@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { describeRepoConfig, loadFactoryConfig, loadRepoConfig } from '../src/config/index.ts';
+import { DEFAULT_IDLE_TIMEOUT_SECONDS } from '../src/contracts/repo-config.ts';
 
 const tmp = () => mkdtemp(join(tmpdir(), 'fractory-config-'));
 
@@ -41,6 +42,9 @@ describe('loadRepoConfig', () => {
     );
     const config = await loadRepoConfig(dir);
     expect(config).toMatchObject({ baseBranch: 'main', maxIterations: 10, ticketGate: false });
+    expect(config.idleTimeoutSeconds).toBe(DEFAULT_IDLE_TIMEOUT_SECONDS);
+    // A quiet test suite that runs 530 to 690 seconds must fit in the default.
+    expect(config.idleTimeoutSeconds).toBeGreaterThan(690);
     expect(describeRepoConfig(config)).toMatchObject({
       requiresPrGate: false,
       requiresTicketGate: false,
@@ -49,6 +53,28 @@ describe('loadRepoConfig', () => {
       requiresPrGate: true,
       requiresTicketGate: true,
     });
+  });
+
+  it('takes the idle timeout from the file and refuses a bad one', async () => {
+    const dir = await tmp();
+    const write = (idleTimeoutSeconds: unknown) =>
+      writeFile(
+        join(dir, '.fractory.json'),
+        JSON.stringify({
+          mode: 'personal',
+          ticketSource: { kind: 'github', repo: 'me/app' },
+          hasCi: true,
+          idleTimeoutSeconds,
+        }),
+      );
+    await write(3600);
+    const config = await loadRepoConfig(dir);
+    expect(config.idleTimeoutSeconds).toBe(3600);
+    expect(describeRepoConfig(config)).toMatchObject({ idleTimeoutSeconds: 3600 });
+    for (const bad of [0, -5, 1.5, '900', 86_401]) {
+      await write(bad);
+      await expect(loadRepoConfig(dir)).rejects.toThrow(/Invalid repo config/);
+    }
   });
 
   it('explains a missing or invalid file', async () => {

@@ -96,6 +96,7 @@ const setup = async (options: Options = {}) => {
     baseBranch: 'trunk',
     sandboxImage: 'chores:latest',
     maxIterations: 3,
+    idleTimeoutSeconds: 1800,
     flow: 'build',
   };
   const files = options.files ?? { 'scripts/report.sh': 'echo hi' };
