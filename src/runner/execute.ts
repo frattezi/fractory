@@ -458,6 +458,137 @@ class Executor {
     };
   }
 
+  /** The tip of the Run's branch when it already exists locally: an earlier Run left it behind. */
+  private async adoptedTip(record: RunRecord): Promise<string | undefined> {
+    const sha = await this.git(
+      record.repoPath,
+      'rev-parse',
+      '--verify',
+      '--quiet',
+      `refs/heads/${record.branch}`,
+    ).catch(() => '');
+    return sha || undefined;
+  }
+
+  /**
+   * For a Run that adopts a branch: the base it is built on, inherited from the Ticket's latest
+   * earlier Run on that branch when its own record names none (a Re-run or an answer Run is queued
+   * without one), and the tips of base branches the Ticket's Runs started from, newest first. A
+   * failed read of the registry inherits nothing; the branch is then replayed whole.
+   */
+  private async adoptionHistory(
+    record: RunRecord,
+  ): Promise<{ record: RunRecord; forkCandidates: string[] }> {
+    let earlier: RunRecord[] = [];
+    try {
+      earlier = (await this.registry.list())
+        .filter(
+          (r) =>
+            r.ticketRef === record.ticketRef && r.branch === record.branch && r.id !== record.id,
+        )
+        .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+    } catch (error) {
+      await this.log(
+        record,
+        `could not read the earlier Runs of ${record.ticketRef}: ${message(error)}`,
+      );
+    }
+    const forkCandidates = [
+      ...new Set(
+        [record, ...[...earlier].reverse()]
+          .map((r) => r.baseSha)
+          .filter((sha): sha is string => sha !== undefined),
+      ),
+    ];
+    if (record.baseBranch !== undefined) return { record, forkCandidates };
+    const built = earlier.findLast((r) => r.baseBranch !== undefined);
+    if (built?.baseBranch === undefined) return { record, forkCandidates };
+    await this.log(record, `${record.branch} was built on ${built.baseBranch} by Run ${built.id}`);
+    const updated = await this.registry.update(record.id, {
+      baseBranch: built.baseBranch,
+      ...(built.baseSha === undefined ? {} : { baseSha: built.baseSha }),
+    });
+    return { record: updated, forkCandidates };
+  }
+
+  /**
+   * Bring an adopted branch up to date with its base before the agent works on it, so the pull
+   * request carries only the Ticket's own commits. Those are the commits after the newest recorded
+   * base tip still in the branch's history: commits below it are already on the base, even when it
+   * landed as a squash. With no such tip the whole branch is replayed, and git drops what the base
+   * already has. A rebase that conflicts is aborted, leaving the branch as it was.
+   */
+  private async bringUpToDate(
+    record: RunRecord,
+    cwd: string,
+    baseRef: string,
+    base: string,
+    forkCandidates: readonly string[],
+    remote: string,
+  ): Promise<
+    | { record: RunRecord; lease?: string; conflict?: undefined }
+    | { conflict: string; record: RunRecord }
+  > {
+    const { branch } = record;
+    const tipSha = await this.git(cwd, 'rev-parse', baseRef);
+    const inHistory = (sha: string): Promise<boolean> =>
+      this.exec('git', ['merge-base', '--is-ancestor', sha, 'HEAD'], { cwd }).then(
+        () => true,
+        () => false,
+      );
+    if (await inHistory(tipSha)) {
+      const updated =
+        record.baseSha === tipSha
+          ? record
+          : await this.registry.update(record.id, { baseSha: tipSha });
+      return { record: updated };
+    }
+    let forkPoint: string | undefined;
+    for (const sha of forkCandidates) {
+      if (await inHistory(sha)) {
+        forkPoint = sha;
+        break;
+      }
+    }
+    const pushedSha = await this.exec(
+      'git',
+      ['ls-remote', '--heads', remote, `refs/heads/${branch}`],
+      { cwd },
+    ).then(
+      (out) => out.stdout.trim().split(/\s/)[0] || undefined,
+      async (error) => {
+        await this.log(record, `could not list ${branch} on ${remote}: ${message(error)}`);
+        return undefined;
+      },
+    );
+    const identity = await this.tipCommitter(cwd);
+    await this.log(
+      record,
+      `bringing ${branch} up to date: rebasing ${forkPoint ? `the commits after ${forkPoint.slice(0, 8)}` : 'it'} onto ${baseRef} (${tipSha.slice(0, 8)})`,
+    );
+    try {
+      await this.exec(
+        'git',
+        [...identity, 'rebase', ...(forkPoint ? ['--onto', baseRef, forkPoint] : [baseRef])],
+        { cwd },
+      );
+    } catch (error) {
+      const conflicted = await this.git(cwd, 'diff', '--name-only', '--diff-filter=U').catch(
+        () => '',
+      );
+      await this.exec('git', ['rebase', '--abort'], { cwd }).catch(async (abortError) => {
+        await this.log(record, `could not abort the rebase: ${message(abortError)}`);
+      });
+      const files = conflicted.split('\n').filter(Boolean);
+      return {
+        record,
+        conflict: `Bringing ${branch} up to date with ${base} (${tipSha.slice(0, 8)}) conflicts${files.length > 0 ? ` in ${files.join(', ')}` : ''}; the rebase was aborted, nothing was published and ${branch} is left as it was for the owner. ${message(error)}`,
+      };
+    }
+    const updated = await this.registry.update(record.id, { baseSha: tipSha });
+    return { record: updated, ...(pushedSha === undefined ? {} : { lease: pushedSha }) };
+  }
+
   /** Push the branch and open the PR, or reuse the open one. Returns the PR url. */
   private async publish(
     queued: RunRecord,
@@ -468,9 +599,11 @@ class Executor {
     hooksDir: string,
     summary: string,
     target: PushTarget,
+    /** Remote tip of the branch before the Run rebased the branch it adopted. */
+    adoptedLease?: string,
   ): Promise<string> {
     const repoArgs = target.repo ? ['--repo', target.repo] : [];
-    const { record, baseRef, base, lease, moved } = await this.settleBase(
+    const settled = await this.settleBase(
       queued,
       config,
       worktree,
@@ -478,6 +611,8 @@ class Executor {
       hooksDir,
       target,
     );
+    const { record, baseRef, base, moved } = settled;
+    const lease = settled.lease ?? adoptedLease;
     const ahead = Number(
       await this.git(worktree, 'rev-list', '--count', `${baseRef}..${record.branch}`),
     );
@@ -767,12 +902,28 @@ class Executor {
     const flow = await (this.deps.loadFlow ?? loadFlow)(config.flow);
 
     const target = await this.resolveRemote(record, config);
+    // A branch an earlier Run left behind is adopted, and brought up to date before it is worked on.
+    const adopted = (await this.adoptedTip(record)) !== undefined;
+    let forkCandidates: string[] = [];
+    if (adopted) {
+      const history = await this.adoptionHistory(record);
+      record = history.record;
+      forkCandidates = history.forkCandidates;
+      const recorded = runBaseBranch(record, config.baseBranch);
+      if (recorded !== config.baseBranch) {
+        const landed = await this.baseLanded(record, record.repoPath, target, recorded);
+        if (landed !== undefined) {
+          await this.log(record, `${landed}; building ${record.branch} on ${config.baseBranch}`);
+          record = await this.registry.update(record.id, { baseBranch: config.baseBranch });
+        }
+      }
+    }
     const baseRef = await this.resolveBaseRef(
       record,
       target.remote,
       runBaseBranch(record, config.baseBranch),
     );
-    if (record.baseBranch !== undefined && record.baseSha === undefined) {
+    if (!adopted && record.baseBranch !== undefined && record.baseSha === undefined) {
       // The tip the stack starts from: a later Restack compares the blocker's branch with it.
       const baseSha = await this.git(record.repoPath, 'rev-parse', baseRef).catch(() => '');
       if (baseSha) record = await this.registry.update(record.id, { baseSha });
@@ -783,6 +934,28 @@ class Executor {
       branch: record.branch,
       baseRef,
     });
+    let adoptedLease: string | undefined;
+    if (adopted) {
+      const updated = await this.bringUpToDate(
+        record,
+        worktree.worktreePath,
+        baseRef,
+        runBaseBranch(record, config.baseBranch),
+        forkCandidates,
+        target.remote,
+      );
+      record = await this.registry.update(updated.record.id, {
+        worktreePath: worktree.worktreePath,
+      });
+      if (updated.conflict !== undefined) {
+        await this.log(record, updated.conflict);
+        return this.finish(record.id, {
+          status: 'failed',
+          result: { outcome: 'failed', summary: updated.conflict },
+        });
+      }
+      adoptedLease = updated.lease;
+    }
     const { hooksDir } = await installPrePushHook({
       worktreePath: worktree.worktreePath,
       baseBranch: config.baseBranch,
@@ -872,6 +1045,7 @@ class Executor {
         hooksDir,
         result.summary,
         target,
+        adoptedLease,
       );
       record = await this.registry.update(record.id, { prUrl });
       try {
