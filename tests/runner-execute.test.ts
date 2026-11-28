@@ -1026,3 +1026,210 @@ describe('executeRun: a stacked Run whose blocker landed while it worked', () =>
     expect(gitCalls(t)).toContain('rev-list --count origin/main..fractory/1');
   });
 });
+
+describe('executeRun: a Run that adopts a branch an earlier Run left behind', () => {
+  const BELOW = 'fractory/41-blocker';
+  const adopting = (
+    options: Setup & {
+      belowOnRemote?: boolean;
+      belowMerged?: boolean;
+      /** Shas `merge-base --is-ancestor` finds in the branch's history. */
+      inHistory?: string[];
+    } = {},
+  ) => {
+    const {
+      belowOnRemote = true,
+      belowMerged = true,
+      inHistory = ['blocker-tip'],
+      ...rest
+    } = options;
+    return setup({
+      ...rest,
+      failOn: (file, args) =>
+        rest.failOn?.(file, args) ||
+        (file === 'git' &&
+          args[0] === 'merge-base' &&
+          args[1] === '--is-ancestor' &&
+          !inHistory.includes(args[2] ?? '')),
+      git: (args) => {
+        const custom = rest.git?.(args);
+        if (custom !== undefined) return custom;
+        const line = args.join(' ');
+        if (line === 'rev-parse --verify --quiet refs/heads/fractory/1') return 'old-head';
+        if (line === `ls-remote --heads origin refs/heads/${BELOW}`)
+          return belowOnRemote ? `bbb\trefs/heads/${BELOW}\n` : '';
+        if (line === 'ls-remote --heads origin refs/heads/fractory/1')
+          return 'pushed-sha\trefs/heads/fractory/1\n';
+        if (line === 'rev-parse origin/main') return 'main-tip-sha';
+        if (line === `rev-parse origin/${BELOW}`) return 'below-tip-sha';
+        if (line === 'log -1 --format=%cn%x1f%ce') return 'Dev\x1fdev@example.com';
+        return undefined;
+      },
+      gh: (args) =>
+        args.join(' ').startsWith(`pr list --repo me/repo --head ${BELOW} --state merged`)
+          ? belowMerged
+            ? '[{"url":"https://github.com/me/repo/pull/41"}]'
+            : '[]'
+          : undefined,
+    });
+  };
+  /** The Ticket's earlier Run, stacked on BELOW, that left the branch behind. */
+  const earlier = (
+    t: Awaited<ReturnType<typeof setup>>,
+    overrides: Partial<RunRecord> = {},
+  ): Promise<void> =>
+    t.registry.write({
+      ...t.record,
+      id: 'earlier',
+      key: 'k-earlier',
+      trigger: { kind: 'ticket-ready' },
+      status: 'failed',
+      result: { outcome: 'failed', summary: 'Publishing failed' },
+      baseBranch: BELOW,
+      baseSha: 'blocker-tip',
+      createdAt: '2026-01-01T00:00:00.000Z',
+      ...overrides,
+    });
+  const gitCalls = (t: Awaited<ReturnType<typeof setup>>) =>
+    t.calls.filter((c) => c.file === 'git').map((c) => c.args.join(' '));
+  const rebases = (t: Awaited<ReturnType<typeof setup>>) =>
+    gitCalls(t).filter((c) => / rebase |^rebase /.test(c));
+  const prBase = (t: Awaited<ReturnType<typeof setup>>) => {
+    const create = t.calls.find((c) => c.args.slice(0, 2).join(' ') === 'pr create');
+    return create?.args[create.args.indexOf('--base') + 1];
+  };
+
+  it('a Run queued after a failed Run replays only its own commits onto the base before working', async () => {
+    const t = await adopting({ trigger: { kind: 'manual' } });
+    await earlier(t);
+    const record = await executeRun('run1', t.deps);
+
+    expect(record.status).toBe('done');
+    expect(record.baseBranch).toBe('main');
+    expect(record.baseSha).toBe('main-tip-sha');
+    // The blocker merged as a squash: only the commits after its tip are replayed onto main.
+    expect(rebases(t)).toEqual([
+      '-c user.name=Dev -c user.email=dev@example.com rebase --onto origin/main blocker-tip',
+    ]);
+    const git = gitCalls(t);
+    expect(git).toContain('fetch origin main');
+    expect(git).not.toContain(`fetch origin ${BELOW}`);
+    expect(git).toContain('rev-list --count origin/main..fractory/1');
+    // The branch is brought up to date before the agent works on it.
+    expect(t.agentRequests).toHaveLength(1);
+    expect(t.agentRequests[0]?.prompt).not.toContain('## Built on');
+    expect(pushed(t.calls)[0]?.args.slice(2)).toEqual([
+      'push',
+      '--force-with-lease=fractory/1:pushed-sha',
+      '--set-upstream',
+      'origin',
+      'fractory/1',
+    ]);
+    expect(prBase(t)).toBe('main');
+  });
+
+  it('an answer Run after needs-human falls back to the base branch when its recorded base is gone', async () => {
+    const t = await adopting({
+      trigger: { kind: 'answer', runId: 'earlier' },
+      belowOnRemote: false,
+      belowMerged: false,
+    });
+    await earlier(t, {
+      status: 'needs-human',
+      result: { outcome: 'needs-human', reason: 'ambiguous-spec', question: 'Which one?' },
+    });
+    const record = await executeRun('run1', t.deps);
+
+    expect(record.status).toBe('done');
+    expect(record.baseBranch).toBe('main');
+    expect(record.baseSha).toBe('main-tip-sha');
+    expect(rebases(t)).toEqual([
+      '-c user.name=Dev -c user.email=dev@example.com rebase --onto origin/main blocker-tip',
+    ]);
+    expect(gitCalls(t)).not.toContain(`fetch origin ${BELOW}`);
+    expect(prBase(t)).toBe('main');
+    expect(record.prUrl).toBe('https://github.com/me/repo/pull/9');
+  });
+
+  it('keeps a stack that still stands and brings the branch up to date with its blocker', async () => {
+    const t = await adopting({
+      trigger: { kind: 'answer', runId: 'earlier' },
+      belowMerged: false,
+    });
+    await earlier(t, { status: 'needs-human' });
+    const record = await executeRun('run1', t.deps);
+
+    expect(record.status).toBe('done');
+    expect(record.baseBranch).toBe(BELOW);
+    expect(record.baseSha).toBe('below-tip-sha');
+    expect(rebases(t)).toEqual([
+      `-c user.name=Dev -c user.email=dev@example.com rebase --onto origin/${BELOW} blocker-tip`,
+    ]);
+    expect(t.agentRequests[0]?.prompt).toContain(`## Built on \`${BELOW}\``);
+    expect(await t.hookScript()).toContain(`refs/heads/${BELOW}`);
+    expect(prBase(t)).toBe(BELOW);
+  });
+
+  it('replays the whole branch, letting git drop merged commits, when no recorded tip is in its history', async () => {
+    const t = await adopting({ trigger: { kind: 'manual' }, inHistory: [] });
+    await earlier(t, { baseBranch: undefined, baseSha: undefined });
+    const record = await executeRun('run1', t.deps);
+    expect(record.status).toBe('done');
+    expect(rebases(t)).toEqual([
+      '-c user.name=Dev -c user.email=dev@example.com rebase origin/main',
+    ]);
+    expect(record.baseSha).toBe('main-tip-sha');
+  });
+
+  it('leaves a branch alone when the base tip is already in its history', async () => {
+    const t = await adopting({ trigger: { kind: 'manual' }, inHistory: ['main-tip-sha'] });
+    await earlier(t, { baseBranch: undefined, baseSha: undefined });
+    const record = await executeRun('run1', t.deps);
+    expect(record.status).toBe('done');
+    expect(rebases(t)).toEqual([]);
+    expect(pushed(t.calls)[0]?.args.slice(2)).toEqual([
+      'push',
+      '--set-upstream',
+      'origin',
+      'fractory/1',
+    ]);
+  });
+
+  it('a rebase that conflicts stops the Run naming the paths, before the agent and without publishing', async () => {
+    const t = await adopting({
+      trigger: { kind: 'manual' },
+      failOn: (file, args) =>
+        file === 'git' && args.includes('rebase') && !args.includes('--abort'),
+      git: (args) =>
+        args.join(' ') === 'diff --name-only --diff-filter=U'
+          ? 'migrations/index.ts\nsrc/a.ts\n'
+          : undefined,
+    });
+    await earlier(t);
+    const record = await executeRun('run1', t.deps);
+
+    expect(record.status).toBe('failed');
+    const summary = record.result?.outcome === 'failed' ? record.result.summary : '';
+    expect(summary).toContain(
+      'Bringing fractory/1 up to date with main (main-tip) conflicts in migrations/index.ts, src/a.ts',
+    );
+    expect(summary).toContain('nothing was published');
+    expect(gitCalls(t)).toContain('rebase --abort');
+    expect(t.agentRequests).toEqual([]);
+    expect(pushed(t.calls)).toEqual([]);
+    expect(t.calls.some((c) => c.file === 'gh' && c.args[1] === 'create')).toBe(false);
+    expect(t.statuses).toEqual([]);
+  });
+
+  it('keeps the recorded base when the remote cannot be read', async () => {
+    const t = await adopting({
+      trigger: { kind: 'manual' },
+      failOn: (file, args) => file === 'git' && args[0] === 'ls-remote',
+    });
+    await earlier(t);
+    const record = await executeRun('run1', t.deps);
+    expect(record.status).toBe('done');
+    expect(record.baseBranch).toBe(BELOW);
+    expect(prBase(t)).toBe(BELOW);
+  });
+});
