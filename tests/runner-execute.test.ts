@@ -859,8 +859,20 @@ describe('executeRun: a stacked Run with no recorded tip', () => {
 
 describe('executeRun: a stacked Run whose blocker landed while it worked', () => {
   const BELOW = 'fractory/135-doc';
-  const stacked = (options: Setup & { belowOnRemote?: boolean; belowMerged?: boolean } = {}) => {
-    const { belowOnRemote = true, belowMerged = false, ...rest } = options;
+  const stacked = (
+    options: Setup & {
+      belowOnRemote?: boolean;
+      belowMerged?: boolean;
+      belowGoneAtStart?: boolean;
+    } = {},
+  ) => {
+    const {
+      belowOnRemote = true,
+      belowMerged = false,
+      belowGoneAtStart = false,
+      ...rest
+    } = options;
+    let listed = 0;
     return setup({
       run: { baseBranch: BELOW, baseSha: 'blocker-tip' },
       ...rest,
@@ -869,7 +881,10 @@ describe('executeRun: a stacked Run whose blocker landed while it worked', () =>
         if (custom !== undefined) return custom;
         const line = args.join(' ');
         if (line === `ls-remote --heads origin refs/heads/${BELOW}`)
-          return belowOnRemote ? `bbb\trefs/heads/${BELOW}\n` : '';
+          // `belowOnRemote: false` is a blocker that merged while the Run worked: present at the start.
+          return belowOnRemote || (!belowGoneAtStart && listed++ === 0)
+            ? `bbb\trefs/heads/${BELOW}\n`
+            : '';
         // The Run's own branch was never pushed.
         if (line === 'ls-remote --heads origin refs/heads/fractory/1') return '';
         if (line === 'rev-parse origin/main') return 'main-tip-sha';
@@ -915,6 +930,26 @@ describe('executeRun: a stacked Run whose blocker landed while it worked', () =>
     ]);
     expect(prBase(t)).toBe('main');
     expect(t.statuses).toEqual(['in_review']);
+  });
+
+  it('starts on the base branch when the blocker merged and its branch is gone', async () => {
+    const t = await stacked({ belowGoneAtStart: true, belowOnRemote: false, belowMerged: true });
+    const record = await executeRun('run1', t.deps);
+    expect(record.status).toBe('done');
+    expect(record.baseBranch).toBe('main');
+    expect(record.baseSha).toBe('main-tip-sha');
+    expect(gitCalls(t)).toContain('fetch origin main');
+    expect(prBase(t)).toBe('main');
+  });
+
+  it('fails at the start when the blocker branch is gone and it has not merged', async () => {
+    const t = await stacked({ belowGoneAtStart: true, belowOnRemote: false });
+    const record = await executeRun('run1', t.deps);
+    expect(record.status).toBe('failed');
+    const summary = record.result?.outcome === 'failed' ? record.result.summary : '';
+    expect(summary).toContain(`${BELOW} is no longer on origin`);
+    expect(summary).toContain('not known to have merged');
+    expect(pushed(t.calls)).toEqual([]);
   });
 
   it('publishes a Stack whose base merged as a squash without bringing back its commits', async () => {

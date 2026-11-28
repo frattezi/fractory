@@ -1,5 +1,6 @@
 import { access } from 'node:fs/promises';
 import { resolve } from 'node:path';
+import { z } from 'zod';
 import type { FactoryConfig } from '../contracts/factory-config.ts';
 import type { RunRecord } from '../contracts/run.ts';
 import type { Exec } from '../github/exec.ts';
@@ -34,7 +35,49 @@ const RUN_BRANCH_PREFIX = 'fractory/';
  * merge leaves the branch unmerged in git's eyes, hence `-D`. Failures only warn: the branch may
  * already be gone, and nothing depends on it.
  */
-const deleteRunBranch = async (deps: CleanupDeps, run: RunRecord): Promise<void> => {
+const OpenPrsSchema = z.array(z.object({ number: z.number().int() }));
+
+/**
+ * Points every open PR stacked on `branch` at `base`, because GitHub closes a PR whose base branch
+ * is deleted. False when any of them could not be read or retargeted: the branch must then stay.
+ */
+const retargetStacked = async (
+  deps: CleanupDeps,
+  run: RunRecord,
+  repo: string,
+  base: string,
+): Promise<boolean> => {
+  try {
+    const open = OpenPrsSchema.parse(
+      JSON.parse(
+        await deps.exec('gh', [
+          'pr',
+          'list',
+          '--repo',
+          repo,
+          '--base',
+          run.branch,
+          '--state',
+          'open',
+          '--json',
+          'number',
+        ]),
+      ),
+    );
+    for (const pr of open) {
+      await deps.exec('gh', ['pr', 'edit', String(pr.number), '--repo', repo, '--base', base]);
+      deps.log.info(`retargeted PR #${pr.number} from ${run.branch} to ${base}`);
+    }
+    return true;
+  } catch (error) {
+    deps.log.warn(
+      `could not retarget the PRs stacked on ${run.branch}: ${(error as Error).message}`,
+    );
+    return false;
+  }
+};
+
+const deleteRunBranch = async (deps: CleanupDeps, run: RunRecord, base: string): Promise<void> => {
   if (!run.branch.startsWith(RUN_BRANCH_PREFIX)) return;
   const steps: [string, string[]][] = [['local', ['-C', run.repoPath, 'branch', '-D', run.branch]]];
   const repo = run.prUrl ? repoOfPrUrl(run.prUrl) : undefined;
@@ -46,7 +89,9 @@ const deleteRunBranch = async (deps: CleanupDeps, run: RunRecord): Promise<void>
   } catch (error) {
     deps.log.warn(`could not list the remotes of ${run.repoPath}: ${(error as Error).message}`);
   }
-  if (remote) steps.push(['remote', ['-C', run.repoPath, 'push', remote, '--delete', run.branch]]);
+  if (remote && repo && (await retargetStacked(deps, run, repo, base))) {
+    steps.push(['remote', ['-C', run.repoPath, 'push', remote, '--delete', run.branch]]);
+  } else if (remote) deps.log.warn(`${run.branch} kept on ${remote}`);
   else deps.log.warn(`no remote points at ${repo ?? 'the PR repo'}; ${run.branch} kept there`);
   for (const [where, args] of steps) {
     try {
@@ -111,9 +156,12 @@ export const cleanup = async (deps: CleanupDeps): Promise<CleanupResult> => {
         deps.now().getTime() - new Date(latest.finishedAt).getTime() > staleMs;
 
       let merged = false;
+      let mergedBase = '';
       if (latest.prUrl) {
         try {
-          merged = (await deps.gh.viewPr(latest.repoPath, latest.prUrl)).state === 'MERGED';
+          const view = await deps.gh.viewPr(latest.repoPath, latest.prUrl);
+          merged = view.state === 'MERGED';
+          mergedBase = view.baseRefName;
         } catch (error) {
           if (!failedAndStale) {
             skip(`PR state unreadable: ${(error as Error).message}`);
@@ -147,7 +195,7 @@ export const cleanup = async (deps: CleanupDeps): Promise<CleanupResult> => {
       const stamp = deps.now().toISOString();
       for (const run of group) await deps.registry.update(run.id, { cleanedAt: stamp });
       result.removed.push(path);
-      if (merged) await deleteRunBranch(deps, latest);
+      if (merged) await deleteRunBranch(deps, latest, mergedBase);
       log.info(`removed worktree ${path} (${merged ? 'PR merged' : 'stale failed Run'})`);
     } catch (error) {
       skip(`error: ${(error as Error).message}`);
