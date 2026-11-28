@@ -97,12 +97,16 @@ The Reviewer is a Bot Profile whose Specialization is the `reviewer` skill, ship
 `fractory install`. Create it once, after the skill is installed:
 
 ```
-agent-manager bots create --name Reviewer --emoji 🔍 --color blue --tool claude \
+agent-manager bots create --name Reviewer --emoji 🔍 --color 2 --tool claude \
   --dir ~/Work/Bots/reviewer --specialization reviewer --memory reviewer
 ```
 
+`--color` takes an index into the theme's swatches, not a colour name: `agent-manager`
+refuses a name outright. The seven swatches are the theme's accent, second accent, remote,
+working, waiting, finished and errored tokens, in that order, so an index stays legible
+whichever theme is active. The orchestrator Profile is `🤖` at index 3; `🔍` at index 2
+reads as distinct from it on the rail.
+
 No model is set, so it follows the CLI's default. The directory is its own, outside any
 repository, so the manager binds its memory with a marker there. It reaches the
-repositories through the `reviewer` CLI, which must be installed on the host. The
-orchestrator Profile is `🤖`; `🔍` and blue read as distinct from it on the rail. If your
-`agent-manager` names the colour flag differently, check `agent-manager bots create --help`.
+repositories through the `reviewer` CLI, which must be installed on the host.
