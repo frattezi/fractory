@@ -119,6 +119,10 @@ Whose subscription pays for and answers for an agent's work: work or personal. I
 **Flow**:
 The fixed sequence of steps a Run follows to turn a Ticket into a change. Each repository names the Flow it uses.
 
+**Errand**:
+One agent started on demand outside any Run, on the Account its repository's Mode selects and in a directory the caller names. It carries no Ticket, records nothing, and changes no branch; what it is for belongs to whoever started it.
+_Avoid_: agent run, one-off Run, task, invocation
+
 **Rebuild**:
 Refreshing what the owner runs from a repository's current checkout, by running the commands its `.fractory.json` lists under `rebuild`. It never touches git and is only started by the owner, with `fractory rebuild`.
 _Avoid_: deploy, update, sync
