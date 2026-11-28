@@ -16,6 +16,20 @@ Run to end, waits for the change to merge, and only then starts the next Ticket.
 
 ## Run the command, don't improvise the loop
 
+In a Fractory Manager session, run it through the mark wrapper, so the owner can see from the rail
+that this session is babysitting:
+
+```
+agent-manager mark babysit -- fractory babysit [repoPath] [--ticket <ref>]... [--poll <seconds>] [--timeout-min <minutes>]
+```
+
+The wrapper puts the babysit mark on your row, holds it for exactly the life of the command, and
+clears it when the command exits. The manager drops a mark whose process is gone, so a killed
+wrapper leaves nothing behind: it is safe to background, and the mark survives a manager restart.
+Without the wrapper the babysit works and the owner has no way to tell it is running.
+
+Outside a managed session there is no row to mark, so run the command on its own:
+
 ```
 fractory babysit [repoPath] [--ticket <ref>]... [--poll <seconds>] [--timeout-min <minutes>]
 ```
