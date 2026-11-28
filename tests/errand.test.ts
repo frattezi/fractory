@@ -79,8 +79,7 @@ const setup = async (repoConfig: Record<string, unknown>, keychain = true) => {
 };
 
 const argv = (s: { repo: string; root: string }, ...extra: string[]) => [
-  'agents',
-  'run',
+  'errand',
   '--repo',
   s.repo,
   '--prompt-file',
@@ -88,7 +87,7 @@ const argv = (s: { repo: string; root: string }, ...extra: string[]) => [
   ...extra,
 ];
 
-describe('fractory agents run', () => {
+describe('fractory errand', () => {
   it('runs in the given directory, prints the output and uses an absolute prompt path', async () => {
     const s = await setup({ mode: 'work' });
     expect(await main(argv(s, '--cwd', s.other), s.env)).toBe(0);
@@ -165,7 +164,7 @@ describe('fractory agents run', () => {
     const s = await setup({ mode: 'work' });
     const err = vi.spyOn(console, 'error').mockImplementation(() => {});
     expect(
-      await main(['agents', 'run', '--repo', s.repo, '--prompt-file', 'missing.md'], s.env),
+      await main(['errand', '--repo', s.repo, '--prompt-file', 'missing.md'], s.env),
     ).toBe(1);
     expect(s.keychainReads).toEqual([]);
     err.mockRestore();
